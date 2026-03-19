@@ -1,8 +1,6 @@
 """共通ユーティリティ: API クライアント・データ読み込み・セッション管理"""
 
 import os
-import json
-import re
 
 import streamlit as st
 import pandas as pd
@@ -56,13 +54,13 @@ def get_anthropic_client() -> Anthropic:
     return Anthropic(api_key=api_key)
 
 
-def call_claude(prompt: str, system: str = "") -> str:
+def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """Claude API を呼び出す。エラー時は分かりやすいメッセージを返す。"""
     try:
         client = get_anthropic_client()
         kwargs = dict(
             model=CLAUDE_MODEL,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         if system:
@@ -98,15 +96,3 @@ def get_candidate_info() -> str:
 
 def set_candidate_info(text: str) -> None:
     st.session_state["candidate_info"] = text
-
-
-# ──────────────────────────────────────────────
-# キーワード解析ヘルパー
-# ──────────────────────────────────────────────
-def extract_keywords(raw_text: str) -> list[str]:
-    """Claude の返答からキーワードリストを抽出する。"""
-    try:
-        data = json.loads(raw_text)
-        return data.get("keywords", [])
-    except json.JSONDecodeError:
-        return re.findall(r'"([^"]+)"', raw_text)

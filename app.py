@@ -1,43 +1,42 @@
 """
-オールインワン面談サポートアプリ
-人材紹介エージェント向け：事前準備・面談サポート・振り返り分析
+商談サポートアプリ — 候補者に最高の体験を提供する
+人材紹介エージェント向け：商談前・商談中・商談後
 """
 
 import streamlit as st
 from utils import init_session_state
-from tabs import tab1_matching, tab2_support, tab3_review, tab4_jobs, tab5_candidates
+from tabs import tab_before, tab_during, tab_after, tab4_jobs
 
 # ──────────────────────────────────────────────
 # ページ設定 & セッション初期化
 # ──────────────────────────────────────────────
-st.set_page_config(page_title="面談サポートアプリ", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="商談サポート", page_icon="🏗️", layout="wide")
 init_session_state()
 
 # ──────────────────────────────────────────────
 # サイドバー
 # ──────────────────────────────────────────────
-st.sidebar.title("面談サポートアプリ")
+st.sidebar.title("商談サポート")
+st.sidebar.caption("候補者に最高の体験を。")
+
 page = st.sidebar.radio(
-    "ページを選択",
+    "フェーズ",
     [
-        "1. 事前準備＆マッチング",
-        "2. 面談サポート",
-        "3. 録音＆振り返り分析",
-        "4. 求人データ管理",
-        "5. 候補者管理",
+        "商談前 — 準備",
+        "商談中 — 実戦",
+        "商談後 — フォロー",
+        "求人DB管理",
     ],
 )
 
 # ──────────────────────────────────────────────
 # ページルーティング
 # ──────────────────────────────────────────────
-if page == "1. 事前準備＆マッチング":
-    tab1_matching.render()
-elif page == "2. 面談サポート":
-    tab2_support.render()
-elif page == "3. 録音＆振り返り分析":
-    tab3_review.render()
-elif page == "4. 求人データ管理":
+if page == "商談前 — 準備":
+    tab_before.render()
+elif page == "商談中 — 実戦":
+    tab_during.render()
+elif page == "商談後 — フォロー":
+    tab_after.render()
+elif page == "求人DB管理":
     tab4_jobs.render()
-elif page == "5. 候補者管理":
-    tab5_candidates.render()
