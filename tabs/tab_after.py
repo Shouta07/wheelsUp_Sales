@@ -94,86 +94,94 @@ def render() -> None:
             st.warning("面談内容を入力してください。")
             return
 
+        if not gen_items:
+            st.warning("生成する内容を選択してください。")
+            return
+
         st.session_state["transcript"] = transcript_text
         candidate = bg if bg else "（事前情報なし）"
+        companies_context = f"\n提案した企業: {proposed_companies}" if proposed_companies.strip() else ""
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 振り返りフィードバック
+        # 推薦文以外を1回のAPI呼出しで一括生成
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if "面談の振り返りフィードバック" in gen_items:
-            st.divider()
-            st.subheader("面談の振り返り")
-            with st.spinner("面談を分析中..."):
-                prompt = f"""あなたは設備管理・施工管理分野の人材紹介で15年の経験を持つ面談トレーナーです。
-以下の面談記録を分析してください。
+        non_rec_items = [item for item in gen_items if item != "企業への推薦文"]
+        if non_rec_items:
+            sections = []
+            for item in non_rec_items:
+                if item == "面談の振り返りフィードバック":
+                    sections.append("""## 面談の振り返り
+
+### 総合: ○○/100点
+
+### よくできたこと
+（具体的に2-3個）
+
+### もったいなかったこと
+（具体的に2-3個。「こう言えばもっとよかった」を含めて）
+
+### 候補者の温度感
+（転職意欲を10段階で評価し、根拠を）
+
+### 今すぐやるべきこと TOP3
+| 優先度 | アクション | 理由 |
+|--------|-----------|------|
+| 1 | ... | ... |
+| 2 | ... | ... |
+| 3 | ... | ... |""")
+                elif item == "候補者へのフォローメール":
+                    sections.append("""## 候補者へのフォローメール
+
+### パターン1: 候補者が前向きだった場合
+**件名:**
+**本文:**
+（お礼→面談で話した内容の要約→提案企業の魅力を改めて→具体的な次のステップと期限）
+
+### パターン2: 候補者が迷っている・慎重だった場合
+**件名:**
+**本文:**
+（お礼→候補者の不安への共感→面談で気づいた候補者の強み→プレッシャーなく次の一歩を促す）
+
+※メールとしてそのまま送れる完成度で。""")
+                elif item == "次回面談の質問リスト":
+                    sections.append("""## 次回面談の質問リスト
+
+### 前回の積み残し（必ず確認）
+1. 「...」 → 狙い: ...
+2. 「...」 → 狙い: ...
+
+### 本音を引き出す質問
+1. 「...」 → 狙い: ...
+2. 「...」 → 狙い: ...
+
+### 決断を後押しする質問
+1. 「...」 → 狙い: ...
+2. 「...」 → 狙い: ...
+
+※「」内はそのまま話せる自然な日本語で。""")
+
+            sections_text = "\n\n---\n\n".join(sections)
+            combined_prompt = f"""あなたは設備管理・施工管理分野の人材紹介で15年の経験を持つ面談トレーナー兼トップエージェントです。
+以下の面談記録を分析し、指定されたセクションをすべて生成してください。
 
 【候補者の背景】
 {candidate}
 
 【面談記録】
-{transcript_text}
-
-以下の形式でフィードバック:
-
-## 総合: ○○/100点
-
-## よくできたこと
-（具体的に2-3個）
-
-## もったいなかったこと
-（具体的に2-3個。「こう言えばもっとよかった」を含めて）
-
-## 候補者の温度感
-（この候補者は今どの段階か。転職意欲を10段階で評価し、根拠を）
-
-## 今すぐやるべきこと TOP3
-| 優先度 | アクション | 理由 |
-|--------|-----------|------|
-| 1 | ... | ... |
-| 2 | ... | ... |
-| 3 | ... | ... |"""
-                result = call_claude(prompt)
-            st.markdown(result)
-            with st.expander("コピー用"):
-                st.code(result, language=None)
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # フォローメール
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if "候補者へのフォローメール" in gen_items:
-            st.divider()
-            st.subheader("候補者へのフォローメール")
-            with st.spinner("フォローメールを生成中..."):
-                companies_context = f"\n提案した企業: {proposed_companies}" if proposed_companies.strip() else ""
-                prompt = f"""あなたは設備管理・施工管理業界の人材紹介エージェントです。
-面談直後に候補者に送るフォローメールを作成してください。
-
-【候補者の背景】
-{candidate}
-
-【面談の内容】
 {transcript_text}{companies_context}
 
-以下の2パターンを作成:
+以下のセクションをそれぞれ生成してください（各セクションは「---」で区切ってください）:
 
-## パターン1: 候補者が前向きだった場合
-**件名:**
-**本文:**
-（お礼→面談で話した内容の要約→提案企業の魅力を改めて→具体的な次のステップと期限）
+{sections_text}"""
 
-## パターン2: 候補者が迷っている・慎重だった場合
-**件名:**
-**本文:**
-（お礼→候補者の不安への共感→面談で気づいた候補者の強み→プレッシャーなく次の一歩を促す）
-
-※メールとしてそのまま送れる完成度で。候補者が「この人に任せたい」と感じるトーンで。"""
-                result = call_claude(prompt)
-            st.markdown(result)
+            with st.spinner("フォローコンテンツを一括生成中..."):
+                combined_result = call_claude(combined_prompt)
+            st.markdown(combined_result)
             with st.expander("コピー用"):
-                st.code(result, language=None)
+                st.code(combined_result, language=None)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 企業への推薦文
+        # 企業への推薦文（全企業まとめて1回のAPI呼出し）
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if "企業への推薦文" in gen_items:
             st.divider()
@@ -185,23 +193,26 @@ def render() -> None:
                 from utils import load_jobs
                 jobs_df = load_jobs()
 
-                for company_name in [c.strip() for c in proposed_companies.replace("、", ",").split(",") if c.strip()]:
-                    with st.spinner(f"{company_name}への推薦文を生成中..."):
-                        job_row = jobs_df[jobs_df["企業名"] == company_name]
-                        if not job_row.empty:
-                            row = job_row.iloc[0]
-                            job_info = (
-                                f"企業名: {row['企業名']}\n職種: {row['職種']}\n年収: {row['年収']}\n"
-                                f"必須要件: {row['必須要件']}\nアピールポイント: {row['アピールポイント']}"
-                            )
-                        else:
-                            job_info = f"企業名: {company_name}（求人DB外・業界知識で補完）"
+                company_list = [c.strip() for c in proposed_companies.replace("、", ",").split(",") if c.strip()]
+                companies_info = []
+                for company_name in company_list:
+                    job_row = jobs_df[jobs_df["企業名"] == company_name]
+                    if not job_row.empty:
+                        row = job_row.iloc[0]
+                        companies_info.append(
+                            f"### {company_name}\n"
+                            f"職種: {row['職種']} / 年収: {row['年収']} / "
+                            f"必須要件: {row['必須要件']} / AP: {row['アピールポイント']}"
+                        )
+                    else:
+                        companies_info.append(f"### {company_name}\n（求人DB外・業界知識で補完）")
 
-                        prompt = f"""あなたは設備管理・施工管理業界の人材紹介エージェントです。
-以下の候補者を企業に推薦する文書を作成してください。
+                all_companies_text = "\n\n".join(companies_info)
+                rec_prompt = f"""あなたは設備管理・施工管理業界の人材紹介エージェントです。
+以下の候補者を各企業に推薦する文書を企業ごとに作成してください。
 
-【推薦先企業】
-{job_info}
+【推薦先企業一覧】
+{all_companies_text}
 
 【候補者の背景】
 {candidate}
@@ -209,7 +220,9 @@ def render() -> None:
 【面談での印象】
 {transcript_text}
 
-## {company_name}御中 — 候補者推薦書
+企業ごとに以下の形式で出力してください（企業名を見出しにすること）:
+
+## （企業名）御中 — 候補者推薦書
 
 **候補者概要:** （2文で強みを端的に）
 
@@ -227,46 +240,12 @@ def render() -> None:
 **補足事項:**
 （年収・入社時期・その他企業に伝えるべき条件）
 
+---
+
 ※企業の採用担当が「この人に会いたい」と思える内容で。"""
-                        result = call_claude(prompt)
-                    st.markdown(f"### {company_name}")
-                    st.markdown(result)
-                    with st.expander(f"{company_name} — コピー用"):
-                        st.code(result, language=None)
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 次回面談の質問リスト
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if "次回面談の質問リスト" in gen_items:
-            st.divider()
-            st.subheader("次回面談の質問リスト")
-            with st.spinner("次回用の質問を生成中..."):
-                prompt = f"""あなたは設備管理・施工管理業界の人材紹介で15年の経験を持つ面談のプロです。
-前回の面談内容を踏まえ、次回の面談で聞くべき質問を作成してください。
-
-【候補者の背景】
-{candidate}
-
-【前回の面談内容】
-{transcript_text}
-
-## 前回の積み残し（必ず確認）
-（前回深掘りできなかった・曖昧だった点）
-1. 「...」 → 狙い: ...
-2. 「...」 → 狙い: ...
-
-## 本音を引き出す質問
-（まだ言語化できていない希望や不安を引き出す）
-1. 「...」 → 狙い: ...
-2. 「...」 → 狙い: ...
-
-## 決断を後押しする質問
-（候補者が前に進めるように）
-1. 「...」 → 狙い: ...
-2. 「...」 → 狙い: ...
-
-※「」内はそのまま話せる自然な日本語で。"""
-                result = call_claude(prompt)
-            st.markdown(result)
-            with st.expander("コピー用"):
-                st.code(result, language=None)
+                with st.spinner(f"{len(company_list)}社分の推薦文を一括生成中..."):
+                    rec_result = call_claude(rec_prompt)
+                st.markdown(rec_result)
+                with st.expander("コピー用"):
+                    st.code(rec_result, language=None)

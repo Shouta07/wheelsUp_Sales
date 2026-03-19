@@ -36,12 +36,12 @@ def render() -> None:
         jobs_text = jobs_df.to_csv(index=False)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 1. AIマッチング
+        # 1回のAPI呼出しでマッチング＋準備シート＋外部リストを一括生成
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        st.subheader("1. マッチング結果")
-        with st.spinner("求人との適合度を分析中..."):
-            scoring_prompt = f"""あなたは設備管理・施工管理業界に精通した人材紹介のプロフェッショナルです。
-以下の候補者情報と求人リストを照合し、適合度の高い順にランキングしてください。
+        with st.spinner("マッチング・準備シート・外部リストを一括生成中..."):
+            internal_companies = ", ".join(jobs_df["企業名"].tolist())
+            combined_prompt = f"""あなたは設備管理・施工管理業界に精通した人材紹介のプロフェッショナルです（年間50名以上の成約実績）。
+以下の3つのタスクをすべて実行してください。
 
 【候補者情報】
 {candidate_info}
@@ -49,7 +49,25 @@ def render() -> None:
 【求人リスト（CSV形式）】
 {jobs_text}
 
-以下のJSON形式で返答してください（他の文章は不要）:
+━━━━━━━━━━━━━━━━━━━━
+タスク1: 求人マッチング
+━━━━━━━━━━━━━━━━━━━━
+候補者と求人リストを照合し、適合度60以上のものをランキング。
+
+━━━━━━━━━━━━━━━━━━━━
+タスク2: 商談準備シート
+━━━━━━━━━━━━━━━━━━━━
+タスク1の結果TOP3を踏まえた商談準備シート。
+
+━━━━━━━━━━━━━━━━━━━━
+タスク3: 外部アタックリスト
+━━━━━━━━━━━━━━━━━━━━
+内部DBに含まれていない企業を5〜8社。
+【内部DB企業（除外）】{internal_companies}
+
+━━━━━━━━━━━━━━━━━━━━
+出力形式（厳守・JSON以外の文章は不要）
+━━━━━━━━━━━━━━━━━━━━
 {{
   "rankings": [
     {{
@@ -58,22 +76,50 @@ def render() -> None:
       "一言": "候補者にとってのこの企業の最大の魅力を1文で",
       "提案の切り口": "この求人をどう切り出すか"
     }}
-  ]
-}}
+  ],
+  "prep_sheet": {{
+    "候補者タイプ": "逃げ型・攻め型・迷い型など",
+    "商談ゴール": "この商談で達成すべき具体的なゴール",
+    "掴み": "開始5分の具体的なセリフ",
+    "深掘り": [
+      {{"推測": "...", "質問": "..."}},
+      {{"推測": "...", "質問": "..."}},
+      {{"推測": "...", "質問": "..."}}
+    ],
+    "ストーリーライン": "TOP3をどの順番で、どう繋げて提案するか",
+    "地雷ワード": "言ってはいけないこと"
+  }},
+  "external_targets": [
+    {{
+      "企業名": "企業名",
+      "ポジション": "...",
+      "魅力": "候補者にとっての魅力",
+      "想定年収": "..."
+    }}
+  ],
+  "attack_advice": "外部企業への攻め方の一言アドバイス"
+}}"""
+            scoring_raw = call_claude(combined_prompt)
 
-適合度60以上のものだけ返してください。"""
-            scoring_raw = call_claude(scoring_prompt)
-
+        # パース
         rankings = []
+        prep_sheet = {}
+        external_targets = []
+        attack_advice = ""
         try:
             json_start = scoring_raw.find("{")
             json_end = scoring_raw.rfind("}") + 1
             if json_start >= 0 and json_end > json_start:
                 result = json.loads(scoring_raw[json_start:json_end])
                 rankings = result.get("rankings", [])
+                prep_sheet = result.get("prep_sheet", {})
+                external_targets = result.get("external_targets", [])
+                attack_advice = result.get("attack_advice", "")
         except (json.JSONDecodeError, KeyError):
             pass
 
+        # ── 1. マッチング結果 ──
+        st.subheader("1. マッチング結果")
         if rankings:
             matched_names = [r["企業名"] for r in rankings]
             matched = jobs_df[jobs_df["企業名"].isin(matched_names)]
@@ -95,67 +141,28 @@ def render() -> None:
             st.session_state["matched_jobs"] = jobs_df
             st.session_state["rankings"] = []
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 2. 商談準備シート
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ── 2. 商談準備シート ──
         st.divider()
         st.subheader("2. 商談準備シート")
-        with st.spinner("準備シートを生成中..."):
-            top_companies = ", ".join([r["企業名"] for r in rankings[:3]]) if rankings else "（マッチ企業なし）"
-            prep_prompt = f"""あなたは設備管理・施工管理業界の人材紹介で年間50名以上の成約実績を持つトップエージェントです。
-以下の候補者との商談に向けた準備シートを作成してください。
+        if prep_sheet:
+            st.markdown(f"## この候補者のタイプ\n{prep_sheet.get('候補者タイプ', '-')}")
+            st.markdown(f"## 商談のゴール\n{prep_sheet.get('商談ゴール', '-')}")
+            st.markdown(f"## 開始5分の掴み\n{prep_sheet.get('掴み', '-')}")
+            st.markdown("## 深掘りすべきポイント")
+            for j, d in enumerate(prep_sheet.get("深掘り", []), 1):
+                st.markdown(f"{j}. 推測: {d.get('推測', '-')} → 質問: 「{d.get('質問', '-')}」")
+            st.markdown(f"## 提案のストーリーライン\n{prep_sheet.get('ストーリーライン', '-')}")
+            st.markdown(f"## 地雷ワード\n{prep_sheet.get('地雷ワード', '-')}")
+        else:
+            st.info("商談準備シートの生成結果がありません。")
 
-【候補者情報】
-{candidate_info}
-
-【提案予定企業TOP3】
-{top_companies}
-
-以下の形式で出力してください:
-
-## この候補者のタイプ
-（転職動機のパターンを一言で。例：「逃げ型（現状の不満解消）」「攻め型（キャリアアップ志向）」「迷い型（漠然とした不安）」）
-
-## 商談のゴール
-（この商談で達成すべき具体的なゴール。例：「TOP3のうち2社に興味を持ってもらい、職務経歴書の準備に着手させる」）
-
-## 開始5分の掴み
-（候補者の心を開く最初のトーク。具体的なセリフで）
-
-## 深掘りすべきポイント
-（候補者情報から読み取れる「まだ言語化されていない本音」を3つ推測し、引き出すための質問）
-1. 推測: ... → 質問: 「...」
-2. 推測: ... → 質問: 「...」
-3. 推測: ... → 質問: 「...」
-
-## 提案のストーリーライン
-（TOP3をどの順番で、どう繋げて提案するかのシナリオ）
-
-## 地雷ワード（言ってはいけないこと）
-（この候補者に対して逆効果になりそうな言葉・アプローチ）"""
-            prep_result = call_claude(prep_prompt)
-        st.markdown(prep_result)
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 3. 外部アタックリスト
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ── 3. 外部アタックリスト ──
         st.divider()
         st.subheader("3. 外部アタックリスト")
-        with st.spinner("DB外のターゲット企業を分析中..."):
-            internal_companies = ", ".join(jobs_df["企業名"].tolist())
-            external_prompt = f"""あなたは設備管理・施工管理業界に精通した人材紹介エージェントです。
-以下の候補者に提案すべき、内部DBに含まれていない企業を5〜8社リストアップしてください。
-
-【候補者情報】
-{candidate_info}
-
-【内部DBの企業（除外）】
-{internal_companies}
-
-| # | 企業名 | ポジション | 候補者にとっての魅力 | 想定年収 |
-|---|--------|-----------|-------------------|----------|
-| 1 | ... | ... | ... | ... |
-
-**攻め方の一言アドバイス:**"""
-            external_result = call_claude(external_prompt)
-        st.markdown(external_result)
+        if external_targets:
+            ext_df = pd.DataFrame(external_targets)
+            st.dataframe(ext_df, use_container_width=True)
+            if attack_advice:
+                st.markdown(f"**攻め方の一言アドバイス:** {attack_advice}")
+        else:
+            st.info("外部アタックリストの生成結果がありません。")
