@@ -5,7 +5,7 @@
 
 import streamlit as st
 from utils import init_session_state
-from pages import tab1_matching, tab2_support, tab3_review, tab4_jobs
+from pages import tab1_matching, tab2_support, tab3_review, tab4_jobs, tab5_candidates
 
 # ──────────────────────────────────────────────
 # ページ設定 & セッション初期化
@@ -24,6 +24,7 @@ page = st.sidebar.radio(
         "2. 面談サポート",
         "3. 録音＆振り返り分析",
         "4. 求人データ管理",
+        "5. 候補者管理",
     ],
 )
 
@@ -38,3 +39,5 @@ elif page == "3. 録音＆振り返り分析":
     tab3_review.render()
 elif page == "4. 求人データ管理":
     tab4_jobs.render()
+elif page == "5. 候補者管理":
+    tab5_candidates.render()
