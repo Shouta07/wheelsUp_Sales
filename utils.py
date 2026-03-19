@@ -1,6 +1,7 @@
 """共通ユーティリティ: API クライアント・データ読み込み・セッション管理"""
 
 import os
+import time
 
 import streamlit as st
 import pandas as pd
@@ -55,22 +56,27 @@ def _configure_gemini() -> None:
 
 
 def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
-    """Gemini API を呼び出す（関数名は後方互換のため維持）。"""
-    try:
-        _configure_gemini()
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=system if system else None,
-        )
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=max_tokens,
-            ),
-        )
-        return response.text
-    except Exception as e:
-        return f"**[エラー]** Gemini API エラー: {e}"
+    """Gemini API を呼び出す（関数名は後方互換のため維持）。429時は自動リトライ。"""
+    _configure_gemini()
+    model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL,
+        system_instruction=system if system else None,
+    )
+    config = genai.types.GenerationConfig(max_output_tokens=max_tokens)
+
+    max_retries = 4
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt, generation_config=config)
+            return response.text
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)  # 2, 4, 8, 16秒
+                st.toast(f"レート制限中… {wait}秒後にリトライします（{attempt + 1}/{max_retries}）")
+                time.sleep(wait)
+                continue
+            return f"**[エラー]** Gemini API エラー: {e}"
 
 
 # ──────────────────────────────────────────────
