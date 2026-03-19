@@ -56,13 +56,13 @@ def get_anthropic_client() -> Anthropic:
     return Anthropic(api_key=api_key)
 
 
-def call_claude(prompt: str, system: str = "") -> str:
+def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """Claude API を呼び出す。エラー時は分かりやすいメッセージを返す。"""
     try:
         client = get_anthropic_client()
         kwargs = dict(
             model=CLAUDE_MODEL,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         if system:

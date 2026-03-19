@@ -1,4 +1,4 @@
-"""タブ5：候補者管理（登録・履歴・比較）"""
+"""タブ5：候補者管理（登録・履歴・比較・AIマッチング）"""
 
 import os
 import json
@@ -6,6 +6,7 @@ from datetime import datetime
 
 import streamlit as st
 import pandas as pd
+from utils import load_jobs, call_claude
 
 CANDIDATES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "candidates.json")
 
@@ -24,13 +25,13 @@ def _save_candidates(candidates: list[dict]) -> None:
 
 def render() -> None:
     st.header("候補者管理")
-    st.caption("候補者の登録・面談履歴の記録・候補者同士の比較ができます。")
+    st.caption("候補者の登録・面談履歴の記録・候補者同士の比較・AIマッチングができます。")
 
     candidates = _load_candidates()
 
     sub_tab = st.radio(
         "機能を選択",
-        ["候補者一覧", "新規登録", "面談履歴を追加", "候補者比較"],
+        ["候補者一覧", "新規登録", "面談履歴を追加", "候補者比較", "AIマッチング"],
         horizontal=True,
     )
 
@@ -42,13 +43,39 @@ def render() -> None:
             st.info("候補者がまだ登録されていません。「新規登録」から追加してください。")
             return
 
-        df = pd.DataFrame(candidates)
+        # フィルター
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            status_filter = st.multiselect(
+                "ステータスで絞り込み",
+                ["対応中", "面談済み", "紹介済み", "内定", "入社", "辞退", "保留"],
+            )
+        with col_f2:
+            search_text = st.text_input("名前・現職で検索", placeholder="キーワードを入力")
+
+        filtered = candidates
+        if status_filter:
+            filtered = [c for c in filtered if c.get("ステータス") in status_filter]
+        if search_text:
+            search_lower = search_text.lower()
+            filtered = [
+                c for c in filtered
+                if search_lower in c.get("名前", "").lower()
+                or search_lower in c.get("現職", "").lower()
+                or search_lower in c.get("資格", "").lower()
+            ]
+
+        if not filtered:
+            st.info("条件に合う候補者がいません。")
+            return
+
+        df = pd.DataFrame(filtered)
         display_cols = ["名前", "年齢", "現職", "希望条件", "ステータス", "登録日"]
         existing_cols = [c for c in display_cols if c in df.columns]
         st.dataframe(df[existing_cols], use_container_width=True)
 
         # 詳細表示
-        names = [c["名前"] for c in candidates]
+        names = [c["名前"] for c in filtered]
         selected = st.selectbox("詳細を見る候補者", names)
         if selected:
             cand = next(c for c in candidates if c["名前"] == selected)
@@ -185,3 +212,64 @@ def render() -> None:
             st.dataframe(compare_df, use_container_width=True)
         elif selected:
             st.warning("2名以上選択してください。")
+
+    # ──────────────────────────────────────────
+    # AIマッチング（候補者 × 求人の一括分析）
+    # ──────────────────────────────────────────
+    elif sub_tab == "AIマッチング":
+        if not candidates:
+            st.info("候補者がまだ登録されていません。")
+            return
+
+        active_candidates = [c for c in candidates if c.get("ステータス") in ["対応中", "面談済み"]]
+        if not active_candidates:
+            st.info("対応中または面談済みの候補者がいません。")
+            return
+
+        st.subheader("候補者 × 求人 AIマッチング")
+        st.caption("対応中・面談済みの候補者に対して、最適な求人をAIが一括分析します。")
+
+        names = [c["名前"] for c in active_candidates]
+        selected_names = st.multiselect("分析する候補者を選択", names, default=names[:3])
+
+        if st.button("一括マッチング分析", type="primary"):
+            if not selected_names:
+                st.warning("候補者を選択してください。")
+                return
+
+            jobs_df = load_jobs()
+            jobs_text = jobs_df.to_csv(index=False)
+
+            for name in selected_names:
+                cand = next(c for c in active_candidates if c["名前"] == name)
+                cand_info = (
+                    f"名前: {cand.get('名前')}\n"
+                    f"年齢: {cand.get('年齢', '-')}\n"
+                    f"現職: {cand.get('現職', '-')}\n"
+                    f"資格: {cand.get('資格', '-')}\n"
+                    f"希望条件: {cand.get('希望条件', '-')}\n"
+                    f"悩み: {cand.get('悩み', '-')}"
+                )
+
+                with st.expander(f"**{name}** のマッチング結果", expanded=True):
+                    with st.spinner(f"{name}のマッチングを分析中..."):
+                        prompt = f"""あなたは設備管理・施工管理業界に精通した人材紹介のプロフェッショナルです。
+以下の候補者に最適な求人をTOP3で選び、それぞれ簡潔に推薦理由を述べてください。
+
+【候補者情報】
+{cand_info}
+
+【求人リスト（CSV）】
+{jobs_text}
+
+以下の形式で回答してください:
+
+| 順位 | 企業名 | 適合度 | 推薦理由（1行） | 提案の切り口 |
+|------|--------|--------|-----------------|-------------|
+| 1 | ... | ○○% | ... | ... |
+| 2 | ... | ○○% | ... | ... |
+| 3 | ... | ○○% | ... | ... |
+
+**この候補者への次のアクション:** （具体的に何をすべきか1行で）"""
+                        result = call_claude(prompt)
+                    st.markdown(result)
