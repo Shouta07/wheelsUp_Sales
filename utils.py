@@ -4,7 +4,7 @@ import os
 
 import streamlit as st
 import pandas as pd
-from anthropic import Anthropic, APIError, APIConnectionError
+import google.generativeai as genai
 
 # ──────────────────────────────────────────────
 # .env 読み込み（python-dotenv があれば使用）
@@ -19,7 +19,7 @@ except ImportError:
 # 定数
 # ──────────────────────────────────────────────
 JOBS_CSV = os.path.join(os.path.dirname(__file__), "jobs.csv")
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 # ──────────────────────────────────────────────
@@ -36,7 +36,7 @@ def save_jobs(df: pd.DataFrame) -> None:
 
 
 # ──────────────────────────────────────────────
-# Anthropic API
+# Gemini API
 # ──────────────────────────────────────────────
 def _get_secret(key: str) -> str:
     """環境変数 → Streamlit secrets の順に探す。"""
@@ -46,48 +46,31 @@ def _get_secret(key: str) -> str:
     return val
 
 
-def get_anthropic_client() -> Anthropic:
-    api_key = _get_secret("ANTHROPIC_API_KEY")
+def _configure_gemini() -> None:
+    api_key = _get_secret("GEMINI_API_KEY")
     if not api_key:
-        st.error("APIキー `ANTHROPIC_API_KEY` が設定されていません。環境変数・`.env`・Streamlit Secrets のいずれかで設定してください。")
+        st.error("APIキー `GEMINI_API_KEY` が設定されていません。環境変数・`.env`・Streamlit Secrets のいずれかで設定してください。")
         st.stop()
-    return Anthropic(api_key=api_key)
+    genai.configure(api_key=api_key)
 
 
 def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
-    """Claude API を呼び出す。長いプロンプトは自動的にPrompt Cachingを活用。"""
+    """Gemini API を呼び出す（関数名は後方互換のため維持）。"""
     try:
-        client = get_anthropic_client()
-
-        # 長いプロンプト（求人CSV等を含む場合）は Prompt Caching を活用
-        use_cache = len(prompt) > 2000
-        if use_cache:
-            messages = [{"role": "user", "content": [
-                {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}},
-            ]}]
-        else:
-            messages = [{"role": "user", "content": prompt}]
-
-        kwargs = dict(
-            model=CLAUDE_MODEL,
-            max_tokens=max_tokens,
-            messages=messages,
+        _configure_gemini()
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            system_instruction=system if system else None,
         )
-        if system:
-            if use_cache:
-                kwargs["system"] = [
-                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
-                ]
-            else:
-                kwargs["system"] = system
-        response = client.messages.create(**kwargs)
-        return response.content[0].text
-    except APIConnectionError:
-        return "**[エラー]** Anthropic API に接続できません。ネットワーク接続を確認してください。"
-    except APIError as e:
-        return f"**[エラー]** Anthropic API エラー（{e.status_code}）: {e.message}"
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+            ),
+        )
+        return response.text
     except Exception as e:
-        return f"**[エラー]** 予期しないエラーが発生しました: {e}"
+        return f"**[エラー]** Gemini API エラー: {e}"
 
 
 # ──────────────────────────────────────────────
