@@ -40,10 +40,18 @@ def save_jobs(df: pd.DataFrame) -> None:
 # ──────────────────────────────────────────────
 # Anthropic API
 # ──────────────────────────────────────────────
+def _get_secret(key: str) -> str:
+    """環境変数 → Streamlit secrets の順に探す。"""
+    val = os.environ.get(key, "")
+    if not val:
+        val = st.secrets.get(key, "")
+    return val
+
+
 def get_anthropic_client() -> Anthropic:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _get_secret("ANTHROPIC_API_KEY")
     if not api_key:
-        st.error("環境変数 `ANTHROPIC_API_KEY` が設定されていません。`.env` ファイルまたは環境変数で設定してください。")
+        st.error("APIキー `ANTHROPIC_API_KEY` が設定されていません。環境変数・`.env`・Streamlit Secrets のいずれかで設定してください。")
         st.stop()
     return Anthropic(api_key=api_key)
 
