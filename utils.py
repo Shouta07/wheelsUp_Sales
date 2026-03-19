@@ -1,8 +1,6 @@
 """共通ユーティリティ: API クライアント・データ読み込み・セッション管理"""
 
 import os
-import json
-import re
 
 import streamlit as st
 import pandas as pd
@@ -98,15 +96,3 @@ def get_candidate_info() -> str:
 
 def set_candidate_info(text: str) -> None:
     st.session_state["candidate_info"] = text
-
-
-# ──────────────────────────────────────────────
-# キーワード解析ヘルパー
-# ──────────────────────────────────────────────
-def extract_keywords(raw_text: str) -> list[str]:
-    """Claude の返答からキーワードリストを抽出する。"""
-    try:
-        data = json.loads(raw_text)
-        return data.get("keywords", [])
-    except json.JSONDecodeError:
-        return re.findall(r'"([^"]+)"', raw_text)
