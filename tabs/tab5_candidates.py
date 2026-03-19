@@ -2,7 +2,7 @@
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -102,6 +102,8 @@ def render() -> None:
                         st.markdown(f"**メモ:** {h.get('メモ', '-')}")
                         st.markdown(f"**提案企業:** {h.get('提案企業', '-')}")
                         st.markdown(f"**ネクストアクション:** {h.get('ネクストアクション', '-')}")
+                        if h.get("期限日"):
+                            st.markdown(f"**期限日:** {h['期限日']}")
 
             # ステータス更新
             new_status = st.selectbox(
@@ -168,6 +170,11 @@ def render() -> None:
             memo = st.text_area("面談メモ", placeholder="面談の要点を記録")
             proposed = st.text_input("提案した企業", placeholder="例: 三井不動産、NTTファシリティーズ")
             next_action = st.text_input("ネクストアクション", placeholder="例: 来週木曜に求人3社メール送付")
+            deadline = st.date_input(
+                "ネクストアクションの期限日",
+                value=datetime.now() + timedelta(days=7),
+                help="ダッシュボードのフォロー漏れアラートに反映されます",
+            )
 
             submitted = st.form_submit_button("履歴を追加", type="primary")
             if submitted:
@@ -179,6 +186,7 @@ def render() -> None:
                     "メモ": memo,
                     "提案企業": proposed,
                     "ネクストアクション": next_action,
+                    "期限日": deadline.strftime("%Y-%m-%d"),
                 })
                 _save_candidates(candidates)
                 st.success(f"「{selected}」の面談履歴を追加しました。")

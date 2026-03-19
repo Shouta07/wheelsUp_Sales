@@ -133,3 +133,36 @@ def render() -> None:
         # コピー用
         with st.expander("フィードバック全文（コピー用）"):
             st.code(feedback_result, language=None)
+
+        # ── 次回面談の質問リスト ──
+        st.divider()
+        st.subheader("次回面談で使える質問リスト")
+        with st.spinner("質問リストを生成中..."):
+            question_prompt = f"""あなたは人材紹介業界（設備管理・施工管理分野）の面談トレーニング専門家です。
+以下の面談記録を踏まえて、次回の面談で候補者に聞くべき質問リストを作成してください。
+
+【前回の面談記録】
+{transcript_text}
+
+以下の形式で出力してください:
+
+## 必ず確認すべき質問（前回の積み残し）
+（前回の面談で深掘りできなかった点、曖昧だった点を掘り下げる質問）
+1. 「〜〜」 → 狙い: 〇〇を明確にする
+2. ...
+
+## 候補者の本音を引き出す質問
+（転職の本当の動機や、言語化できていない希望を引き出す質問）
+1. 「〜〜」 → 狙い: 〇〇
+2. ...
+
+## 決断を後押しする質問
+（候補者が前に進めるように、具体的なイメージを持たせる質問）
+1. 「〜〜」 → 狙い: 〇〇
+2. ...
+
+各質問は「」で囲み、実際にそのまま話せる自然な日本語で書いてください。"""
+            question_result = call_claude(question_prompt)
+        st.markdown(question_result)
+        with st.expander("質問リスト（コピー用）"):
+            st.code(question_result, language=None)
