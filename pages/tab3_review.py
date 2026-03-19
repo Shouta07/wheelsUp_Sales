@@ -1,8 +1,7 @@
 """タブ3：録音＆振り返り分析（Whisper文字起こし＋Claudeフィードバック）"""
 
-import os
 import streamlit as st
-from utils import call_claude
+from utils import call_claude, _get_secret
 
 
 def render() -> None:
@@ -27,9 +26,9 @@ def render() -> None:
         # ── Whisper API で文字起こし ──
         st.subheader("文字起こし結果")
         with st.spinner("音声をテキストに変換中（Whisper API）..."):
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
+            openai_key = _get_secret("OPENAI_API_KEY")
             if not openai_key:
-                st.error("環境変数 `OPENAI_API_KEY` が設定されていません。`.env` ファイルまたは環境変数で設定してください。")
+                st.error("APIキー `OPENAI_API_KEY` が設定されていません。環境変数・`.env`・Streamlit Secrets のいずれかで設定してください。")
                 st.stop()
 
             try:
