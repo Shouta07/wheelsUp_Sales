@@ -55,16 +55,31 @@ def get_anthropic_client() -> Anthropic:
 
 
 def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
-    """Claude API を呼び出す。エラー時は分かりやすいメッセージを返す。"""
+    """Claude API を呼び出す。長いプロンプトは自動的にPrompt Cachingを活用。"""
     try:
         client = get_anthropic_client()
+
+        # 長いプロンプト（求人CSV等を含む場合）は Prompt Caching を活用
+        use_cache = len(prompt) > 2000
+        if use_cache:
+            messages = [{"role": "user", "content": [
+                {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}},
+            ]}]
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
         kwargs = dict(
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         if system:
-            kwargs["system"] = system
+            if use_cache:
+                kwargs["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+                ]
+            else:
+                kwargs["system"] = system
         response = client.messages.create(**kwargs)
         return response.content[0].text
     except APIConnectionError:
