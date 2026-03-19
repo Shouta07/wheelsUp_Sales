@@ -5,7 +5,7 @@
 
 import streamlit as st
 from utils import init_session_state
-from pages import tab1_matching, tab2_support, tab3_review, tab4_jobs, tab5_candidates
+from tabs import tab1_matching, tab2_support, tab3_review, tab4_jobs, tab5_candidates
 
 # ──────────────────────────────────────────────
 # ページ設定 & セッション初期化
