@@ -2,7 +2,7 @@
 
 import os
 import streamlit as st
-from utils import call_claude, get_candidate_info, _get_secret, validate_text_input
+from utils import call_claude, get_candidate_info, _get_secret, validate_text_input, add_meeting_log_entry, load_meeting_log
 
 
 def render() -> None:
@@ -250,3 +250,50 @@ def render() -> None:
                 st.markdown(rec_result)
                 with st.expander("コピー用"):
                     st.code(rec_result, language=None)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 商談結果の記録（学習データ蓄積）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    st.divider()
+    st.subheader("商談結果を記録する")
+    st.caption("記録するほどAIの提案精度が上がります。成約率・候補者傾向が次回のマッチングに反映されます。")
+
+    with st.form("meeting_log_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            log_candidate = st.text_input("候補者名", placeholder="例：田中太郎")
+        with col2:
+            log_companies = st.text_input("提案した企業（カンマ区切り）", placeholder="例：NTTファシリティーズ, 三井不動産")
+
+        log_result = st.selectbox("結果", ["面談実施", "応募意思あり", "成約", "辞退", "見送り"])
+
+        log_reaction = st.text_area(
+            "候補者の反応メモ",
+            height=100,
+            placeholder="例：NTTファシリティーズの安定性に強く惹かれた。年収面は納得。三井不動産は「自分には敷居が高い」と消極的。",
+        )
+        log_learning = st.text_area(
+            "この商談からの学び",
+            height=80,
+            placeholder="例：サブコン出身者には「発注者側の働き方」を具体的に伝えると響く。年収より残業時間の改善を重視する人が多い。",
+        )
+
+        submitted = st.form_submit_button("記録を保存", type="primary", use_container_width=True)
+        if submitted:
+            if not log_candidate.strip() or not log_companies.strip():
+                st.warning("候補者名と提案企業は必須です。")
+            else:
+                add_meeting_log_entry(
+                    candidate_name=log_candidate.strip(),
+                    proposed_companies=log_companies.strip(),
+                    result=log_result,
+                    reaction_memo=log_reaction.strip(),
+                    learning=log_learning.strip(),
+                )
+                st.success("商談結果を記録しました。求人データの紹介数・成約数も更新されました。")
+
+    # 直近の商談ログ表示
+    log_df = load_meeting_log()
+    if not log_df.empty:
+        with st.expander(f"商談ログ一覧（{len(log_df)}件）"):
+            st.dataframe(log_df.sort_index(ascending=False), use_container_width=True)

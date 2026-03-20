@@ -3,7 +3,7 @@
 import json
 import streamlit as st
 import pandas as pd
-from utils import load_jobs, call_claude, get_candidate_info, set_candidate_info, validate_text_input
+from utils import load_jobs, call_claude, get_candidate_info, set_candidate_info, validate_text_input, build_performance_context
 
 
 def render() -> None:
@@ -44,9 +44,11 @@ def render() -> None:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         with st.spinner("マッチング・準備シート・外部リストを一括生成中..."):
             internal_companies = ", ".join(jobs_df["企業名"].tolist())
+            perf_context = build_performance_context(jobs_df)
+            perf_block = f"\n\n{perf_context}\n" if perf_context else ""
             combined_prompt = f"""あなたは設備管理・施工管理業界に精通した人材紹介のプロフェッショナルです（年間50名以上の成約実績）。
 以下の3つのタスクをすべて実行してください。
-
+{perf_block}
 【候補者情報】
 {candidate_info}
 
@@ -57,6 +59,7 @@ def render() -> None:
 タスク1: 求人マッチング
 ━━━━━━━━━━━━━━━━━━━━
 候補者と求人リストを照合し、適合度60以上のものをランキング。
+過去の紹介実績データがある場合は、成約率の高い企業を優先的に評価してください。
 
 ━━━━━━━━━━━━━━━━━━━━
 タスク2: 商談準備シート
