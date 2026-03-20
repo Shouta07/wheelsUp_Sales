@@ -1,7 +1,9 @@
 """共通ユーティリティ: API クライアント・データ読み込み・セッション管理"""
 
+import hashlib
 import os
 import time
+from datetime import date
 
 import streamlit as st
 import pandas as pd
@@ -20,7 +22,8 @@ except ImportError:
 # 定数
 # ──────────────────────────────────────────────
 JOBS_CSV = os.path.join(os.path.dirname(__file__), "jobs.csv")
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+DAILY_FREE_LIMIT = 1000  # Flash-Lite 無料枠
 
 
 # ──────────────────────────────────────────────
@@ -55,8 +58,41 @@ def _configure_gemini() -> None:
     genai.configure(api_key=api_key)
 
 
-def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
-    """Gemini API を呼び出す（関数名は後方互換のため維持）。429時は自動リトライ。"""
+def _get_usage() -> dict:
+    """本日のAPI使用回数を取得。日付が変わったらリセット。"""
+    today = date.today().isoformat()
+    if "api_usage_date" not in st.session_state or st.session_state["api_usage_date"] != today:
+        st.session_state["api_usage_date"] = today
+        st.session_state["api_usage_count"] = 0
+    return {"date": today, "count": st.session_state["api_usage_count"]}
+
+
+def _increment_usage() -> None:
+    _get_usage()  # 日付リセットを確認
+    st.session_state["api_usage_count"] = st.session_state.get("api_usage_count", 0) + 1
+
+
+def get_usage_display() -> str:
+    """サイドバー表示用の使用状況文字列。"""
+    usage = _get_usage()
+    remaining = DAILY_FREE_LIMIT - usage["count"]
+    return f"{usage['count']} / {DAILY_FREE_LIMIT} 回（残り {remaining} 回）"
+
+
+def _cache_key(prompt: str, system: str) -> str:
+    """プロンプトからキャッシュキーを生成。"""
+    return hashlib.md5((prompt + system).encode()).hexdigest()
+
+
+def call_claude(prompt: str, system: str = "", max_tokens: int = 4096, use_cache: bool = True) -> str:
+    """Gemini API を呼び出す（関数名は後方互換のため維持）。キャッシュ・リトライ付き。"""
+    # キャッシュ確認（同一プロンプトの再生成を防止）
+    cache_k = _cache_key(prompt, system)
+    if use_cache:
+        cached = st.session_state.get(f"_cache_{cache_k}")
+        if cached:
+            return cached
+
     _configure_gemini()
     model = genai.GenerativeModel(
         model_name=GEMINI_MODEL,
@@ -68,7 +104,11 @@ def call_claude(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     for attempt in range(max_retries):
         try:
             response = model.generate_content(prompt, generation_config=config)
-            return response.text
+            _increment_usage()
+            result = response.text
+            # キャッシュに保存
+            st.session_state[f"_cache_{cache_k}"] = result
+            return result
         except Exception as e:
             err_str = str(e)
             if "429" in err_str and attempt < max_retries - 1:

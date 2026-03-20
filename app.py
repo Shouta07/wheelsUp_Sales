@@ -4,7 +4,7 @@
 """
 
 import streamlit as st
-from utils import init_session_state
+from utils import init_session_state, get_usage_display
 from tabs import tab_before, tab_during, tab_after, tab4_jobs
 
 # ──────────────────────────────────────────────
@@ -18,6 +18,7 @@ init_session_state()
 # ──────────────────────────────────────────────
 st.sidebar.title("商談サポート")
 st.sidebar.caption("候補者に最高の体験を。")
+st.sidebar.metric("本日のAPI使用量", get_usage_display())
 
 page = st.sidebar.radio(
     "フェーズ",
