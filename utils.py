@@ -31,7 +31,6 @@ except ImportError:
 # ──────────────────────────────────────────────
 JOBS_CSV = os.path.join(os.path.dirname(__file__), "jobs.csv")
 JOBS_TEMPLATE = os.path.join(os.path.dirname(__file__), "jobs_template.csv")
-MEETING_LOG_CSV = os.path.join(os.path.dirname(__file__), "meeting_log.csv")
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 DAILY_FREE_LIMIT = 1000  # Flash-Lite 無料枠
 
@@ -40,10 +39,7 @@ MAX_INPUT_LENGTH = 5000       # テキスト入力の最大文字数
 MAX_CSV_ROWS = 500            # CSVアップロードの最大行数
 MAX_CSV_FILE_SIZE = 2 * 1024 * 1024  # 2MB
 REQUIRED_JOB_COLS = {"企業名", "職種", "年収", "必須要件", "休日", "アピールポイント"}
-OPTIONAL_JOB_COLS = {"紹介数", "成約数", "候補者傾向メモ"}  # 実績カラム（なくても動作する）
-
-# 商談ログカラム
-MEETING_LOG_COLS = ["日付", "候補者名", "提案企業", "結果", "候補者の反応メモ", "学び"]
+OPTIONAL_JOB_COLS = {"紹介数", "成約数", "候補者傾向メモ"}  # 実績カラム（Pipedriveから転記。なくても動作する）
 
 
 # ──────────────────────────────────────────────
@@ -184,58 +180,11 @@ def set_candidate_info(text: str) -> None:
 
 
 # ──────────────────────────────────────────────
-# 商談ログ（学習データ蓄積）
+# 実績データ → プロンプト注入（Pipedriveから転記された実績を活用）
 # ──────────────────────────────────────────────
-def load_meeting_log() -> pd.DataFrame:
-    """商談ログを読み込む。存在しない場合は空のDataFrameを返す。"""
-    if os.path.exists(MEETING_LOG_CSV):
-        try:
-            return pd.read_csv(MEETING_LOG_CSV, encoding="utf-8")
-        except Exception as e:
-            logger.error(f"meeting_log.csv の読み込みに失敗: {e}")
-    return pd.DataFrame(columns=MEETING_LOG_COLS)
-
-
-def save_meeting_log(df: pd.DataFrame) -> None:
-    """商談ログを保存する。"""
-    try:
-        df.to_csv(MEETING_LOG_CSV, index=False, encoding="utf-8")
-        logger.info(f"meeting_log.csv を保存しました（{len(df)}件）")
-    except Exception as e:
-        logger.error(f"meeting_log.csv の保存に失敗: {e}")
-        raise
-
-
-def add_meeting_log_entry(candidate_name: str, proposed_companies: str,
-                          result: str, reaction_memo: str, learning: str) -> None:
-    """商談ログに1件追加し、結果に応じて求人データの実績を更新する。"""
-    log_df = load_meeting_log()
-    new_row = pd.DataFrame([{
-        "日付": date.today().isoformat(),
-        "候補者名": candidate_name,
-        "提案企業": proposed_companies,
-        "結果": result,
-        "候補者の反応メモ": reaction_memo,
-        "学び": learning,
-    }])
-    log_df = pd.concat([log_df, new_row], ignore_index=True)
-    save_meeting_log(log_df)
-
-    # 求人データの紹介数・成約数を更新
-    jobs_df = load_jobs()
-    companies = [c.strip() for c in proposed_companies.replace("、", ",").split(",") if c.strip()]
-    for company in companies:
-        mask = jobs_df["企業名"] == company
-        if mask.any():
-            jobs_df.loc[mask, "紹介数"] = jobs_df.loc[mask, "紹介数"].fillna(0).astype(int) + 1
-            if result == "成約":
-                jobs_df.loc[mask, "成約数"] = jobs_df.loc[mask, "成約数"].fillna(0).astype(int) + 1
-    save_jobs(jobs_df)
-
-
 def build_performance_context(jobs_df: pd.DataFrame) -> str:
-    """求人データの実績をプロンプト注入用のテキストに変換する。"""
-    # 実績カラムがない場合は空文字を返す
+    """求人データの実績カラムをプロンプト注入用のテキストに変換する。
+    紹介数・成約数・候補者傾向メモは求人DB管理タブで手動更新（Pipedriveから転記）。"""
     if "紹介数" not in jobs_df.columns:
         return ""
 
@@ -253,16 +202,6 @@ def build_performance_context(jobs_df: pd.DataFrame) -> str:
         if pd.notna(memo) and str(memo).strip():
             line += f" ※{memo}"
         lines.append(line)
-
-    # 商談ログから学びのサマリーも追加
-    log_df = load_meeting_log()
-    if not log_df.empty:
-        recent = log_df.tail(10)  # 直近10件
-        learnings = [l for l in recent["学び"].dropna() if str(l).strip()]
-        if learnings:
-            lines.append("\n【直近の商談からの学び】")
-            for l in learnings[-5:]:  # 直近5件の学び
-                lines.append(f"- {l}")
 
     return "\n".join(lines)
 
