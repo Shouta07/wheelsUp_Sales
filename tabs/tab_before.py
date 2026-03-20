@@ -3,7 +3,7 @@
 import json
 import streamlit as st
 import pandas as pd
-from utils import load_jobs, call_claude, get_candidate_info, set_candidate_info
+from utils import load_jobs, call_claude, get_candidate_info, set_candidate_info, validate_text_input
 
 
 def render() -> None:
@@ -27,12 +27,16 @@ def render() -> None:
     )
 
     if st.button("商談準備を一括生成", type="primary", use_container_width=True):
-        if not candidate_info.strip():
-            st.warning("候補者情報を入力してください。")
+        valid, err_msg = validate_text_input(candidate_info, "候補者情報")
+        if not valid:
+            st.warning(err_msg)
             return
 
         set_candidate_info(candidate_info)
         jobs_df = load_jobs()
+        if jobs_df.empty:
+            st.warning("求人データがありません。「求人DB管理」タブからデータを追加してください。")
+            return
         jobs_text = jobs_df.to_csv(index=False)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,8 +119,8 @@ def render() -> None:
                 prep_sheet = result.get("prep_sheet", {})
                 external_targets = result.get("external_targets", [])
                 attack_advice = result.get("attack_advice", "")
-        except (json.JSONDecodeError, KeyError):
-            pass
+        except (json.JSONDecodeError, KeyError) as e:
+            st.warning(f"AIの応答をJSON形式で解析できませんでした。生のテキストを表示します。（{type(e).__name__}）")
 
         # ── 1. マッチング結果 ──
         st.subheader("1. マッチング結果")

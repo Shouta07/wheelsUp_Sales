@@ -1,7 +1,7 @@
 """商談中 — 実戦（リアルタイム参照ツール）"""
 
 import streamlit as st
-from utils import load_jobs, call_claude, get_candidate_info
+from utils import load_jobs, call_claude, get_candidate_info, validate_text_input
 
 
 def render() -> None:
@@ -143,8 +143,9 @@ def render() -> None:
             context_company = "指定なし"
 
         if st.button("切り返しを生成", type="primary"):
-            if not objection.strip():
-                st.warning("候補者の発言を入力してください。")
+            valid, err_msg = validate_text_input(objection, "候補者の発言")
+            if not valid:
+                st.warning(err_msg)
                 return
 
             company_context = ""
@@ -201,8 +202,9 @@ def render() -> None:
         )
 
         if st.button("質問を提案", type="primary"):
-            if not situation.strip():
-                st.warning("状況を入力してください。")
+            valid, err_msg = validate_text_input(situation, "状況")
+            if not valid:
+                st.warning(err_msg)
                 return
 
             candidate = bg if bg else "（候補者情報なし）"

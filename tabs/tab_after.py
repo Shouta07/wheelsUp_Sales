@@ -2,7 +2,7 @@
 
 import os
 import streamlit as st
-from utils import call_claude, get_candidate_info, _get_secret
+from utils import call_claude, get_candidate_info, _get_secret, validate_text_input
 
 
 def render() -> None:
@@ -90,8 +90,9 @@ def render() -> None:
     )
 
     if st.button("一括生成", type="primary", use_container_width=True):
-        if not transcript_text.strip():
-            st.warning("面談内容を入力してください。")
+        valid, err_msg = validate_text_input(transcript_text, "面談内容")
+        if not valid:
+            st.warning(err_msg)
             return
 
         if not gen_items:
