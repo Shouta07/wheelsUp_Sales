@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     pipedrive_api_token: str = ""
     pipedrive_webhook_secret: str = ""
 
+    # CORS
+    cors_origins: str = "http://localhost:3000"
+
     # Database
     database_url: str = "postgresql+asyncpg://user:password@localhost:5432/wheelup"
     redis_url: str = "redis://localhost:6379"

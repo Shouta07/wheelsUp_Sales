@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { generateBriefing, generateSummary, saveSummaryToPipedrive, type SummaryRequest } from "../api/client";
 
 export function useBriefing(dealId: number | null) {

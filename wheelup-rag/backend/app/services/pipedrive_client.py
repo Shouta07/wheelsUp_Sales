@@ -32,7 +32,7 @@ async def _request(method: str, path: str, **kwargs) -> dict:
             resp.raise_for_status()
             return resp.json()
 
-    raise httpx.HTTPStatusError("レート制限リトライ超過", request=None, response=resp)
+    resp.raise_for_status()  # レート制限リトライ超過 — 最後のレスポンスで例外を発生
 
 
 async def get_deal(deal_id: int) -> dict:
