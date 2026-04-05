@@ -133,7 +133,7 @@ export default function MeetingAssist() {
             {selected.inferred_needs && Object.keys(selected.inferred_needs).length > 0 && (
               <div className="rounded-xl bg-blue-50 border border-blue-200 p-4">
                 <h3 className="text-sm font-semibold text-blue-800 mb-2">AI推定ニーズ（面談前分析）</h3>
-                {(selected.inferred_needs as Record<string, unknown>).likely_pain_points && (
+                {!!(selected.inferred_needs as Record<string, unknown>).likely_pain_points && (
                   <div className="mb-2">
                     <span className="text-xs text-blue-600 font-medium">推定課題: </span>
                     <span className="text-sm text-blue-900">
@@ -141,13 +141,13 @@ export default function MeetingAssist() {
                     </span>
                   </div>
                 )}
-                {(selected.inferred_needs as Record<string, unknown>).motivation && (
+                {!!(selected.inferred_needs as Record<string, unknown>).motivation && (
                   <div className="mb-2">
                     <span className="text-xs text-blue-600 font-medium">転職動機: </span>
                     <span className="text-sm text-blue-900">{(selected.inferred_needs as Record<string, unknown>).motivation as string}</span>
                   </div>
                 )}
-                {(selected.inferred_needs as Record<string, unknown>).recommended_approach && (
+                {!!(selected.inferred_needs as Record<string, unknown>).recommended_approach && (
                   <div>
                     <span className="text-xs text-blue-600 font-medium">推奨アプローチ: </span>
                     <span className="text-sm text-blue-900">{(selected.inferred_needs as Record<string, unknown>).recommended_approach as string}</span>
