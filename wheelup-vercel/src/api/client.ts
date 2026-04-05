@@ -345,38 +345,99 @@ export async function updateFollowUp(
   });
 }
 
-/* ---------- Phase Progress ---------- */
+/* ---------- Recommendations (候補者×企業ペア) ---------- */
 
-export interface PhaseProgress {
+export interface RecommendationItem {
   id: string;
-  entity_type: "candidate" | "company";
-  entity_id: string;
-  phase: number;
-  checked_items: string[];
+  candidate_id: string;
+  company_id: string;
+  deal_id: string | null;
+  status: string;
+  current_phase: number;
+  phase1_candidate: string[];
+  phase1_company: string[];
+  phase2_candidate: string[];
+  phase2_company: string[];
+  phase3_candidate: string[];
+  phase3_company: string[];
+  phase4_candidate: string[];
+  phase4_company: string[];
   notes: string | null;
+  proposed_at: string;
   updated_at: string;
+  candidates: {
+    id: string;
+    name: string;
+    current_position: string | null;
+    current_salary: number | null;
+    qualifications: string[];
+    desired_location: string | null;
+    desired_salary?: number | null;
+    desired_position?: string | null;
+    status: string;
+    pipedrive_deal_id?: number | null;
+    inferred_needs?: Record<string, unknown>;
+  };
+  companies: {
+    id: string;
+    name: string;
+    industry: string | null;
+    address: string | null;
+    keywords: string[];
+    pitch_points?: Record<string, string>;
+    open_deals_count?: number;
+  };
+  deal?: DealItem | null;
 }
 
-export async function fetchPhaseProgress(
-  entityType: "candidate" | "company",
-  entityId: string,
-  phase?: number,
-): Promise<{ progress: PhaseProgress[] }> {
-  const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId });
-  if (phase) params.set("phase", String(phase));
-  return request(`/candidates/phase-progress?${params}`);
+export async function fetchRecommendations(
+  candidateId?: string,
+  companyId?: string,
+  status?: string,
+): Promise<{ recommendations: RecommendationItem[]; total: number }> {
+  const params = new URLSearchParams();
+  if (candidateId) params.set("candidate_id", candidateId);
+  if (companyId) params.set("company_id", companyId);
+  if (status) params.set("status", status);
+  const qs = params.toString();
+  return request(`/candidates/recommendations${qs ? `?${qs}` : ""}`);
 }
 
-export async function savePhaseProgress(
-  entityType: "candidate" | "company",
-  entityId: string,
-  phase: number,
-  checkedItems: string[],
+export async function createRecommendation(
+  candidateId: string,
+  companyId: string,
+  dealId?: string,
   notes?: string,
-): Promise<PhaseProgress> {
-  return request("/candidates/phase-progress", {
+): Promise<RecommendationItem> {
+  return request("/candidates/recommendations", {
+    method: "POST",
+    body: JSON.stringify({ candidate_id: candidateId, company_id: companyId, deal_id: dealId, notes }),
+  });
+}
+
+export async function getRecommendation(id: string): Promise<RecommendationItem> {
+  return request(`/candidates/recommendations/${id}`);
+}
+
+export async function updateRecommendation(
+  id: string,
+  data: { status?: string; current_phase?: number; deal_id?: string; notes?: string },
+): Promise<RecommendationItem> {
+  return request(`/candidates/recommendations/${id}`, {
     method: "PUT",
-    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, phase, checked_items: checkedItems, notes }),
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateRecommendationChecklist(
+  id: string,
+  phase: number,
+  side: "candidate" | "company",
+  checkedItems: string[],
+): Promise<RecommendationItem> {
+  return request(`/candidates/recommendations/${id}/checklist`, {
+    method: "PUT",
+    body: JSON.stringify({ phase, side, checked_items: checkedItems }),
   });
 }
 

@@ -6,6 +6,7 @@ const phases = [
   { to: "/meeting", label: "面談・商談中", icon: "②" },
   { to: "/after", label: "直後対応", icon: "③" },
   { to: "/closing", label: "推薦〜クロージング", icon: "④" },
+  { to: "/recommendations", label: "推薦管理", icon: "🔗" },
   { to: "/companies", label: "企業", icon: "🏢" },
   { to: "/jobs", label: "求人", icon: "💼" },
   { to: "/industry", label: "業界知識", icon: "🗺" },

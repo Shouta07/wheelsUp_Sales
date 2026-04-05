@@ -384,23 +384,38 @@ create policy "Authenticated users full access" on meeting_transcripts
   for all using (auth.role() = 'authenticated');
 
 -- =====================================================
--- フェーズ進捗（候補者/企業ごとのチェックリスト状態）
+-- 推薦テーブル（候補者×企業ペア + フェーズ進捗）
 -- =====================================================
-create table if not exists phase_progress (
+create table if not exists recommendations (
   id uuid primary key default gen_random_uuid(),
-  entity_type text not null check (entity_type in ('candidate', 'company')),
-  entity_id uuid not null,
-  phase integer not null check (phase between 1 and 4),
-  checked_items text[] default '{}',
+  candidate_id uuid not null references candidates(id) on delete cascade,
+  company_id uuid not null references companies(id) on delete cascade,
+  deal_id uuid references deals(id) on delete set null,
+  status text not null default 'proposed'
+    check (status in ('proposed','screening','interviewing','offered','placed','rejected','withdrawn')),
+  current_phase integer not null default 1 check (current_phase between 1 and 4),
+  phase1_candidate text[] default '{}',
+  phase1_company text[] default '{}',
+  phase2_candidate text[] default '{}',
+  phase2_company text[] default '{}',
+  phase3_candidate text[] default '{}',
+  phase3_company text[] default '{}',
+  phase4_candidate text[] default '{}',
+  phase4_company text[] default '{}',
   notes text,
+  proposed_at timestamptz default now(),
+  created_at timestamptz default now(),
   updated_at timestamptz default now(),
-  unique (entity_type, entity_id, phase)
+  unique (candidate_id, company_id)
 );
 
-create index idx_phase_progress_entity on phase_progress(entity_type, entity_id);
+create index idx_recommendations_candidate on recommendations(candidate_id);
+create index idx_recommendations_company on recommendations(company_id);
+create index idx_recommendations_deal on recommendations(deal_id);
+create index idx_recommendations_status on recommendations(status);
 
-alter table phase_progress enable row level security;
-create policy "Authenticated users full access" on phase_progress
+alter table recommendations enable row level security;
+create policy "Authenticated users full access" on recommendations
   for all using (auth.role() = 'authenticated');
 
 -- =====================================================
@@ -426,5 +441,5 @@ create trigger deals_updated_at before update on deals
   for each row execute function update_updated_at();
 create trigger meeting_transcripts_updated_at before update on meeting_transcripts
   for each row execute function update_updated_at();
-create trigger phase_progress_updated_at before update on phase_progress
+create trigger recommendations_updated_at before update on recommendations
   for each row execute function update_updated_at();

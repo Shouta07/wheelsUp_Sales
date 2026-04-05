@@ -7,6 +7,7 @@ import Phase1Prep from "./pages/Phase1Prep";
 import Phase2Meeting from "./pages/Phase2Meeting";
 import Phase3After from "./pages/Phase3After";
 import Phase4Closing from "./pages/Phase4Closing";
+import Recommendations from "./pages/Recommendations";
 import Companies from "./pages/Companies";
 import JobPostings from "./pages/JobPostings";
 import IndustryMap from "./pages/IndustryMap";
@@ -139,6 +140,7 @@ export default function App() {
         <Route path="/meeting" element={<Phase2Meeting />} />
         <Route path="/after" element={<Phase3After />} />
         <Route path="/closing" element={<Phase4Closing />} />
+        <Route path="/recommendations" element={<Recommendations />} />
         <Route path="/companies" element={<Companies />} />
         <Route path="/jobs" element={<JobPostings />} />
         <Route path="/industry" element={<IndustryMap />} />

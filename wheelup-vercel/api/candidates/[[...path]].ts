@@ -5,14 +5,21 @@ import OpenAI from "openai";
 /**
  * 統合 Candidates API（Vercel Hobby プラン対応: 1 Function）
  *
- * GET    /api/candidates              → 一覧
- * POST   /api/candidates              → 新規作成
- * GET    /api/candidates/:id          → 詳細
- * PUT    /api/candidates/:id          → 更新
- * POST   /api/candidates/:id/briefing → AI ブリーフィング
- * POST   /api/candidates/:id/meeting-notes → 面談メモ保存
- * POST   /api/candidates/:id/action   → アクション追加
- * PUT    /api/candidates/:id/follow-up → フォロー設定
+ * GET    /api/candidates                    → 一覧
+ * POST   /api/candidates                    → 新規作成
+ * GET    /api/candidates/:id                → 詳細
+ * PUT    /api/candidates/:id                → 更新
+ * POST   /api/candidates/:id/briefing       → AI ブリーフィング
+ * POST   /api/candidates/:id/meeting-notes  → 面談メモ保存
+ * POST   /api/candidates/:id/action         → アクション追加
+ * PUT    /api/candidates/:id/follow-up      → フォロー設定
+ *
+ * 推薦（候補者×企業ペア）
+ * GET    /api/candidates/recommendations          → 一覧
+ * POST   /api/candidates/recommendations          → 新規作成
+ * GET    /api/candidates/recommendations/:id      → 詳細
+ * PUT    /api/candidates/recommendations/:id      → 更新
+ * PUT    /api/candidates/recommendations/:id/checklist → チェック保存
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const db = getSupabaseAdmin();
@@ -22,11 +29,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? [req.query.path]
       : [];
 
-  // --- /api/candidates/phase-progress ---
-  if (segments[0] === "phase-progress") {
-    if (req.method === "GET") return getPhaseProgress(db, req, res);
-    if (req.method === "PUT") return savePhaseProgress(db, req, res);
-    return res.status(405).json({ error: "Method not allowed" });
+  // --- /api/candidates/recommendations ---
+  if (segments[0] === "recommendations") {
+    const recId = segments[1] || "";
+    const recSub = segments[2] || "";
+    if (!recId) {
+      if (req.method === "GET") return listRecommendations(db, req, res);
+      if (req.method === "POST") return createRecommendation(db, req, res);
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+    if (recSub === "checklist" && req.method === "PUT") return updateChecklist(db, recId, req, res);
+    if (!recSub) {
+      if (req.method === "GET") return getRecommendation(db, recId, res);
+      if (req.method === "PUT") return updateRecommendation(db, recId, req, res);
+    }
+    return res.status(404).json({ error: "Not found" });
   }
 
   // --- /api/candidates ---
@@ -233,24 +250,67 @@ async function addAction(db: ReturnType<typeof getSupabaseAdmin>, id: string, re
   return res.json(data);
 }
 
-async function getPhaseProgress(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
-  const { entity_type, entity_id, phase } = req.query;
-  if (!entity_type || !entity_id) return res.status(400).json({ error: "entity_type and entity_id are required" });
-  let query = db.from("phase_progress").select("*")
-    .eq("entity_type", entity_type as string)
-    .eq("entity_id", entity_id as string);
-  if (phase) query = query.eq("phase", Number(phase));
+async function listRecommendations(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const { candidate_id, company_id, status } = req.query;
+  let query = db.from("recommendations")
+    .select("*, candidates!inner(id, name, current_position, current_salary, qualifications, desired_location, status), companies!inner(id, name, industry, address, keywords)")
+    .order("updated_at", { ascending: false });
+  if (candidate_id) query = query.eq("candidate_id", candidate_id as string);
+  if (company_id) query = query.eq("company_id", company_id as string);
+  if (status) query = query.eq("status", status as string);
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ progress: data || [] });
+  return res.json({ recommendations: data || [], total: (data || []).length });
 }
 
-async function savePhaseProgress(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
-  const { entity_type, entity_id, phase, checked_items, notes } = req.body;
-  if (!entity_type || !entity_id || !phase) return res.status(400).json({ error: "entity_type, entity_id, phase required" });
-  const { data, error } = await db.from("phase_progress")
-    .upsert({ entity_type, entity_id, phase, checked_items: checked_items || [], notes: notes || null }, { onConflict: "entity_type,entity_id,phase" })
-    .select().single();
+async function createRecommendation(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const { candidate_id, company_id, deal_id, notes } = req.body;
+  if (!candidate_id || !company_id) return res.status(400).json({ error: "candidate_id and company_id are required" });
+  const insert: Record<string, unknown> = { candidate_id, company_id };
+  if (deal_id) insert.deal_id = deal_id;
+  if (notes) insert.notes = notes;
+  const { data, error } = await db.from("recommendations").insert(insert).select("*, candidates!inner(id, name, current_position, current_salary, qualifications, desired_location, status), companies!inner(id, name, industry, address, keywords)").single();
+  if (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "この候補者×企業の組み合わせは既に存在します" });
+    return res.status(500).json({ error: error.message });
+  }
+  return res.json(data);
+}
+
+async function getRecommendation(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
+  const { data, error } = await db.from("recommendations")
+    .select("*, candidates!inner(id, name, current_position, current_salary, qualifications, desired_location, desired_salary, desired_position, status, pipedrive_deal_id, inferred_needs), companies!inner(id, name, industry, address, keywords, pitch_points, open_deals_count)")
+    .eq("id", id).single();
+  if (error) return res.status(404).json({ error: "推薦が見つかりません" });
+
+  // If linked to a deal, fetch deal info
+  let deal = null;
+  if (data.deal_id) {
+    const { data: d } = await db.from("deals").select("*").eq("id", data.deal_id).single();
+    deal = d;
+  }
+
+  return res.json({ ...data, deal });
+}
+
+async function updateRecommendation(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const allowed = ["status", "current_phase", "deal_id", "notes"];
+  const updates: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) updates[key] = req.body[key];
+  }
+  const { data, error } = await db.from("recommendations").update(updates).eq("id", id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
+}
+
+async function updateChecklist(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const { phase, side, checked_items } = req.body;
+  if (!phase || !side || !checked_items) return res.status(400).json({ error: "phase, side, checked_items required" });
+  const col = `phase${phase}_${side}`;
+  const validCols = ["phase1_candidate", "phase1_company", "phase2_candidate", "phase2_company", "phase3_candidate", "phase3_company", "phase4_candidate", "phase4_company"];
+  if (!validCols.includes(col)) return res.status(400).json({ error: "Invalid phase/side combination" });
+  const { data, error } = await db.from("recommendations").update({ [col]: checked_items }).eq("id", id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   return res.json(data);
 }
