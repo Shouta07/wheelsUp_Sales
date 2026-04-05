@@ -295,14 +295,67 @@ export default function IndustryMap() {
                   </div>
                 )}
 
+                {/* キャリアパス */}
+                {selectedDetail.career_paths && selectedDetail.career_paths.length > 0 && (
+                  <div className="rounded-lg bg-indigo-50 p-4">
+                    <h3 className="text-sm font-semibold text-indigo-800 mb-3">キャリアパス（縦のキャリア）</h3>
+                    <div className="space-y-2">
+                      {selectedDetail.career_paths.map((cp, i) => (
+                        <div key={i} className="flex items-start gap-2 text-sm">
+                          <span className="text-indigo-400 font-mono">→</span>
+                          <div>
+                            <span className="font-medium text-indigo-900">{cp.from}</span>
+                            <span className="text-indigo-400 mx-1">→</span>
+                            <span className="font-medium text-indigo-900">{cp.to}</span>
+                            <span className="text-xs text-indigo-500 ml-2">({cp.years})</span>
+                            {cp.note && <p className="text-xs text-indigo-600 mt-0.5">{cp.note}</p>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 斜めのキャリア */}
+                {selectedDetail.lateral_moves && selectedDetail.lateral_moves.length > 0 && (
+                  <div className="rounded-lg bg-purple-50 p-4">
+                    <h3 className="text-sm font-semibold text-purple-800 mb-3">斜めのキャリア（可能性の最大化）</h3>
+                    <div className="space-y-3">
+                      {selectedDetail.lateral_moves.map((lm, i) => (
+                        <div key={i} className="rounded-lg bg-white border border-purple-100 p-3">
+                          <div className="font-medium text-sm text-purple-900 mb-1">→ {lm.to}</div>
+                          <div className="flex gap-4 text-xs">
+                            <div><span className="text-green-600 font-medium">魅力: </span><span className="text-gray-700">{lm.appeal}</span></div>
+                            <div><span className="text-red-500 font-medium">リスク: </span><span className="text-gray-700">{lm.risk}</span></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 主要企業 + 社風 */}
                 {selectedDetail.key_players.length > 0 && (
                   <div>
                     <h3 className="text-sm font-semibold text-gray-700 mb-2">主要企業</h3>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedDetail.key_players.map((kp) => (
-                        <span key={kp} className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-600">{kp}</span>
-                      ))}
-                    </div>
+                    {selectedDetail.company_notes && Object.keys(selectedDetail.company_notes).length > 0 ? (
+                      <div className="space-y-2">
+                        {selectedDetail.key_players.map((kp) => (
+                          <div key={kp} className="rounded-lg border border-gray-100 p-3">
+                            <span className="font-medium text-sm text-gray-900">{kp}</span>
+                            {selectedDetail.company_notes[kp] && (
+                              <p className="text-xs text-gray-500 mt-1">{selectedDetail.company_notes[kp]}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedDetail.key_players.map((kp) => (
+                          <span key={kp} className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-600">{kp}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

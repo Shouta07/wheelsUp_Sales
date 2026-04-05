@@ -459,6 +459,9 @@ export interface KnowledgeCategory {
   selling_points: string[];
   pain_points: string[];
   talking_tips: string | null;
+  career_paths: Array<{ from: string; to: string; years: string; note: string }>;
+  lateral_moves: Array<{ to: string; appeal: string; risk: string }>;
+  company_notes: Record<string, string>;
   sort_order: number;
 }
 

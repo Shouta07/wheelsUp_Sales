@@ -90,6 +90,9 @@ create table if not exists industry_categories (
   selling_points jsonb default '[]',
   pain_points jsonb default '[]',
   talking_tips text,
+  career_paths jsonb default '[]',
+  lateral_moves jsonb default '[]',
+  company_notes jsonb default '{}',
   sort_order integer default 0,
   updated_at timestamptz default now()
 );
