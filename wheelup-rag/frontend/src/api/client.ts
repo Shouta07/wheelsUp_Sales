@@ -333,3 +333,92 @@ export async function updateFollowUp(
     body: JSON.stringify(data),
   });
 }
+
+/* ---------- Knowledge Types ---------- */
+
+export interface KnowledgeCategory {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  slug: string;
+  level: number;
+  description: string | null;
+  market_overview: string | null;
+  key_players: string[];
+  typical_roles: string[];
+  required_qualifications: string[];
+  salary_range: string | null;
+  growth_trend: string | null;
+  selling_points: string[];
+  pain_points: string[];
+  talking_tips: string | null;
+  sort_order: number;
+}
+
+export interface QualificationItem {
+  id: string;
+  name: string;
+  category: string | null;
+  field: string | null;
+  difficulty: string | null;
+  description: string | null;
+  market_value: string | null;
+  salary_impact: string | null;
+  related_roles: string[];
+  exam_info: string | null;
+  tips_for_consultant: string | null;
+}
+
+/* ---------- Knowledge API ---------- */
+
+export async function fetchTaxonomy(
+  parentSlug?: string,
+): Promise<{ categories: KnowledgeCategory[]; total: number }> {
+  const qs = parentSlug ? `?parent_slug=${parentSlug}` : "";
+  return request(`/knowledge/taxonomy${qs}`);
+}
+
+export async function fetchCategory(
+  slug: string,
+): Promise<KnowledgeCategory> {
+  return request(`/knowledge/taxonomy/${slug}`);
+}
+
+export async function fetchQualifications(
+  field?: string,
+): Promise<{ qualifications: QualificationItem[]; total: number }> {
+  const qs = field ? `?field=${field}` : "";
+  return request(`/knowledge/qualifications${qs}`);
+}
+
+export async function seedKnowledgeData(): Promise<{
+  categories: number;
+  qualifications: number;
+  status: string;
+}> {
+  return request("/knowledge/seed", { method: "POST" });
+}
+
+export async function recordProgress(data: {
+  user_name: string;
+  category_id?: string;
+  qualification_id?: string;
+  completed?: boolean;
+  quiz_score?: number;
+}): Promise<unknown> {
+  return request("/knowledge/progress", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function fetchProgress(
+  userName: string,
+): Promise<{
+  user_name: string;
+  total_studied: number;
+  completed: number;
+  entries: Array<Record<string, unknown>>;
+}> {
+  return request(`/knowledge/progress/${userName}`);
+}
