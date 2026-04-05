@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
 const phases = [
   { to: "/", label: "Dashboard", icon: "📋" },
@@ -43,12 +43,14 @@ export default function PhaseNav() {
               {label}
             </NavLink>
           ))}
-          <button
-            onClick={handleLogout}
-            className="ml-3 text-xs text-gray-400 hover:text-gray-600 px-2 py-1"
-          >
-            ログアウト
-          </button>
+          {isSupabaseConfigured && (
+            <button
+              onClick={handleLogout}
+              className="ml-3 text-xs text-gray-400 hover:text-gray-600 px-2 py-1"
+            >
+              ログアウト
+            </button>
+          )}
         </div>
       </div>
     </nav>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
-import { supabase } from "./lib/supabase";
+import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import PhaseNav from "./components/PhaseNav";
 import Dashboard from "./pages/Dashboard";
@@ -101,6 +101,12 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      // Supabase 未設定時は Auth スキップ（UI プレビューモード）
+      setLoading(false);
+      return;
+    }
+
     // 初期セッション取得
     supabase.auth.getSession().then(({ data: { session: s } }) => {
       setSession(s);
@@ -125,7 +131,7 @@ export default function App() {
     );
   }
 
-  if (!session) {
+  if (isSupabaseConfigured && !session) {
     return <LoginPage />;
   }
 
