@@ -1,144 +1,112 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCandidates,
-  getCandidate,
   saveMeetingNotes,
   matchCompanies,
+  matchJobs,
   type CandidateItem,
   type MatchedCompany,
+  type JobMatchResult,
 } from "../api/client";
 
 const KEYWORD_SUGGESTIONS = [
-  "残業少ない", "年収UP", "発注者側", "デベロッパー", "福利厚生充実",
-  "リモート可", "土日休み", "転勤なし", "大手", "上場企業",
-  "施工管理", "設計", "資格支援", "退職金あり", "マネジメント",
-  "現場より管理", "安定", "成長企業", "若手活躍",
+  "施工管理", "設備管理", "ビルメン", "発注者側", "年収UP",
+  "残業少ない", "資格手当", "土木", "建築", "電気",
+  "マネジメント", "ワークライフバランス", "転勤なし", "元請",
 ];
 
 export default function MeetingAssist() {
-  const [candidates, setCandidates] = useState<CandidateItem[]>([]);
-  const [selected, setSelected] = useState<CandidateItem | null>(null);
+  const qc = useQueryClient();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [discoveredKws, setDiscoveredKws] = useState<string[]>([]);
-  const [matchResults, setMatchResults] = useState<MatchedCompany[]>([]);
+  const [companyMatches, setCompanyMatches] = useState<MatchedCompany[]>([]);
+  const [jobMatches, setJobMatches] = useState<JobMatchResult[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [matching, setMatching] = useState(false);
 
-  useEffect(() => {
-    fetchCandidates("in_progress").then((res) => {
-      const all = res.candidates;
-      // Show new + in_progress candidates
-      fetchCandidates("new").then((res2) => {
-        setCandidates([...all, ...res2.candidates]);
-      });
-    }).catch(console.error);
-  }, []);
+  const { data } = useQuery({
+    queryKey: ["candidates-active"],
+    queryFn: () => fetchCandidates("in_progress"),
+  });
 
-  const selectCandidate = async (id: string) => {
+  const candidates = data?.candidates || [];
+  const selected = candidates.find((c) => c.id === selectedId);
+
+  const toggleKw = (kw: string) => {
+    const updated = discoveredKws.includes(kw)
+      ? discoveredKws.filter((k) => k !== kw)
+      : [...discoveredKws, kw];
+    setDiscoveredKws(updated);
+    runMatching(updated);
+  };
+
+  const runMatching = async (keywords: string[]) => {
+    if (keywords.length === 0) { setCompanyMatches([]); setJobMatches([]); return; }
     try {
-      const c = await getCandidate(id);
-      setSelected(c);
-      setNotes(c.meeting_notes || "");
-      setDiscoveredKws([]);
-      setMatchResults([]);
-      setSaved(false);
-      // 既存キーワードで自動マッチ
-      if (c.desired_keywords.length > 0) {
-        runMatch([...c.desired_keywords]);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+      const [compRes, jobRes] = await Promise.all([
+        matchCompanies(keywords),
+        selectedId ? matchJobs({ candidate_id: selectedId }) : matchJobs({ keywords }),
+      ]);
+      setCompanyMatches(compRes.results);
+      setJobMatches(jobRes.results);
+    } catch { /* ignore */ }
   };
 
-  const toggleKeyword = (kw: string) => {
-    setDiscoveredKws((prev) =>
-      prev.includes(kw) ? prev.filter((k) => k !== kw) : [...prev, kw],
-    );
-  };
-
-  const runMatch = async (keywords?: string[]) => {
-    const kws = keywords || [
-      ...(selected?.desired_keywords || []),
-      ...discoveredKws,
-    ];
-    if (kws.length === 0) return;
-    setMatching(true);
-    try {
-      const res = await matchCompanies(kws);
-      setMatchResults(res.results);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setMatching(false);
-    }
-  };
-
-  const handleSaveNotes = async () => {
-    if (!selected) return;
+  const handleSave = async () => {
+    if (!selectedId) return;
     setSaving(true);
     try {
-      const updated = await saveMeetingNotes(selected.id, notes, discoveredKws);
-      setSelected(updated);
+      await saveMeetingNotes(selectedId, notes, discoveredKws);
       setSaved(true);
+      qc.invalidateQueries({ queryKey: ["candidates"] });
       setTimeout(() => setSaved(false), 3000);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSaving(false);
-    }
+    } catch (e) { console.error(e); }
+    setSaving(false);
   };
 
-  const allKeywords = [
-    ...(selected?.desired_keywords || []),
-    ...discoveredKws,
-  ];
+  const handleSelect = (c: CandidateItem) => {
+    setSelectedId(c.id);
+    setNotes(c.meeting_notes || "");
+    setDiscoveredKws(c.desired_keywords || []);
+    setSaved(false);
+    if (c.desired_keywords && c.desired_keywords.length > 0) {
+      runMatching(c.desired_keywords);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">面談中サポート</h1>
-      <p className="text-sm text-gray-500 mb-6">
-        候補者の発言からキーワードを拾い、リアルタイムで紹介企業をマッチング
-      </p>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">面談中サポート</h1>
+        <p className="text-sm text-gray-500 mt-1">リアルタイムでキーワード発見 → 企業・求人マッチング → メモ記録</p>
+      </div>
 
       {/* 候補者選択 */}
-      <div className="flex gap-2 mb-6 flex-wrap">
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
         {candidates.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => selectCandidate(c.id)}
-            className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
-              selected?.id === c.id
-                ? "border-primary-500 bg-primary-50 text-primary-700"
-                : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
-            }`}
-          >
+          <button key={c.id} onClick={() => handleSelect(c)}
+            className={`flex-shrink-0 rounded-lg border px-4 py-2 text-sm transition-colors ${selectedId === c.id ? "border-primary-500 bg-primary-50 text-primary-700 font-medium" : "border-gray-200 bg-white hover:border-gray-300"}`}>
             {c.name}
-            <span className="ml-1 text-xs text-gray-400">
-              {c.current_company}
-            </span>
+            <span className="text-xs text-gray-400 ml-1">({c.current_position || "未設定"})</span>
           </button>
         ))}
-        {candidates.length === 0 && (
-          <p className="text-sm text-gray-400">面談前準備で候補者を登録してください</p>
-        )}
+        {candidates.length === 0 && <p className="text-sm text-gray-400 py-2">「面談前準備」で候補者を登録し、ステータスを「進行中」にしてください</p>}
       </div>
 
       {selected && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* 左: メモ + キーワード */}
           <div className="space-y-4">
-            {/* AI推定ニーズ（事前準備結果） */}
+            {/* AI推定ニーズ */}
             {selected.inferred_needs && Object.keys(selected.inferred_needs).length > 0 && (
               <div className="rounded-xl bg-blue-50 border border-blue-200 p-4">
                 <h3 className="text-sm font-semibold text-blue-800 mb-2">AI推定ニーズ（面談前分析）</h3>
                 {!!(selected.inferred_needs as Record<string, unknown>).likely_pain_points && (
                   <div className="mb-2">
                     <span className="text-xs text-blue-600 font-medium">推定課題: </span>
-                    <span className="text-sm text-blue-900">
-                      {((selected.inferred_needs as Record<string, unknown>).likely_pain_points as string[]).join("、")}
-                    </span>
+                    <span className="text-sm text-blue-900">{((selected.inferred_needs as Record<string, unknown>).likely_pain_points as string[]).join("、")}</span>
                   </div>
                 )}
                 {!!(selected.inferred_needs as Record<string, unknown>).motivation && (
@@ -157,115 +125,117 @@ export default function MeetingAssist() {
             )}
 
             {/* 面談メモ */}
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-4">
+            <div className="rounded-xl bg-white border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-700 mb-2">面談メモ</h3>
               <textarea
+                className="w-full border rounded-lg px-3 py-2 text-sm min-h-[200px]"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                rows={10}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                placeholder={"候補者の発言をメモ…\n\n例:\n・今の会社は残業が多くて辛い\n・年収は最低500万は欲しい\n・できれば発注者側で働きたい\n・施工管理の資格を活かしたい"}
+                placeholder="候補者の発言、要望、印象をメモ..."
               />
-              <div className="flex items-center gap-2 mt-2">
-                <button
-                  onClick={handleSaveNotes}
-                  disabled={saving}
-                  className="rounded-lg bg-primary-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
-                >
-                  {saving ? "保存中…" : "メモ保存"}
-                </button>
-                {saved && <span className="text-sm text-green-600">保存しました</span>}
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-xs text-gray-400">{notes.length}文字</span>
+                <div className="flex gap-2">
+                  {saved && <span className="text-xs text-green-600">保存しました</span>}
+                  <button onClick={handleSave} disabled={saving}
+                    className="px-4 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50">
+                    {saving ? "保存中..." : "メモを保存"}
+                  </button>
+                </div>
               </div>
             </div>
 
             {/* キーワード発見 */}
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-700 mb-2">
-                面談中に発見したキーワード
-              </h3>
-              <p className="text-xs text-gray-400 mb-3">
-                候補者の発言から聞き取れた希望条件をタップ
-              </p>
-              <div className="flex flex-wrap gap-2 mb-3">
+            <div className="rounded-xl bg-white border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-2">キーワード発見</h3>
+              <p className="text-xs text-gray-400 mb-3">面談中に出てきたキーワードをタップ → リアルタイムでマッチング</p>
+              <div className="flex flex-wrap gap-2">
                 {KEYWORD_SUGGESTIONS.map((kw) => (
-                  <button
-                    key={kw}
-                    onClick={() => toggleKeyword(kw)}
+                  <button key={kw} onClick={() => toggleKw(kw)}
                     className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                      discoveredKws.includes(kw)
-                        ? "bg-green-600 text-white"
-                        : allKeywords.includes(kw)
-                        ? "bg-primary-100 text-primary-700"
-                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    }`}
-                  >
+                      discoveredKws.includes(kw) ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}>
                     {kw}
                   </button>
                 ))}
               </div>
-              <button
-                onClick={() => runMatch()}
-                disabled={allKeywords.length === 0 || matching}
-                className="rounded-lg bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
-              >
-                {matching ? "マッチ中…" : "企業を再マッチング"}
-              </button>
+              {discoveredKws.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  <p className="text-xs text-gray-500 mb-1">選択中: {discoveredKws.length}個</p>
+                  <div className="flex flex-wrap gap-1">
+                    {discoveredKws.map((kw) => (
+                      <span key={kw} className="inline-flex items-center gap-1 rounded-full bg-primary-100 px-2 py-0.5 text-xs text-primary-700">
+                        {kw}
+                        <button onClick={() => toggleKw(kw)}>&times;</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* 右: マッチ企業一覧 */}
+          {/* 右: マッチング結果 */}
           <div className="space-y-4">
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-700 mb-1">
-                紹介候補企業
+            {/* 企業マッチング */}
+            <div className="rounded-xl bg-white border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">
+                企業マッチング
+                {companyMatches.length > 0 && <span className="text-xs text-gray-400 ml-2">({companyMatches.length}件)</span>}
               </h3>
-              <p className="text-xs text-gray-400 mb-3">
-                キーワード: {allKeywords.join(", ") || "未選択"}
-              </p>
-
-              {matching && <p className="text-sm text-gray-400 py-4 text-center">マッチング中…</p>}
-
-              {!matching && matchResults.length === 0 && (
-                <p className="text-sm text-gray-400 py-4 text-center">
-                  キーワードを選択してマッチングを実行してください
-                </p>
+              {companyMatches.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-6">キーワードを選択するとマッチ企業が表示されます</p>
+              ) : (
+                <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                  {companyMatches.map((m) => (
+                    <div key={m.company.id} className="rounded-lg border border-gray-100 p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm">{m.company.name}</span>
+                        <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">スコア {m.match_score}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {m.matched_keywords.map((kw) => <span key={kw} className="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">{kw}</span>)}
+                      </div>
+                      {m.pitch_summary.length > 0 && (
+                        <div className="mt-2 text-xs text-gray-600">
+                          {m.pitch_summary.slice(0, 2).map((p, i) => <p key={i}>{p}</p>)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
+            </div>
 
-              <div className="space-y-3">
-                {matchResults.map((m) => (
-                  <div key={m.company.id} className="rounded-lg border border-gray-200 p-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="font-medium text-gray-900">{m.company.name}</div>
-                        {m.company.address && (
-                          <div className="text-xs text-gray-500">{m.company.address}</div>
-                        )}
+            {/* 求人マッチング */}
+            <div className="rounded-xl bg-white border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">
+                求人マッチング
+                {jobMatches.length > 0 && <span className="text-xs text-gray-400 ml-2">({jobMatches.length}件)</span>}
+              </h3>
+              {jobMatches.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-6">マッチする求人が見つかるとここに表示されます</p>
+              ) : (
+                <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                  {jobMatches.map((r) => (
+                    <div key={r.job.id} className="rounded-lg border border-gray-100 p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="font-medium text-sm">{r.job.title}</span>
+                          {r.job.companies && <span className="text-xs text-gray-500 ml-1">({r.job.companies.name})</span>}
+                        </div>
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">スコア {r.match_score}</span>
                       </div>
-                      <span className="rounded-full bg-primary-100 px-2 py-0.5 text-xs font-bold text-primary-700">
-                        {m.match_score} hit
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {m.matched_keywords.map((kw) => (
-                        <span key={kw} className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700">
-                          {kw}
-                        </span>
-                      ))}
-                    </div>
-                    {m.pitch_summary.length > 0 && (
-                      <div className="mt-2 rounded bg-blue-50 p-2">
-                        <p className="text-xs font-medium text-blue-700 mb-1">トークポイント:</p>
-                        {m.pitch_summary.map((s, i) => (
-                          <p key={i} className="text-xs text-blue-800">{s}</p>
-                        ))}
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {r.matched_keywords.map((kw) => <span key={kw} className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">{kw}</span>)}
                       </div>
-                    )}
-                    <div className="mt-2 text-xs text-gray-400">
-                      案件 {m.company.open_deals_count} 件 / 成約 {m.company.won_deals_count} 件
+                      {(r.job.salary_min || r.job.salary_max) && (
+                        <p className="text-xs text-gray-500 mt-1">{r.job.salary_min}〜{r.job.salary_max}万円 / {r.job.location || "勤務地未定"}</p>
+                      )}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -3,17 +3,13 @@ import { Routes, Route } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import PhaseNav from "./components/PhaseNav";
-import Dashboard from "./pages/Dashboard";
+import Phase1Prep from "./pages/Phase1Prep";
+import Phase2Meeting from "./pages/Phase2Meeting";
+import Phase3After from "./pages/Phase3After";
+import Phase4Closing from "./pages/Phase4Closing";
 import Companies from "./pages/Companies";
-import CandidatePrep from "./pages/CandidatePrep";
-import MeetingAssist from "./pages/MeetingAssist";
-import FollowUp from "./pages/FollowUp";
-import IndustryMap from "./pages/IndustryMap";
-import LearningHub from "./pages/LearningHub";
-import Briefing from "./pages/Briefing";
-import SearchPanel from "./pages/SearchPanel";
-import PostMeeting from "./pages/PostMeeting";
 import JobPostings from "./pages/JobPostings";
+import IndustryMap from "./pages/IndustryMap";
 
 /**
  * Supabase Auth ログインページ
@@ -139,17 +135,13 @@ export default function App() {
     <div className="min-h-screen bg-gray-50">
       <PhaseNav />
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Phase1Prep />} />
+        <Route path="/meeting" element={<Phase2Meeting />} />
+        <Route path="/after" element={<Phase3After />} />
+        <Route path="/closing" element={<Phase4Closing />} />
         <Route path="/companies" element={<Companies />} />
         <Route path="/jobs" element={<JobPostings />} />
-        <Route path="/candidate-prep" element={<CandidatePrep />} />
-        <Route path="/meeting-assist" element={<MeetingAssist />} />
-        <Route path="/follow-up" element={<FollowUp />} />
         <Route path="/industry" element={<IndustryMap />} />
-        <Route path="/learning" element={<LearningHub />} />
-        <Route path="/briefing" element={<Briefing />} />
-        <Route path="/search" element={<SearchPanel />} />
-        <Route path="/post-meeting" element={<PostMeeting />} />
       </Routes>
     </div>
   );

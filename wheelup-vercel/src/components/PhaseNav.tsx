@@ -2,14 +2,13 @@ import { NavLink } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
 const phases = [
-  { to: "/", label: "Dashboard", icon: "📋" },
-  { to: "/companies", label: "紹介企業", icon: "🏢" },
+  { to: "/", label: "前準備", icon: "①" },
+  { to: "/meeting", label: "面談・商談中", icon: "②" },
+  { to: "/after", label: "直後対応", icon: "③" },
+  { to: "/closing", label: "推薦〜クロージング", icon: "④" },
+  { to: "/companies", label: "企業", icon: "🏢" },
   { to: "/jobs", label: "求人", icon: "💼" },
-  { to: "/candidate-prep", label: "面談前", icon: "📝" },
-  { to: "/meeting-assist", label: "面談中", icon: "🎯" },
-  { to: "/follow-up", label: "面談後", icon: "📊" },
   { to: "/industry", label: "業界知識", icon: "🗺" },
-  { to: "/learning", label: "学習", icon: "📖" },
 ] as const;
 
 export default function PhaseNav() {
