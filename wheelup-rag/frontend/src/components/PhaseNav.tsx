@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 
 const phases = [
   { to: "/", label: "Dashboard", icon: "📋" },
+  { to: "/companies", label: "紹介企業", icon: "🏢" },
   { to: "/briefing", label: "商談前", icon: "📝" },
   { to: "/search", label: "商談中", icon: "🔍" },
   { to: "/post-meeting", label: "商談後", icon: "📊" },

@@ -73,6 +73,45 @@ export interface Deal {
   next_activity_subject: string;
 }
 
+/* ---------- Company Types ---------- */
+
+export interface CompanyItem {
+  id: string;
+  pipedrive_org_id: number | null;
+  name: string;
+  industry: string | null;
+  address: string | null;
+  description: string | null;
+  keywords: string[];
+  pitch_points: Record<string, string>;
+  people_count: number;
+  open_deals_count: number;
+  won_deals_count: number;
+}
+
+export interface CompanyListResponse {
+  companies: CompanyItem[];
+  total: number;
+}
+
+export interface MatchedCompany {
+  company: CompanyItem;
+  matched_keywords: string[];
+  match_score: number;
+  pitch_summary: string[];
+}
+
+export interface KeywordMatchResponse {
+  results: MatchedCompany[];
+  total: number;
+  query_keywords: string[];
+}
+
+export interface SyncResult {
+  synced: number;
+  message: string;
+}
+
 /* ---------- API functions ---------- */
 
 export async function searchKnowledge(
@@ -110,4 +149,41 @@ export async function saveSummaryToPipedrive(
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+/* ---------- Company API ---------- */
+
+export async function fetchCompanies(
+  q?: string,
+  keyword?: string,
+): Promise<CompanyListResponse> {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (keyword) params.set("keyword", keyword);
+  const qs = params.toString();
+  return request<CompanyListResponse>(`/companies${qs ? `?${qs}` : ""}`);
+}
+
+export async function matchCompanies(
+  keywords: string[],
+): Promise<KeywordMatchResponse> {
+  return request<KeywordMatchResponse>("/companies/match", {
+    method: "POST",
+    body: JSON.stringify({ keywords }),
+  });
+}
+
+export async function updateCompanyKeywords(
+  companyId: string,
+  keywords: string[],
+  pitchPoints: Record<string, string> = {},
+): Promise<CompanyItem> {
+  return request<CompanyItem>(`/companies/${companyId}/keywords`, {
+    method: "PUT",
+    body: JSON.stringify({ keywords, pitch_points: pitchPoints }),
+  });
+}
+
+export async function syncCompaniesFromPipedrive(): Promise<SyncResult> {
+  return request<SyncResult>("/companies/sync", { method: "POST" });
 }

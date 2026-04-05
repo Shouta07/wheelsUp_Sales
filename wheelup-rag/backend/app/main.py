@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import webhook_lark, search, briefing, summary, pipedrive
+from app.api import webhook_lark, search, briefing, summary, pipedrive, companies
 from app.core.config import settings
 from app.queue.producer import close_redis
 
@@ -31,6 +31,7 @@ app.include_router(pipedrive.router, tags=["Webhook"])
 app.include_router(search.router, tags=["Search"])
 app.include_router(briefing.router, tags=["Briefing"])
 app.include_router(summary.router, tags=["Summary"])
+app.include_router(companies.router, tags=["Companies"])
 
 
 @app.get("/health")
