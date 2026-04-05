@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase";
 const phases = [
   { to: "/", label: "Dashboard", icon: "📋" },
   { to: "/companies", label: "紹介企業", icon: "🏢" },
+  { to: "/jobs", label: "求人", icon: "💼" },
   { to: "/candidate-prep", label: "面談前", icon: "📝" },
   { to: "/meeting-assist", label: "面談中", icon: "🎯" },
   { to: "/follow-up", label: "面談後", icon: "📊" },

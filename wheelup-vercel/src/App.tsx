@@ -13,6 +13,7 @@ import LearningHub from "./pages/LearningHub";
 import Briefing from "./pages/Briefing";
 import SearchPanel from "./pages/SearchPanel";
 import PostMeeting from "./pages/PostMeeting";
+import JobPostings from "./pages/JobPostings";
 
 /**
  * Supabase Auth ログインページ
@@ -134,6 +135,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/companies" element={<Companies />} />
+        <Route path="/jobs" element={<JobPostings />} />
         <Route path="/candidate-prep" element={<CandidatePrep />} />
         <Route path="/meeting-assist" element={<MeetingAssist />} />
         <Route path="/follow-up" element={<FollowUp />} />

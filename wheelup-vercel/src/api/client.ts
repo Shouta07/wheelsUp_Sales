@@ -440,3 +440,134 @@ export async function fetchProgress(
 }> {
   return request(`/knowledge/progress/${userName}`);
 }
+
+/* ---------- Job Posting Types ---------- */
+
+export interface JobPosting {
+  id: string;
+  company_id: string | null;
+  title: string;
+  position_type: string | null;
+  industry_category_slug: string | null;
+  employment_type: string;
+  salary_min: number | null;
+  salary_max: number | null;
+  location: string | null;
+  description: string | null;
+  requirements: string[];
+  preferred: string[];
+  required_qualifications: string[];
+  benefits: string | null;
+  keywords: string[];
+  status: string;
+  source: string;
+  external_id: string | null;
+  notes: string | null;
+  published_at: string | null;
+  closed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  companies: { id: string; name: string } | null;
+}
+
+export interface JobListResponse {
+  jobs: JobPosting[];
+  total: number;
+}
+
+export interface JobCreateData {
+  title: string;
+  company_id?: string;
+  position_type?: string;
+  industry_category_slug?: string;
+  employment_type?: string;
+  salary_min?: number;
+  salary_max?: number;
+  location?: string;
+  description?: string;
+  requirements?: string[];
+  preferred?: string[];
+  required_qualifications?: string[];
+  benefits?: string;
+  keywords?: string[];
+  status?: string;
+  external_id?: string;
+  notes?: string;
+}
+
+export interface JobImportResponse {
+  created: number;
+  updated: number;
+  errors: string[];
+  total: number;
+}
+
+export interface JobMatchResult {
+  job: JobPosting;
+  matched_keywords: string[];
+  match_score: number;
+}
+
+export interface JobMatchResponse {
+  results: JobMatchResult[];
+  total: number;
+  query_keywords: string[];
+}
+
+/* ---------- Job Posting API ---------- */
+
+export async function fetchJobs(
+  q?: string,
+  status?: string,
+  companyId?: string,
+): Promise<JobListResponse> {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (status) params.set("status", status);
+  if (companyId) params.set("company_id", companyId);
+  const qs = params.toString();
+  return request<JobListResponse>(`/jobs${qs ? `?${qs}` : ""}`);
+}
+
+export async function createJob(data: JobCreateData): Promise<JobPosting> {
+  return request<JobPosting>("/jobs", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getJob(id: string): Promise<JobPosting> {
+  return request<JobPosting>(`/jobs/${id}`);
+}
+
+export async function updateJob(
+  id: string,
+  data: Partial<JobCreateData>,
+): Promise<JobPosting> {
+  return request<JobPosting>(`/jobs/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteJob(id: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/jobs/${id}`, { method: "DELETE" });
+}
+
+export async function importJobs(
+  rows: Array<Record<string, string>>,
+): Promise<JobImportResponse> {
+  return request<JobImportResponse>("/jobs/import", {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
+}
+
+export async function matchJobs(
+  params: { candidate_id?: string; keywords?: string[] },
+): Promise<JobMatchResponse> {
+  return request<JobMatchResponse>("/jobs/match", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}

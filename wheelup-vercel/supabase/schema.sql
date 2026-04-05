@@ -247,6 +247,44 @@ end;
 $$;
 
 -- =====================================================
+-- 求人テーブル
+-- =====================================================
+create table if not exists job_postings (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete set null,
+  title text not null,
+  position_type text,
+  industry_category_slug text,
+  employment_type text default '正社員',
+  salary_min integer,
+  salary_max integer,
+  location text,
+  description text,
+  requirements text[] default '{}',
+  preferred text[] default '{}',
+  required_qualifications text[] default '{}',
+  benefits text,
+  keywords text[] default '{}',
+  status text default 'open',
+  source text default 'manual',
+  external_id text,
+  notes text,
+  published_at timestamptz,
+  closed_at timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index idx_job_postings_status on job_postings(status);
+create index idx_job_postings_company on job_postings(company_id);
+create index idx_job_postings_external on job_postings(external_id)
+  where external_id is not null;
+
+alter table job_postings enable row level security;
+create policy "Authenticated users full access" on job_postings
+  for all using (auth.role() = 'authenticated');
+
+-- =====================================================
 -- updated_at 自動更新トリガー
 -- =====================================================
 create or replace function update_updated_at()
@@ -262,4 +300,6 @@ create trigger companies_updated_at before update on companies
 create trigger candidates_updated_at before update on candidates
   for each row execute function update_updated_at();
 create trigger industry_categories_updated_at before update on industry_categories
+  for each row execute function update_updated_at();
+create trigger job_postings_updated_at before update on job_postings
   for each row execute function update_updated_at();
