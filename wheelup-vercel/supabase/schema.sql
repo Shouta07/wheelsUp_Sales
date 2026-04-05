@@ -384,6 +384,26 @@ create policy "Authenticated users full access" on meeting_transcripts
   for all using (auth.role() = 'authenticated');
 
 -- =====================================================
+-- フェーズ進捗（候補者/企業ごとのチェックリスト状態）
+-- =====================================================
+create table if not exists phase_progress (
+  id uuid primary key default gen_random_uuid(),
+  entity_type text not null check (entity_type in ('candidate', 'company')),
+  entity_id uuid not null,
+  phase integer not null check (phase between 1 and 4),
+  checked_items text[] default '{}',
+  notes text,
+  updated_at timestamptz default now(),
+  unique (entity_type, entity_id, phase)
+);
+
+create index idx_phase_progress_entity on phase_progress(entity_type, entity_id);
+
+alter table phase_progress enable row level security;
+create policy "Authenticated users full access" on phase_progress
+  for all using (auth.role() = 'authenticated');
+
+-- =====================================================
 -- updated_at 自動更新トリガー
 -- =====================================================
 create or replace function update_updated_at()
@@ -405,4 +425,6 @@ create trigger job_postings_updated_at before update on job_postings
 create trigger deals_updated_at before update on deals
   for each row execute function update_updated_at();
 create trigger meeting_transcripts_updated_at before update on meeting_transcripts
+  for each row execute function update_updated_at();
+create trigger phase_progress_updated_at before update on phase_progress
   for each row execute function update_updated_at();

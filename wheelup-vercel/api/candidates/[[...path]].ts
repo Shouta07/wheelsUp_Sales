@@ -22,6 +22,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? [req.query.path]
       : [];
 
+  // --- /api/candidates/phase-progress ---
+  if (segments[0] === "phase-progress") {
+    if (req.method === "GET") return getPhaseProgress(db, req, res);
+    if (req.method === "PUT") return savePhaseProgress(db, req, res);
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   // --- /api/candidates ---
   if (segments.length === 0) {
     if (req.method === "GET") return listCandidates(db, req, res);
@@ -223,6 +230,28 @@ async function addAction(db: ReturnType<typeof getSupabaseAdmin>, id: string, re
     .update({ action_history: history, last_contact_date: new Date().toISOString() })
     .eq("id", id).select().single();
   if (ue) return res.status(500).json({ error: ue.message });
+  return res.json(data);
+}
+
+async function getPhaseProgress(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const { entity_type, entity_id, phase } = req.query;
+  if (!entity_type || !entity_id) return res.status(400).json({ error: "entity_type and entity_id are required" });
+  let query = db.from("phase_progress").select("*")
+    .eq("entity_type", entity_type as string)
+    .eq("entity_id", entity_id as string);
+  if (phase) query = query.eq("phase", Number(phase));
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ progress: data || [] });
+}
+
+async function savePhaseProgress(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const { entity_type, entity_id, phase, checked_items, notes } = req.body;
+  if (!entity_type || !entity_id || !phase) return res.status(400).json({ error: "entity_type, entity_id, phase required" });
+  const { data, error } = await db.from("phase_progress")
+    .upsert({ entity_type, entity_id, phase, checked_items: checked_items || [], notes: notes || null }, { onConflict: "entity_type,entity_id,phase" })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
   return res.json(data);
 }
 

@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { fetchCandidates, fetchCompanies } from "../api/client";
+import { usePhaseChecklist } from "../hooks/usePhaseProgress";
 
 interface CheckItem {
   id: string;
@@ -68,21 +71,42 @@ const TAG_COLORS: Record<string, string> = {
 
 export default function Phase2Meeting() {
   const navigate = useNavigate();
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [companyId, setCompanyId] = useState<string | null>(null);
 
-  const toggle = (id: string) => setChecked((prev) => ({ ...prev, [id]: !prev[id] }));
+  const { data: candidatesData } = useQuery({
+    queryKey: ["candidates-all"],
+    queryFn: () => fetchCandidates(),
+  });
+  const { data: companiesData } = useQuery({
+    queryKey: ["companies-all"],
+    queryFn: () => fetchCompanies(),
+  });
 
-  const allItems = [...CANDIDATE_SECTIONS, ...COMPANY_SECTIONS].flatMap((s) => s.items);
-  const checkedCount = Object.values(checked).filter(Boolean).length;
+  const candidates = candidatesData?.candidates || [];
+  const companies = companiesData?.companies || [];
+  const selectedCandidate = candidates.find((c) => c.id === candidateId);
+  const selectedCompany = companies.find((c) => c.id === companyId);
 
-  const renderSection = (sections: { section: string; items: CheckItem[] }[]) =>
+  const candidateChecklist = usePhaseChecklist("candidate", candidateId, 2);
+  const companyChecklist = usePhaseChecklist("company", companyId, 2);
+
+  const totalCandidate = CANDIDATE_SECTIONS.flatMap((s) => s.items).length;
+  const totalCompany = COMPANY_SECTIONS.flatMap((s) => s.items).length;
+
+  const renderChecklist = (
+    sections: { section: string; items: CheckItem[] }[],
+    checked: Record<string, boolean>,
+    toggle: (id: string) => void,
+    disabled: boolean,
+  ) =>
     sections.map((section) => (
       <div key={section.section} className="mb-4">
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{section.section}</h3>
         <div className="space-y-3">
           {section.items.map((item) => (
-            <label key={item.id} className="flex items-start gap-3 cursor-pointer">
-              <input type="checkbox" checked={!!checked[item.id]} onChange={() => toggle(item.id)} className="mt-0.5 w-4 h-4 rounded border-gray-300" />
+            <label key={item.id} className={`flex items-start gap-3 ${disabled ? "opacity-40" : "cursor-pointer"}`}>
+              <input type="checkbox" checked={!!checked[item.id]} onChange={() => !disabled && toggle(item.id)} disabled={disabled} className="mt-0.5 w-4 h-4 rounded border-gray-300" />
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <span className={`text-sm ${checked[item.id] ? "line-through text-gray-400" : "text-gray-900"}`}>{item.label}</span>
@@ -101,23 +125,57 @@ export default function Phase2Meeting() {
       <div className="mb-4">
         <h1 className="text-2xl font-bold text-gray-900">② 面談・商談中</h1>
         <p className="text-sm text-gray-500 mt-1">聞く:話す = 7:3。両面ともヒアリングが主役</p>
-        <div className="mt-2 flex items-center gap-3">
-          <div className="flex-1 bg-gray-200 rounded-full h-2">
-            <div className="bg-primary-600 h-2 rounded-full transition-all" style={{ width: `${allItems.length > 0 ? (checkedCount / allItems.length) * 100 : 0}%` }} />
-          </div>
-          <span className="text-xs text-gray-500">{checkedCount}/{allItems.length}</span>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="rounded-xl bg-white border border-gray-200 p-5">
-          <h2 className="text-center text-sm font-bold text-gray-700 mb-4 pb-2 border-b">TO 候補者 面談中</h2>
-          {renderSection(CANDIDATE_SECTIONS)}
+          <h2 className="text-center text-sm font-bold text-gray-700 mb-3 pb-2 border-b">TO 候補者 面談中</h2>
+          <div className="mb-4">
+            <select className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white" value={candidateId || ""} onChange={(e) => setCandidateId(e.target.value || null)}>
+              <option value="">候補者を選択...</option>
+              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          {selectedCandidate && (
+            <div className="mb-4 rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+              <span>{selectedCandidate.current_position || "未設定"}</span>
+              <span className="mx-2">|</span>
+              <span>年収 {selectedCandidate.current_salary ? `${selectedCandidate.current_salary}万` : "未設定"}</span>
+              <span className="mx-2">|</span>
+              <span>希望 {selectedCandidate.desired_location || "未設定"}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex-1 bg-gray-200 rounded-full h-1.5">
+              <div className="bg-primary-600 h-1.5 rounded-full transition-all" style={{ width: `${totalCandidate > 0 ? (candidateChecklist.checkedCount / totalCandidate) * 100 : 0}%` }} />
+            </div>
+            <span className="text-xs text-gray-400">{candidateChecklist.checkedCount}/{totalCandidate}</span>
+          </div>
+          {renderChecklist(CANDIDATE_SECTIONS, candidateChecklist.checked, candidateChecklist.toggle, !candidateId)}
         </div>
 
         <div className="rounded-xl bg-white border border-gray-200 p-5">
-          <h2 className="text-center text-sm font-bold text-gray-700 mb-4 pb-2 border-b">TO 求人企業 商談中</h2>
-          {renderSection(COMPANY_SECTIONS)}
+          <h2 className="text-center text-sm font-bold text-gray-700 mb-3 pb-2 border-b">TO 求人企業 商談中</h2>
+          <div className="mb-4">
+            <select className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white" value={companyId || ""} onChange={(e) => setCompanyId(e.target.value || null)}>
+              <option value="">企業を選択...</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          {selectedCompany && (
+            <div className="mb-4 rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+              <span>{selectedCompany.industry || "未設定"}</span>
+              <span className="mx-2">|</span>
+              <span>{selectedCompany.address || "未設定"}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex-1 bg-gray-200 rounded-full h-1.5">
+              <div className="bg-primary-600 h-1.5 rounded-full transition-all" style={{ width: `${totalCompany > 0 ? (companyChecklist.checkedCount / totalCompany) * 100 : 0}%` }} />
+            </div>
+            <span className="text-xs text-gray-400">{companyChecklist.checkedCount}/{totalCompany}</span>
+          </div>
+          {renderChecklist(COMPANY_SECTIONS, companyChecklist.checked, companyChecklist.toggle, !companyId)}
         </div>
       </div>
 

@@ -345,6 +345,41 @@ export async function updateFollowUp(
   });
 }
 
+/* ---------- Phase Progress ---------- */
+
+export interface PhaseProgress {
+  id: string;
+  entity_type: "candidate" | "company";
+  entity_id: string;
+  phase: number;
+  checked_items: string[];
+  notes: string | null;
+  updated_at: string;
+}
+
+export async function fetchPhaseProgress(
+  entityType: "candidate" | "company",
+  entityId: string,
+  phase?: number,
+): Promise<{ progress: PhaseProgress[] }> {
+  const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId });
+  if (phase) params.set("phase", String(phase));
+  return request(`/candidates/phase-progress?${params}`);
+}
+
+export async function savePhaseProgress(
+  entityType: "candidate" | "company",
+  entityId: string,
+  phase: number,
+  checkedItems: string[],
+  notes?: string,
+): Promise<PhaseProgress> {
+  return request("/candidates/phase-progress", {
+    method: "PUT",
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, phase, checked_items: checkedItems, notes }),
+  });
+}
+
 /* ---------- Knowledge Types ---------- */
 
 export interface KnowledgeCategory {
