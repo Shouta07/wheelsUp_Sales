@@ -3,9 +3,9 @@ import { NavLink } from "react-router-dom";
 const phases = [
   { to: "/", label: "Dashboard", icon: "📋" },
   { to: "/companies", label: "紹介企業", icon: "🏢" },
-  { to: "/briefing", label: "商談前", icon: "📝" },
-  { to: "/search", label: "商談中", icon: "🔍" },
-  { to: "/post-meeting", label: "商談後", icon: "📊" },
+  { to: "/candidate-prep", label: "面談前", icon: "📝" },
+  { to: "/meeting-assist", label: "面談中", icon: "🎯" },
+  { to: "/follow-up", label: "面談後", icon: "📊" },
 ] as const;
 
 export default function PhaseNav() {
@@ -14,7 +14,7 @@ export default function PhaseNav() {
       <div className="mx-auto flex max-w-7xl items-center justify-between">
         <div className="flex items-center gap-2 py-3">
           <span className="text-lg font-bold text-primary-700">wheelsUp</span>
-          <span className="text-xs text-gray-400">商談ナレッジ</span>
+          <span className="text-xs text-gray-400">面談サポート</span>
         </div>
         <div className="flex gap-1">
           {phases.map(({ to, label, icon }) => (

@@ -187,3 +187,149 @@ export async function updateCompanyKeywords(
 export async function syncCompaniesFromPipedrive(): Promise<SyncResult> {
   return request<SyncResult>("/companies/sync", { method: "POST" });
 }
+
+/* ---------- Candidate Types ---------- */
+
+export interface CandidateItem {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  age: number | null;
+  current_company: string | null;
+  current_position: string | null;
+  current_industry: string | null;
+  years_of_experience: number | null;
+  current_salary: number | null;
+  qualifications: string[];
+  desired_keywords: string[];
+  desired_salary: number | null;
+  desired_location: string | null;
+  desired_position: string | null;
+  inferred_needs: Record<string, unknown>;
+  matched_companies: Array<Record<string, unknown>>;
+  meeting_notes: string | null;
+  status: string;
+  follow_up_date: string | null;
+  follow_up_priority: string;
+  follow_up_notes: string | null;
+  last_contact_date: string | null;
+  days_since_contact: number;
+  action_history: Array<{ date: string; action: string; result: string }>;
+  pipedrive_person_id: number | null;
+  pipedrive_deal_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CandidateListResponse {
+  candidates: CandidateItem[];
+  total: number;
+}
+
+export interface CandidateBriefingResponse {
+  candidate_id: string;
+  briefing: string;
+  matched_companies: Array<Record<string, unknown>>;
+  inferred_needs: Record<string, unknown>;
+}
+
+export interface CandidateCreateData {
+  name: string;
+  email?: string;
+  phone?: string;
+  age?: number;
+  current_company?: string;
+  current_position?: string;
+  current_industry?: string;
+  years_of_experience?: number;
+  current_salary?: number;
+  qualifications?: string[];
+  desired_keywords?: string[];
+  desired_salary?: number;
+  desired_location?: string;
+  desired_position?: string;
+}
+
+/* ---------- Candidate API ---------- */
+
+export async function fetchCandidates(
+  status?: string,
+  q?: string,
+  followUpDue?: boolean,
+): Promise<CandidateListResponse> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (q) params.set("q", q);
+  if (followUpDue) params.set("follow_up_due", "true");
+  const qs = params.toString();
+  return request<CandidateListResponse>(`/candidates${qs ? `?${qs}` : ""}`);
+}
+
+export async function createCandidate(
+  data: CandidateCreateData,
+): Promise<CandidateItem> {
+  return request<CandidateItem>("/candidates", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getCandidate(id: string): Promise<CandidateItem> {
+  return request<CandidateItem>(`/candidates/${id}`);
+}
+
+export async function updateCandidate(
+  id: string,
+  data: Partial<CandidateCreateData> & { status?: string; meeting_notes?: string },
+): Promise<CandidateItem> {
+  return request<CandidateItem>(`/candidates/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function generateCandidateBriefing(
+  id: string,
+): Promise<CandidateBriefingResponse> {
+  return request<CandidateBriefingResponse>(`/candidates/${id}/briefing`, {
+    method: "POST",
+  });
+}
+
+export async function saveMeetingNotes(
+  id: string,
+  notes: string,
+  keywordsDiscovered: string[] = [],
+): Promise<CandidateItem> {
+  return request<CandidateItem>(`/candidates/${id}/meeting-notes`, {
+    method: "POST",
+    body: JSON.stringify({ notes, keywords_discovered: keywordsDiscovered }),
+  });
+}
+
+export async function addCandidateAction(
+  id: string,
+  action: string,
+  result?: string,
+): Promise<CandidateItem> {
+  return request<CandidateItem>(`/candidates/${id}/action`, {
+    method: "POST",
+    body: JSON.stringify({ action, result }),
+  });
+}
+
+export async function updateFollowUp(
+  id: string,
+  data: {
+    status?: string;
+    follow_up_date?: string;
+    follow_up_priority?: string;
+    follow_up_notes?: string;
+  },
+): Promise<CandidateItem> {
+  return request<CandidateItem>(`/candidates/${id}/follow-up`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
