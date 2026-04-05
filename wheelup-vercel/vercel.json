@@ -1,6 +1,9 @@
 {
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/api/candidates/:path*", "destination": "/api/candidates" },
+    { "source": "/api/companies/:path*", "destination": "/api/companies" },
+    { "source": "/api/knowledge/:path*", "destination": "/api/knowledge" },
+    { "source": "/api/jobs/:path*", "destination": "/api/jobs" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "headers": [
