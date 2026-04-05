@@ -571,3 +571,172 @@ export async function matchJobs(
     body: JSON.stringify(params),
   });
 }
+
+/* ---------- Pipedrive Deal Types ---------- */
+
+export interface DealItem {
+  id: string;
+  pipedrive_deal_id: number;
+  title: string;
+  value: number;
+  currency: string;
+  pipeline_id: number;
+  pipeline_name: string;
+  stage_id: number;
+  stage_name: string;
+  stage_order: number;
+  status: string;
+  person_name: string;
+  org_name: string;
+  candidate_id: string | null;
+  company_id: string | null;
+  expected_close_date: string | null;
+  won_time: string | null;
+  lost_time: string | null;
+  lost_reason: string | null;
+  stage_entered_at: string;
+  days_in_stage: number;
+  activities_count: number;
+  last_activity_date: string | null;
+  owner_name: string;
+  synced_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DealActivity {
+  id: string;
+  pipedrive_activity_id: number;
+  deal_id: string | null;
+  type: string;
+  subject: string;
+  note: string;
+  done: boolean;
+  due_date: string | null;
+  duration: number | null;
+  person_name: string;
+  org_name: string;
+  owner_name: string;
+  created_at: string;
+}
+
+export interface PipelineStage {
+  name: string;
+  order: number;
+  count: number;
+  value: number;
+  avg_days: number;
+  deals: Array<{ id: string; title: string; person_name: string; days_in_stage: number; value: number }>;
+}
+
+export interface PipelineStatsResponse {
+  stages: PipelineStage[];
+  total_value: number;
+  total_deals: number;
+}
+
+export interface DealDetailResponse {
+  deal: DealItem;
+  activities: DealActivity[];
+  transcripts: Array<{ id: string; title: string; summary: string; recorded_at: string }>;
+}
+
+/* ---------- Pipedrive API ---------- */
+
+export async function syncPipedriveDeals(): Promise<{ synced: number; message: string }> {
+  return request("/pipedrive/sync/deals", { method: "POST" });
+}
+
+export async function syncPipedriveActivities(): Promise<{ synced: number; message: string }> {
+  return request("/pipedrive/sync/activities", { method: "POST" });
+}
+
+export async function syncPipedrivePersons(): Promise<{ created: number; updated: number; message: string }> {
+  return request("/pipedrive/sync/persons", { method: "POST" });
+}
+
+export async function fetchDeals(
+  status?: string,
+): Promise<{ deals: DealItem[]; total: number }> {
+  const qs = status ? `?status=${status}` : "";
+  return request(`/pipedrive/deals${qs}`);
+}
+
+export async function getDealDetail(id: string): Promise<DealDetailResponse> {
+  return request(`/pipedrive/deals/${id}`);
+}
+
+export async function fetchStaleDeals(
+  days?: number,
+): Promise<{ stale_deals: DealItem[]; total: number; threshold_days: number }> {
+  const qs = days ? `?days=${days}` : "";
+  return request(`/pipedrive/stale${qs}`);
+}
+
+export async function fetchPipelineStats(): Promise<PipelineStatsResponse> {
+  return request("/pipedrive/pipeline");
+}
+
+/* ---------- Meeting Transcript Types ---------- */
+
+export interface MeetingTranscript {
+  id: string;
+  deal_id: string | null;
+  candidate_id: string | null;
+  title: string;
+  transcript_text: string;
+  summary: string | null;
+  action_items: string[];
+  key_points: string[];
+  next_steps: string | null;
+  attendees: string[];
+  duration_minutes: number | null;
+  source: string;
+  recorded_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/* ---------- Meeting API ---------- */
+
+export async function fetchMeetings(
+  dealId?: string,
+  candidateId?: string,
+): Promise<{ transcripts: MeetingTranscript[]; total: number }> {
+  const params = new URLSearchParams();
+  if (dealId) params.set("deal_id", dealId);
+  if (candidateId) params.set("candidate_id", candidateId);
+  const qs = params.toString();
+  return request(`/meetings${qs ? `?${qs}` : ""}`);
+}
+
+export async function createMeeting(
+  data: Partial<MeetingTranscript>,
+): Promise<MeetingTranscript> {
+  return request("/meetings", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function getMeeting(id: string): Promise<MeetingTranscript> {
+  return request(`/meetings/${id}`);
+}
+
+export async function transcribeAudio(data: {
+  audio_base64: string;
+  mime_type?: string;
+  deal_id?: string;
+  candidate_id?: string;
+  title?: string;
+  attendees?: string[];
+}): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string }> {
+  return request("/meetings/transcribe", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function summarizeMeeting(
+  id: string,
+): Promise<{ summary: string; action_items: string[]; key_points: string[] }> {
+  return request(`/meetings/${id}/summarize`, { method: "POST" });
+}
+
+export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
+  return request(`/meetings/${id}`, { method: "DELETE" });
+}

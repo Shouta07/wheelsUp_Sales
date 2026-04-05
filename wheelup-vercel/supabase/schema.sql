@@ -285,6 +285,105 @@ create policy "Authenticated users full access" on job_postings
   for all using (auth.role() = 'authenticated');
 
 -- =====================================================
+-- Pipedrive 案件（Deal）
+-- =====================================================
+create table if not exists deals (
+  id uuid primary key default gen_random_uuid(),
+  pipedrive_deal_id integer unique not null,
+  title text not null,
+  value numeric default 0,
+  currency text default 'JPY',
+  pipeline_id integer,
+  pipeline_name text,
+  stage_id integer,
+  stage_name text,
+  stage_order integer default 0,
+  status text default 'open',
+  person_name text,
+  org_name text,
+  candidate_id uuid references candidates(id) on delete set null,
+  company_id uuid references companies(id) on delete set null,
+  expected_close_date date,
+  won_time timestamptz,
+  lost_time timestamptz,
+  lost_reason text,
+  stage_entered_at timestamptz default now(),
+  days_in_stage integer default 0,
+  activities_count integer default 0,
+  last_activity_date timestamptz,
+  owner_name text,
+  pipedrive_person_id integer,
+  pipedrive_org_id integer,
+  synced_at timestamptz default now(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index idx_deals_status on deals(status);
+create index idx_deals_stage on deals(stage_id);
+create index idx_deals_candidate on deals(candidate_id);
+create index idx_deals_company on deals(company_id);
+
+alter table deals enable row level security;
+create policy "Authenticated users full access" on deals
+  for all using (auth.role() = 'authenticated');
+
+-- =====================================================
+-- Pipedrive アクティビティ（Activity）
+-- =====================================================
+create table if not exists deal_activities (
+  id uuid primary key default gen_random_uuid(),
+  pipedrive_activity_id integer unique not null,
+  pipedrive_deal_id integer,
+  deal_id uuid references deals(id) on delete cascade,
+  type text,
+  subject text,
+  note text,
+  done boolean default false,
+  due_date date,
+  duration integer,
+  person_name text,
+  org_name text,
+  owner_name text,
+  created_at timestamptz default now()
+);
+
+create index idx_activities_deal on deal_activities(deal_id);
+create index idx_activities_type on deal_activities(type);
+
+alter table deal_activities enable row level security;
+create policy "Authenticated users full access" on deal_activities
+  for all using (auth.role() = 'authenticated');
+
+-- =====================================================
+-- 議事録（Gemini 文字起こし + AI要約）
+-- =====================================================
+create table if not exists meeting_transcripts (
+  id uuid primary key default gen_random_uuid(),
+  deal_id uuid references deals(id) on delete set null,
+  candidate_id uuid references candidates(id) on delete set null,
+  title text,
+  transcript_text text,
+  summary text,
+  action_items jsonb default '[]',
+  key_points jsonb default '[]',
+  next_steps text,
+  attendees text[] default '{}',
+  duration_minutes integer,
+  source text default 'gemini',
+  recorded_at timestamptz default now(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index idx_transcripts_deal on meeting_transcripts(deal_id);
+create index idx_transcripts_candidate on meeting_transcripts(candidate_id);
+
+alter table meeting_transcripts enable row level security;
+create policy "Authenticated users full access" on meeting_transcripts
+  for all using (auth.role() = 'authenticated');
+
+-- =====================================================
 -- updated_at 自動更新トリガー
 -- =====================================================
 create or replace function update_updated_at()
@@ -302,4 +401,8 @@ create trigger candidates_updated_at before update on candidates
 create trigger industry_categories_updated_at before update on industry_categories
   for each row execute function update_updated_at();
 create trigger job_postings_updated_at before update on job_postings
+  for each row execute function update_updated_at();
+create trigger deals_updated_at before update on deals
+  for each row execute function update_updated_at();
+create trigger meeting_transcripts_updated_at before update on meeting_transcripts
   for each row execute function update_updated_at();
