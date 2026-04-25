@@ -1,8 +1,11 @@
 import { NavLink } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
+import XpBar from "./gamification/XpBar";
+import StreakFlame from "./gamification/StreakFlame";
 
 const phases = [
-  { to: "/", label: "前準備", icon: "①" },
+  { to: "/home", label: "ホーム", icon: "🏠" },
+  { to: "/prep", label: "前準備", icon: "①" },
   { to: "/meeting", label: "面談・商談中", icon: "②" },
   { to: "/after", label: "直後対応", icon: "③" },
   { to: "/closing", label: "推薦〜クロージング", icon: "④" },
@@ -21,20 +24,21 @@ export default function PhaseNav() {
   return (
     <nav className="bg-white border-b border-gray-200 px-4">
       <div className="mx-auto flex max-w-7xl items-center justify-between">
-        <div className="flex items-center gap-2 py-3">
-          <span className="text-lg font-bold text-primary-700">wheelsUp</span>
-          <span className="text-xs text-gray-400">Sales Enablement</span>
+        <div className="flex items-center gap-3 py-3">
+          <span className="text-lg font-black text-duo-green">wheelsUp</span>
+          <XpBar />
+          <StreakFlame />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 overflow-x-auto">
           {phases.map(({ to, label, icon }) => (
             <NavLink
               key={to}
               to={to}
-              end={to === "/"}
+              end={to === "/home"}
               className={({ isActive }) =>
-                `px-3 py-3 text-sm font-medium transition-colors border-b-2 ${
+                `px-3 py-3 text-sm font-medium transition-colors border-b-2 whitespace-nowrap ${
                   isActive
-                    ? "border-primary-600 text-primary-700"
+                    ? "border-duo-green text-duo-green"
                     : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
                 }`
               }

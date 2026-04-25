@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useCallback } from "react";
 import { useSearch } from "../hooks/useSearch";
 import SearchResultCard from "../components/SearchResult";

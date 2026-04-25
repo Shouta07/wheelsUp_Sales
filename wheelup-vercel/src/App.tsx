@@ -1,8 +1,11 @@
 import { useState, useEffect } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
+import { GamificationProvider } from "./gamification/GamificationProvider";
+import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
 import PhaseNav from "./components/PhaseNav";
+import Home from "./pages/Home";
 import Phase1Prep from "./pages/Phase1Prep";
 import Phase2Meeting from "./pages/Phase2Meeting";
 import Phase3After from "./pages/Phase3After";
@@ -133,18 +136,23 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <PhaseNav />
-      <Routes>
-        <Route path="/" element={<Phase1Prep />} />
-        <Route path="/meeting" element={<Phase2Meeting />} />
-        <Route path="/after" element={<Phase3After />} />
-        <Route path="/closing" element={<Phase4Closing />} />
-        <Route path="/recommendations" element={<Recommendations />} />
-        <Route path="/companies" element={<Companies />} />
-        <Route path="/jobs" element={<JobPostings />} />
-        <Route path="/industry" element={<IndustryMap />} />
-      </Routes>
-    </div>
+    <GamificationProvider>
+      <div className="min-h-screen bg-gray-50">
+        <CelebrationOverlay />
+        <PhaseNav />
+        <Routes>
+          <Route path="/" element={<Navigate to="/home" replace />} />
+          <Route path="/home" element={<Home />} />
+          <Route path="/prep" element={<Phase1Prep />} />
+          <Route path="/meeting" element={<Phase2Meeting />} />
+          <Route path="/after" element={<Phase3After />} />
+          <Route path="/closing" element={<Phase4Closing />} />
+          <Route path="/recommendations" element={<Recommendations />} />
+          <Route path="/companies" element={<Companies />} />
+          <Route path="/jobs" element={<JobPostings />} />
+          <Route path="/industry" element={<IndustryMap />} />
+        </Routes>
+      </div>
+    </GamificationProvider>
   );
 }

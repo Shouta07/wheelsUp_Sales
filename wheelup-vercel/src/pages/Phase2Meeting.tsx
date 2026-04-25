@@ -252,7 +252,7 @@ export default function Phase2Meeting() {
       </div>
 
       <div className="mt-6 flex items-center justify-between">
-        <button onClick={() => navigate("/")} className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">← 前のフェーズ</button>
+        <button onClick={() => navigate("/prep")} className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">← 前のフェーズ</button>
         <span className="text-xs text-gray-400">② 面談・商談中 2/4</span>
         <button onClick={() => navigate("/after")} className="px-4 py-2 text-sm font-medium text-primary-700 hover:text-primary-800">次のフェーズ →</button>
       </div>
