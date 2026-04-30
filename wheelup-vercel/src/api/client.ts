@@ -901,3 +901,57 @@ export async function summarizeMeeting(
 export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
   return request(`/meetings/${id}`, { method: "DELETE" });
 }
+
+/* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
+
+export interface MeetingScore {
+  meeting_id: string;
+  scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
+  total: number;
+  grade: string;
+  strengths: string[];
+  improvements: string[];
+  leader_would: string;
+}
+
+export interface PlaybookEntry {
+  situation: string;
+  trigger: string;
+  leader_approach: string;
+  key_phrases: string[];
+  avoid: string;
+  success_rate_hint: string;
+}
+
+export interface ContextualCoachingResponse {
+  phase: number;
+  coaching: string;
+  context: Record<string, string>;
+}
+
+export async function scoreMeeting(id: string): Promise<MeetingScore> {
+  return request(`/meetings/${id}/score`, { method: "POST" });
+}
+
+export async function extractPlaybook(
+  leaderName?: string,
+  limit?: number,
+): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  return request("/meetings/extract-playbook", {
+    method: "POST",
+    body: JSON.stringify({ leader_name: leaderName, limit }),
+  });
+}
+
+export async function getContextualCoaching(params: {
+  phase: number;
+  candidate_id?: string;
+  company_id?: string;
+  deal_id?: string;
+  current_situation?: string;
+}): Promise<ContextualCoachingResponse> {
+  return request("/meetings/coach", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}

@@ -5,6 +5,7 @@ import SkillPath from "../components/gamification/SkillPath";
 import DailyQuests from "../components/gamification/DailyQuests";
 import ConsultantRanking from "../components/gamification/ConsultantRanking";
 import CoachingPanel from "../components/gamification/CoachingPanel";
+import PlaybookPanel from "../components/gamification/PlaybookPanel";
 import Achievements from "../components/gamification/Achievements";
 import { useState } from "react";
 
@@ -80,6 +81,9 @@ export default function Home() {
           <main className="space-y-5">
             {/* Coaching (real data or prompt to sync) */}
             <CoachingPanel />
+
+            {/* Leader playbook extraction */}
+            <PlaybookPanel />
 
             {/* Weekly activity comparison */}
             {hasPipedriveData && myMetrics && (
