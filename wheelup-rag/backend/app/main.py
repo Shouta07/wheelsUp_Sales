@@ -5,7 +5,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import webhook_lark, search, briefing, summary, pipedrive
+from app.api import webhook_lark, search, briefing, summary, pipedrive, companies, candidates, knowledge
+from app.core.config import settings
 from app.queue.producer import close_redis
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -18,7 +19,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,6 +31,9 @@ app.include_router(pipedrive.router, tags=["Webhook"])
 app.include_router(search.router, tags=["Search"])
 app.include_router(briefing.router, tags=["Briefing"])
 app.include_router(summary.router, tags=["Summary"])
+app.include_router(companies.router, tags=["Companies"])
+app.include_router(candidates.router, tags=["Candidates"])
+app.include_router(knowledge.router, tags=["Knowledge"])
 
 
 @app.get("/health")

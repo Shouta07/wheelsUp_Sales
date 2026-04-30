@@ -1,6 +1,23 @@
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+
+# Environment
 .env
-.streamlit/secrets.toml
-candidates.json
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Test / Cache
+.pytest_cache/
 *.bak

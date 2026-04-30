@@ -151,3 +151,7 @@ async def run_consumer() -> None:
                 logger.exception("イベント処理中にエラー")
     finally:
         await r.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_consumer())

@@ -1,0 +1,20 @@
+{
+  "rewrites": [
+    { "source": "/api/candidates/:path*", "destination": "/api/candidates" },
+    { "source": "/api/companies/:path*", "destination": "/api/companies" },
+    { "source": "/api/knowledge/:path*", "destination": "/api/knowledge" },
+    { "source": "/api/jobs/:path*", "destination": "/api/jobs" },
+    { "source": "/api/pipedrive/:path*", "destination": "/api/pipedrive" },
+    { "source": "/api/lark/:path*", "destination": "/api/lark" },
+    { "source": "/api/meetings/:path*", "destination": "/api/meetings" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
+  ]
+}
