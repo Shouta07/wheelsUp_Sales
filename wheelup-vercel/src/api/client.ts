@@ -796,6 +796,12 @@ export interface ConsultantMetrics {
   activities_this_week: number;
   activities_last_week: number;
   streak_days: number;
+  today_calls: number;
+  today_meetings: number;
+  today_emails: number;
+  today_tasks: number;
+  today_total: number;
+  today_xp: number;
 }
 
 export interface GamificationResponse {

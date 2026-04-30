@@ -364,6 +364,12 @@ interface ConsultantMetrics {
   activities_this_week: number;
   activities_last_week: number;
   streak_days: number;
+  today_calls: number;
+  today_meetings: number;
+  today_emails: number;
+  today_tasks: number;
+  today_total: number;
+  today_xp: number;
 }
 
 const XP_TABLE = {
@@ -409,20 +415,28 @@ async function gamificationMetrics(
         total_value: 0, won_value: 0, avg_days_to_close: 0,
         conversion_rate: 0, activities_this_week: 0, activities_last_week: 0,
         streak_days: 0,
+        today_calls: 0, today_meetings: 0, today_emails: 0, today_tasks: 0,
+        today_total: 0, today_xp: 0,
       });
     }
     return consultantMap.get(name)!;
   };
 
+  const todayStr = now.toISOString().slice(0, 10);
+
   for (const a of activities) {
     const c = getOrCreate(a.owner_name);
     c.total_activities++;
     const type = a.type as string;
-    if (type === "call") { c.calls++; c.xp += XP_TABLE.call; }
-    else if (type === "meeting") { c.meetings++; c.xp += XP_TABLE.meeting; }
-    else if (type === "email") { c.emails++; c.xp += XP_TABLE.email; }
-    else if (type === "task") { c.tasks++; c.xp += XP_TABLE.task; }
+    const isToday = a.due_date && (a.due_date as string).slice(0, 10) === todayStr;
+
+    if (type === "call") { c.calls++; c.xp += XP_TABLE.call; if (isToday) { c.today_calls++; c.today_xp += XP_TABLE.call; } }
+    else if (type === "meeting") { c.meetings++; c.xp += XP_TABLE.meeting; if (isToday) { c.today_meetings++; c.today_xp += XP_TABLE.meeting; } }
+    else if (type === "email") { c.emails++; c.xp += XP_TABLE.email; if (isToday) { c.today_emails++; c.today_xp += XP_TABLE.email; } }
+    else if (type === "task") { c.tasks++; c.xp += XP_TABLE.task; if (isToday) { c.today_tasks++; c.today_xp += XP_TABLE.task; } }
     else { c.xp += XP_TABLE.deadline; }
+
+    if (isToday) c.today_total++;
 
     if (a.due_date) {
       const d = new Date(a.due_date);

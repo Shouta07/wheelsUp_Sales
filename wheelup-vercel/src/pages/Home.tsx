@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { useGamification } from "../gamification/GamificationProvider";
 import { syncPipedriveDeals, syncPipedriveActivities } from "../api/client";
+import ActivityTracker from "../components/gamification/ActivityTracker";
 import StatsOverview from "../components/gamification/StatsOverview";
 import SkillPath from "../components/gamification/SkillPath";
 import DailyQuests from "../components/gamification/DailyQuests";
@@ -7,11 +9,25 @@ import ConsultantRanking from "../components/gamification/ConsultantRanking";
 import CoachingPanel from "../components/gamification/CoachingPanel";
 import PlaybookPanel from "../components/gamification/PlaybookPanel";
 import Achievements from "../components/gamification/Achievements";
-import { useState } from "react";
 
 export default function Home() {
   const { state, currentUser, pipedriveData, myMetrics, loading, refreshPipedriveData, earnXp, unlockAchievement, progressQuest } = useGamification();
   const [syncing, setSyncing] = useState(false);
+  const autoSynced = useRef(false);
+
+  // Auto-sync on first page load
+  useEffect(() => {
+    if (autoSynced.current) return;
+    autoSynced.current = true;
+    (async () => {
+      setSyncing(true);
+      try {
+        await Promise.all([syncPipedriveDeals(), syncPipedriveActivities()]);
+        await refreshPipedriveData();
+      } catch { /* preview mode */ }
+      setSyncing(false);
+    })();
+  }, [refreshPipedriveData]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -47,7 +63,7 @@ export default function Home() {
     <div className="min-h-screen bg-[#f7f7f7]">
       <div className="mx-auto max-w-6xl px-4 py-6">
 
-        {/* Sync bar */}
+        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-black text-[#4b4b4b]">
@@ -64,7 +80,7 @@ export default function Home() {
             disabled={syncing || loading}
             className="btn-duo btn-duo-blue !px-4 !py-2 !text-xs"
           >
-            {syncing ? "同期中..." : "Pipedrive同期"}
+            {syncing ? "同期中..." : "🔄 同期"}
           </button>
         </div>
 
@@ -77,15 +93,12 @@ export default function Home() {
             <SkillPath />
           </aside>
 
-          {/* CENTER */}
+          {/* CENTER — Activity tracker is the hero */}
           <main className="space-y-5">
-            {/* Coaching (real data or prompt to sync) */}
-            <CoachingPanel />
+            {/* Today's activity tracker (always visible) */}
+            <ActivityTracker />
 
-            {/* Leader playbook extraction */}
-            <PlaybookPanel />
-
-            {/* Weekly activity comparison */}
+            {/* Weekly comparison (when Pipedrive connected) */}
             {hasPipedriveData && myMetrics && (
               <div className="card-duo p-5">
                 <div className="flex items-center gap-2 mb-4">
@@ -122,6 +135,10 @@ export default function Home() {
                 </div>
               </div>
             )}
+
+            {/* Coaching + Playbook */}
+            <CoachingPanel />
+            <PlaybookPanel />
 
             {/* Demo actions (when no Pipedrive data) */}
             {!hasPipedriveData && (
