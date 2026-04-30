@@ -776,6 +776,68 @@ export async function fetchPipelineStats(): Promise<PipelineStatsResponse> {
   return request("/pipedrive/pipeline");
 }
 
+/* ---------- Gamification Types ---------- */
+
+export interface ConsultantMetrics {
+  name: string;
+  xp: number;
+  calls: number;
+  meetings: number;
+  emails: number;
+  tasks: number;
+  total_activities: number;
+  deals_open: number;
+  deals_won: number;
+  deals_lost: number;
+  total_value: number;
+  won_value: number;
+  avg_days_to_close: number;
+  conversion_rate: number;
+  activities_this_week: number;
+  activities_last_week: number;
+  streak_days: number;
+}
+
+export interface GamificationResponse {
+  consultants: ConsultantMetrics[];
+  top_performer: ConsultantMetrics | null;
+  team_avg: {
+    activities_per_week: number;
+    conversion_rate: number;
+    avg_deals_won: number;
+  };
+  generated_at: string;
+}
+
+export interface CoachingResponse {
+  coaching: string;
+  metrics_summary: {
+    activities: number;
+    deals: number;
+    won: number;
+    conversion_rate: number;
+    top_performer: string | null;
+  };
+}
+
+/* ---------- Gamification API ---------- */
+
+export async function fetchGamificationMetrics(
+  owner?: string,
+): Promise<GamificationResponse> {
+  const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
+  return request(`/pipedrive/gamification${qs}`);
+}
+
+export async function generateCoachingFeedback(
+  consultantName: string,
+): Promise<CoachingResponse> {
+  return request("/pipedrive/coaching", {
+    method: "POST",
+    body: JSON.stringify({ consultant_name: consultantName }),
+  });
+}
+
 /* ---------- Meeting Transcript Types ---------- */
 
 export interface MeetingTranscript {

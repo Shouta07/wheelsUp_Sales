@@ -11,6 +11,8 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
  * GET    /api/pipedrive/deals/:id         → 案件詳細（Activity付き）
  * GET    /api/pipedrive/stale             → 停滞案件アラート
  * GET    /api/pipedrive/pipeline          → パイプライン統計
+ * GET    /api/pipedrive/gamification      → コンサルタント別ゲーミフィケーション指標
+ * POST   /api/pipedrive/coaching          → AI コーチングフィードバック生成
  */
 
 const PD_BASE = "https://api.pipedrive.com/v1";
@@ -75,6 +77,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/pipedrive/pipeline ---
     if (segments[0] === "pipeline" && req.method === "GET") {
       return await pipelineStats(db, res);
+    }
+    // --- /api/pipedrive/gamification ---
+    if (segments[0] === "gamification" && req.method === "GET") {
+      return await gamificationMetrics(db, req, res);
+    }
+    // --- /api/pipedrive/coaching ---
+    if (segments[0] === "coaching" && req.method === "POST") {
+      return await generateCoaching(db, req, res);
     }
 
     return res.status(404).json({ error: "Not found" });
@@ -331,5 +341,261 @@ async function pipelineStats(db: ReturnType<typeof getSupabaseAdmin>, res: Verce
     stages,
     total_value: deals.reduce((sum, d) => sum + ((d.value as number) || 0), 0),
     total_deals: deals.length,
+  });
+}
+
+/* ========== Gamification ========== */
+
+interface ConsultantMetrics {
+  name: string;
+  xp: number;
+  calls: number;
+  meetings: number;
+  emails: number;
+  tasks: number;
+  total_activities: number;
+  deals_open: number;
+  deals_won: number;
+  deals_lost: number;
+  total_value: number;
+  won_value: number;
+  avg_days_to_close: number;
+  conversion_rate: number;
+  activities_this_week: number;
+  activities_last_week: number;
+  streak_days: number;
+}
+
+const XP_TABLE = {
+  call: 15,
+  meeting: 30,
+  email: 5,
+  task: 10,
+  deadline: 5,
+  deal_created: 20,
+  deal_won: 200,
+  stage_advance: 25,
+};
+
+async function gamificationMetrics(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const ownerFilter = req.query.owner as string | undefined;
+
+  const { data: activities } = await db.from("deal_activities").select("*");
+  const { data: deals } = await db.from("deals").select("*");
+
+  if (!activities || !deals) {
+    return res.json({ consultants: [], generated_at: new Date().toISOString() });
+  }
+
+  const now = new Date();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - now.getDay());
+  weekStart.setHours(0, 0, 0, 0);
+  const lastWeekStart = new Date(weekStart);
+  lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+
+  const consultantMap = new Map<string, ConsultantMetrics>();
+
+  const getOrCreate = (name: string): ConsultantMetrics => {
+    if (!name) name = "不明";
+    if (!consultantMap.has(name)) {
+      consultantMap.set(name, {
+        name, xp: 0, calls: 0, meetings: 0, emails: 0, tasks: 0,
+        total_activities: 0, deals_open: 0, deals_won: 0, deals_lost: 0,
+        total_value: 0, won_value: 0, avg_days_to_close: 0,
+        conversion_rate: 0, activities_this_week: 0, activities_last_week: 0,
+        streak_days: 0,
+      });
+    }
+    return consultantMap.get(name)!;
+  };
+
+  for (const a of activities) {
+    const c = getOrCreate(a.owner_name);
+    c.total_activities++;
+    const type = a.type as string;
+    if (type === "call") { c.calls++; c.xp += XP_TABLE.call; }
+    else if (type === "meeting") { c.meetings++; c.xp += XP_TABLE.meeting; }
+    else if (type === "email") { c.emails++; c.xp += XP_TABLE.email; }
+    else if (type === "task") { c.tasks++; c.xp += XP_TABLE.task; }
+    else { c.xp += XP_TABLE.deadline; }
+
+    if (a.due_date) {
+      const d = new Date(a.due_date);
+      if (d >= weekStart) c.activities_this_week++;
+      else if (d >= lastWeekStart && d < weekStart) c.activities_last_week++;
+    }
+  }
+
+  const closedDeals: Record<string, number[]> = {};
+
+  for (const d of deals) {
+    const c = getOrCreate(d.owner_name);
+    c.total_value += (d.value as number) || 0;
+    if (d.status === "open") {
+      c.deals_open++;
+      c.xp += XP_TABLE.deal_created;
+    } else if (d.status === "won") {
+      c.deals_won++;
+      c.won_value += (d.value as number) || 0;
+      c.xp += XP_TABLE.deal_won;
+      if (d.won_time && d.created_at) {
+        const days = Math.floor(
+          (new Date(d.won_time as string).getTime() - new Date(d.created_at as string).getTime()) / 86400000,
+        );
+        if (!closedDeals[c.name]) closedDeals[c.name] = [];
+        closedDeals[c.name].push(days);
+      }
+    } else if (d.status === "lost") {
+      c.deals_lost++;
+    }
+  }
+
+  for (const [name, days] of Object.entries(closedDeals)) {
+    const c = consultantMap.get(name);
+    if (c && days.length > 0) {
+      c.avg_days_to_close = Math.round(days.reduce((a, b) => a + b, 0) / days.length);
+    }
+  }
+
+  for (const c of consultantMap.values()) {
+    const total = c.deals_won + c.deals_lost;
+    c.conversion_rate = total > 0 ? Math.round((c.deals_won / total) * 100) : 0;
+  }
+
+  // Activity streak: count consecutive days with activity (from today backward)
+  for (const c of consultantMap.values()) {
+    const ownerActivities = activities
+      .filter((a) => a.owner_name === c.name && a.due_date)
+      .map((a) => a.due_date as string)
+      .sort()
+      .reverse();
+
+    const seen = new Set(ownerActivities.map((d) => d.slice(0, 10)));
+    let streak = 0;
+    const check = new Date();
+    for (let i = 0; i < 365; i++) {
+      const dateStr = check.toISOString().slice(0, 10);
+      if (seen.has(dateStr)) {
+        streak++;
+        check.setDate(check.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+    c.streak_days = streak;
+  }
+
+  let result = [...consultantMap.values()].sort((a, b) => b.xp - a.xp);
+  if (ownerFilter) {
+    result = result.filter((c) => c.name === ownerFilter);
+  }
+
+  // Top performer for comparison
+  const topPerformer = [...consultantMap.values()].sort((a, b) => b.xp - a.xp)[0] || null;
+
+  return res.json({
+    consultants: result,
+    top_performer: topPerformer,
+    team_avg: {
+      activities_per_week: result.length > 0
+        ? Math.round(result.reduce((s, c) => s + c.activities_this_week, 0) / result.length)
+        : 0,
+      conversion_rate: result.length > 0
+        ? Math.round(result.reduce((s, c) => s + c.conversion_rate, 0) / result.length)
+        : 0,
+      avg_deals_won: result.length > 0
+        ? Math.round(result.reduce((s, c) => s + c.deals_won, 0) / result.length)
+        : 0,
+    },
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function generateCoaching(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { consultant_name } = req.body || {};
+  if (!consultant_name) return res.status(400).json({ error: "consultant_name required" });
+
+  const { data: activities } = await db.from("deal_activities")
+    .select("*").eq("owner_name", consultant_name).order("due_date", { ascending: false }).limit(50);
+  const { data: deals } = await db.from("deals")
+    .select("*").eq("owner_name", consultant_name);
+  const { data: allDeals } = await db.from("deals").select("owner_name, status, value, won_time, activities_count");
+  const { data: allActivities } = await db.from("deal_activities").select("owner_name, type");
+
+  // Build team benchmark
+  const teamStats: Record<string, { won: number; total: number; activities: number }> = {};
+  for (const d of allDeals || []) {
+    const n = d.owner_name as string;
+    if (!teamStats[n]) teamStats[n] = { won: 0, total: 0, activities: 0 };
+    teamStats[n].total++;
+    if (d.status === "won") teamStats[n].won++;
+  }
+  for (const a of allActivities || []) {
+    const n = a.owner_name as string;
+    if (teamStats[n]) teamStats[n].activities++;
+  }
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    return res.json({
+      coaching: "OpenAI API キーが設定されていません。環境変数 OPENAI_API_KEY を設定してください。",
+      metrics_summary: { activities: activities?.length || 0, deals: deals?.length || 0 },
+    });
+  }
+
+  const myStats = teamStats[consultant_name] || { won: 0, total: 0, activities: 0 };
+  const topName = Object.entries(teamStats).sort((a, b) => b[1].won - a[1].won)[0];
+
+  const prompt = `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
+以下のデータに基づき、コンサルタント「${consultant_name}」への具体的なフィードバックを日本語で3つ提供してください。
+
+## ${consultant_name}のデータ:
+- 総活動数: ${myStats.activities}件（電話/面談/メール/タスク）
+- Deal数: ${myStats.total}件（成約: ${myStats.won}件）
+- 成約率: ${myStats.total > 0 ? Math.round((myStats.won / myStats.total) * 100) : 0}%
+- 最近の活動: ${(activities || []).slice(0, 10).map((a) => `${a.type}:${a.subject}`).join(", ")}
+
+## チームトップ（${topName ? topName[0] : "N/A"}）:
+- 活動数: ${topName ? topName[1].activities : 0}件
+- 成約: ${topName ? topName[1].won : 0}件
+- 成約率: ${topName ? (topName[1].total > 0 ? Math.round((topName[1].won / topName[1].total) * 100) : 0) : 0}%
+
+## 回答フォーマット:
+各フィードバックは以下の形式で:
+1. **[強み/改善点のタイトル]**: 具体的なアドバイス（数字に基づく）
+
+トーンは応援する先輩コーチのように。建築技術者の転職市場の文脈を踏まえて。`;
+
+  const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 800,
+    }),
+  });
+
+  const openaiData = await openaiRes.json();
+  const coaching = openaiData.choices?.[0]?.message?.content || "フィードバックを生成できませんでした。";
+
+  return res.json({
+    coaching,
+    metrics_summary: {
+      activities: myStats.activities,
+      deals: myStats.total,
+      won: myStats.won,
+      conversion_rate: myStats.total > 0 ? Math.round((myStats.won / myStats.total) * 100) : 0,
+      top_performer: topName ? topName[0] : null,
+    },
   });
 }
