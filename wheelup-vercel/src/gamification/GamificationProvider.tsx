@@ -5,7 +5,12 @@ import { fetchGamificationMetrics } from "../api/client";
 import { ALL_ACHIEVEMENTS, generateDailyQuests, getLeague, getLevel } from "./config";
 import { isSupabaseConfigured } from "../lib/supabase";
 
-const STORAGE_KEY = "wheelsup_gamification";
+const STORAGE_PREFIX = "wheelsup_gamification_";
+const CURRENT_USER_KEY = "wheelsup_current_user";
+
+function storageKey(userName: string): string {
+  return `${STORAGE_PREFIX}${userName}`;
+}
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -30,9 +35,9 @@ function defaultState(): GamificationState {
   };
 }
 
-function loadLocal(): GamificationState {
+function loadLocal(userName: string): GamificationState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(userName));
     if (!raw) return defaultState();
     const saved = JSON.parse(raw) as GamificationState;
     const d = today();
@@ -56,8 +61,17 @@ function loadLocal(): GamificationState {
   }
 }
 
+export function getSavedUser(): string | null {
+  return localStorage.getItem(CURRENT_USER_KEY) || null;
+}
+
+export function clearSavedUser() {
+  localStorage.removeItem(CURRENT_USER_KEY);
+}
+
 interface GamificationContextValue {
   state: GamificationState;
+  currentUser: string;
   pipedriveData: GamificationResponse | null;
   myMetrics: ConsultantMetrics | null;
   loading: boolean;
@@ -71,18 +85,25 @@ interface GamificationContextValue {
 
 const GamificationContext = createContext<GamificationContextValue | null>(null);
 
-export function GamificationProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<GamificationState>(loadLocal);
+export function GamificationProvider({ children, userName }: { children: ReactNode; userName: string }) {
+  const [state, setState] = useState<GamificationState>(() => loadLocal(userName));
   const [pipedriveData, setPipedriveData] = useState<GamificationResponse | null>(null);
   const [myMetrics, setMyMetrics] = useState<ConsultantMetrics | null>(null);
-  const [currentUser, setCurrentUser] = useState<string>("");
+  const [currentUser, setCurrentUserState] = useState<string>(userName);
   const [loading, setLoading] = useState(false);
 
-  // Persist to localStorage
+  const setCurrentUser = useCallback((name: string) => {
+    setCurrentUserState(name);
+    localStorage.setItem(CURRENT_USER_KEY, name);
+    setState(loadLocal(name));
+  }, []);
+
+  // Persist to localStorage per user
   useEffect(() => {
-    const t = setTimeout(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(state)), 300);
+    if (!currentUser) return;
+    const t = setTimeout(() => localStorage.setItem(storageKey(currentUser), JSON.stringify(state)), 300);
     return () => clearTimeout(t);
-  }, [state]);
+  }, [state, currentUser]);
 
   // Merge Pipedrive XP with local state
   useEffect(() => {
@@ -197,7 +218,7 @@ export function GamificationProvider({ children }: { children: ReactNode }) {
   return (
     <GamificationContext.Provider
       value={{
-        state, pipedriveData, myMetrics, loading,
+        state, currentUser, pipedriveData, myMetrics, loading,
         earnXp, progressQuest, unlockAchievement, popCelebration,
         refreshPipedriveData, setCurrentUser,
       }}

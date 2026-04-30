@@ -10,7 +10,7 @@ import Achievements from "../components/gamification/Achievements";
 import { useState } from "react";
 
 export default function Home() {
-  const { state, pipedriveData, myMetrics, loading, refreshPipedriveData, earnXp, unlockAchievement, progressQuest } = useGamification();
+  const { state, currentUser, pipedriveData, myMetrics, loading, refreshPipedriveData, earnXp, unlockAchievement, progressQuest } = useGamification();
   const [syncing, setSyncing] = useState(false);
 
   const handleSync = async () => {
@@ -51,7 +51,7 @@ export default function Home() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-black text-[#4b4b4b]">
-              {myMetrics ? `${myMetrics.name}さん` : "ダッシュボード"}
+              {currentUser ? `${currentUser}さん` : "ダッシュボード"}
             </h1>
             {myMetrics && (
               <p className="text-xs font-bold text-[#afafaf] mt-0.5">

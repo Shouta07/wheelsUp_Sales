@@ -3,8 +3,8 @@ import { supabase, isSupabaseConfigured } from "../lib/supabase";
 import { useGamification } from "../gamification/GamificationProvider";
 import { getLevelProgress, getLeagueInfo } from "../gamification/config";
 
-export default function PhaseNav() {
-  const { state } = useGamification();
+export default function PhaseNav({ onSwitchUser }: { onSwitchUser?: () => void }) {
+  const { state, currentUser } = useGamification();
   const { progress } = getLevelProgress(state.totalXp);
   const location = useLocation();
   const leagueInfo = getLeagueInfo(state.league);
@@ -98,6 +98,18 @@ export default function PhaseNav() {
           <div className="text-xs font-bold text-duo-green bg-duo-green/10 px-2.5 py-1 rounded-full">
             {state.totalXp.toLocaleString()} XP
           </div>
+          {currentUser && (
+            <button
+              onClick={onSwitchUser}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl hover:bg-gray-50 transition-colors"
+              title="ユーザー切替"
+            >
+              <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
+                <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
+              </div>
+              <span className="text-xs font-bold text-[#4b4b4b] hidden sm:inline">{currentUser}</span>
+            </button>
+          )}
           {isSupabaseConfigured && (
             <button
               onClick={handleLogout}
