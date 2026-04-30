@@ -10,6 +10,7 @@ import {
   type JobMatchResult,
 } from "../api/client";
 import { useRecommendationChecklist } from "../hooks/usePhaseProgress";
+import PhaseCoaching from "../components/gamification/PhaseCoaching";
 
 const CANDIDATE_ITEMS = [
   { section: "候補者情報の把握", items: [
@@ -224,6 +225,18 @@ export default function Phase1Prep() {
               </div>
             </div>
           )}
+
+          {/* AIコーチング */}
+          <div className="mb-6">
+            <PhaseCoaching
+              phase={1}
+              candidateId={selected.candidate_id}
+              companyId={selected.company_id}
+              dealId={selected.deal_id || undefined}
+              candidateName={selected.candidates.name}
+              companyName={selected.companies.name}
+            />
+          </div>
 
           {/* チェックリスト */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -15,6 +15,8 @@ import {
   type MeetingTranscript,
 } from "../api/client";
 import { useRecommendationChecklist } from "../hooks/usePhaseProgress";
+import PhaseCoaching from "../components/gamification/PhaseCoaching";
+import MeetingScoreCard from "../components/gamification/MeetingScoreCard";
 
 const CANDIDATE_SECTIONS = [
   { section: "30分以内", items: [
@@ -222,12 +224,15 @@ export default function Phase3After() {
                         <span className="font-medium text-sm">{m.title}</span>
                         <span className="text-xs text-gray-400 ml-2">{new Date(m.recorded_at).toLocaleDateString("ja-JP")}</span>
                       </div>
-                      {!m.summary && (
-                        <button onClick={() => summarizeMut.mutate(m.id)} disabled={summarizeMut.isPending}
-                          className="px-2 py-1 text-xs font-medium text-white bg-purple-600 rounded hover:bg-purple-700 disabled:opacity-50">
-                          AI要約
-                        </button>
-                      )}
+                      <div className="flex gap-2">
+                        {!m.summary && (
+                          <button onClick={() => summarizeMut.mutate(m.id)} disabled={summarizeMut.isPending}
+                            className="px-2 py-1 text-xs font-medium text-white bg-purple-600 rounded hover:bg-purple-700 disabled:opacity-50">
+                            AI要約
+                          </button>
+                        )}
+                        <MeetingScoreCard meetingId={m.id} meetingTitle={m.title} />
+                      </div>
                     </div>
                     {m.summary && (
                       <div className="mt-2 rounded bg-purple-50 p-2 prose prose-sm max-w-none text-xs">
@@ -238,6 +243,18 @@ export default function Phase3After() {
                 ))}
               </div>
             )}
+          </div>
+
+          {/* AIコーチング */}
+          <div className="mb-6">
+            <PhaseCoaching
+              phase={3}
+              candidateId={selected.candidate_id}
+              companyId={selected.company_id}
+              dealId={selected.deal_id || undefined}
+              candidateName={selected.candidates.name}
+              companyName={selected.companies.name}
+            />
           </div>
 
           {/* ネクストアクション + ステータス */}

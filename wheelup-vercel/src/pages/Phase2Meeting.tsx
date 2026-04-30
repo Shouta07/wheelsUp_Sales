@@ -10,6 +10,7 @@ import {
   type JobMatchResult,
 } from "../api/client";
 import { useRecommendationChecklist } from "../hooks/usePhaseProgress";
+import PhaseCoaching from "../components/gamification/PhaseCoaching";
 
 const KEYWORD_SUGGESTIONS = [
   "施工管理", "設備管理", "ビルメン", "発注者側", "年収UP",
@@ -215,6 +216,18 @@ export default function Phase2Meeting() {
                 )}
               </div>
             )}
+          </div>
+
+          {/* AIコーチング */}
+          <div className="mb-6">
+            <PhaseCoaching
+              phase={2}
+              candidateId={selected.candidate_id}
+              companyId={selected.company_id}
+              dealId={selected.deal_id || undefined}
+              candidateName={selected.candidates.name}
+              companyName={selected.companies.name}
+            />
           </div>
 
           {/* 面談メモ */}
