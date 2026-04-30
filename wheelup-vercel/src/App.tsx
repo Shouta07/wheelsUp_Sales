@@ -2,9 +2,10 @@ import { useState, useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
-import { GamificationProvider } from "./gamification/GamificationProvider";
+import { GamificationProvider, getSavedUser, clearSavedUser } from "./gamification/GamificationProvider";
 import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
 import PhaseNav from "./components/PhaseNav";
+import UserSelectPage from "./pages/UserSelectPage";
 import Home from "./pages/Home";
 import Phase1Prep from "./pages/Phase1Prep";
 import Phase2Meeting from "./pages/Phase2Meeting";
@@ -99,21 +100,19 @@ function LoginPage() {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeUser, setActiveUser] = useState<string | null>(getSavedUser);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
-      // Supabase 未設定時は Auth スキップ（UI プレビューモード）
       setLoading(false);
       return;
     }
 
-    // 初期セッション取得
     supabase.auth.getSession().then(({ data: { session: s } }) => {
       setSession(s);
       setLoading(false);
     });
 
-    // セッション変更を監視
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, s) => {
@@ -125,8 +124,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin w-6 h-6 border-2 border-primary-600 border-t-transparent rounded-full" />
+      <div className="min-h-screen bg-[#f7f7f7] flex items-center justify-center">
+        <div className="animate-spin w-6 h-6 border-2 border-duo-green border-t-transparent rounded-full" />
       </div>
     );
   }
@@ -135,11 +134,27 @@ export default function App() {
     return <LoginPage />;
   }
 
+  if (!activeUser) {
+    return (
+      <UserSelectPage
+        onSelect={(name) => {
+          localStorage.setItem("wheelsup_current_user", name);
+          setActiveUser(name);
+        }}
+      />
+    );
+  }
+
   return (
-    <GamificationProvider>
+    <GamificationProvider userName={activeUser} key={activeUser}>
       <div className="min-h-screen bg-gray-50">
         <CelebrationOverlay />
-        <PhaseNav />
+        <PhaseNav
+          onSwitchUser={() => {
+            clearSavedUser();
+            setActiveUser(null);
+          }}
+        />
         <Routes>
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/home" element={<Home />} />

@@ -776,6 +776,68 @@ export async function fetchPipelineStats(): Promise<PipelineStatsResponse> {
   return request("/pipedrive/pipeline");
 }
 
+/* ---------- Gamification Types ---------- */
+
+export interface ConsultantMetrics {
+  name: string;
+  xp: number;
+  calls: number;
+  meetings: number;
+  emails: number;
+  tasks: number;
+  total_activities: number;
+  deals_open: number;
+  deals_won: number;
+  deals_lost: number;
+  total_value: number;
+  won_value: number;
+  avg_days_to_close: number;
+  conversion_rate: number;
+  activities_this_week: number;
+  activities_last_week: number;
+  streak_days: number;
+}
+
+export interface GamificationResponse {
+  consultants: ConsultantMetrics[];
+  top_performer: ConsultantMetrics | null;
+  team_avg: {
+    activities_per_week: number;
+    conversion_rate: number;
+    avg_deals_won: number;
+  };
+  generated_at: string;
+}
+
+export interface CoachingResponse {
+  coaching: string;
+  metrics_summary: {
+    activities: number;
+    deals: number;
+    won: number;
+    conversion_rate: number;
+    top_performer: string | null;
+  };
+}
+
+/* ---------- Gamification API ---------- */
+
+export async function fetchGamificationMetrics(
+  owner?: string,
+): Promise<GamificationResponse> {
+  const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
+  return request(`/pipedrive/gamification${qs}`);
+}
+
+export async function generateCoachingFeedback(
+  consultantName: string,
+): Promise<CoachingResponse> {
+  return request("/pipedrive/coaching", {
+    method: "POST",
+    body: JSON.stringify({ consultant_name: consultantName }),
+  });
+}
+
 /* ---------- Meeting Transcript Types ---------- */
 
 export interface MeetingTranscript {
@@ -838,4 +900,58 @@ export async function summarizeMeeting(
 
 export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
   return request(`/meetings/${id}`, { method: "DELETE" });
+}
+
+/* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
+
+export interface MeetingScore {
+  meeting_id: string;
+  scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
+  total: number;
+  grade: string;
+  strengths: string[];
+  improvements: string[];
+  leader_would: string;
+}
+
+export interface PlaybookEntry {
+  situation: string;
+  trigger: string;
+  leader_approach: string;
+  key_phrases: string[];
+  avoid: string;
+  success_rate_hint: string;
+}
+
+export interface ContextualCoachingResponse {
+  phase: number;
+  coaching: string;
+  context: Record<string, string>;
+}
+
+export async function scoreMeeting(id: string): Promise<MeetingScore> {
+  return request(`/meetings/${id}/score`, { method: "POST" });
+}
+
+export async function extractPlaybook(
+  leaderName?: string,
+  limit?: number,
+): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  return request("/meetings/extract-playbook", {
+    method: "POST",
+    body: JSON.stringify({ leader_name: leaderName, limit }),
+  });
+}
+
+export async function getContextualCoaching(params: {
+  phase: number;
+  candidate_id?: string;
+  company_id?: string;
+  deal_id?: string;
+  current_situation?: string;
+}): Promise<ContextualCoachingResponse> {
+  return request("/meetings/coach", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
 }

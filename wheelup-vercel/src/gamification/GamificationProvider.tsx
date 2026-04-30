@@ -1,14 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import type { GamificationState, DailyQuest } from "./types";
-import {
-  ALL_ACHIEVEMENTS,
-  generateDailyQuests,
-  getLeague,
-  getLevel,
-  XP_ACTIONS,
-} from "./config";
+import type { ConsultantMetrics, GamificationResponse } from "../api/client";
+import { fetchGamificationMetrics } from "../api/client";
+import { ALL_ACHIEVEMENTS, generateDailyQuests, getLeague, getLevel } from "./config";
+import { isSupabaseConfigured } from "../lib/supabase";
 
-const STORAGE_KEY = "wheelsup_gamification";
+const STORAGE_PREFIX = "wheelsup_gamification_";
+const CURRENT_USER_KEY = "wheelsup_current_user";
+
+function storageKey(userName: string): string {
+  return `${STORAGE_PREFIX}${userName}`;
+}
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -33,9 +35,9 @@ function defaultState(): GamificationState {
   };
 }
 
-function loadState(): GamificationState {
+function loadLocal(userName: string): GamificationState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(userName));
     if (!raw) return defaultState();
     const saved = JSON.parse(raw) as GamificationState;
     const d = today();
@@ -45,15 +47,11 @@ function loadState(): GamificationState {
       saved.todayXp = 0;
     }
     if (saved.lastActiveDate !== d) {
-      const lastDate = new Date(saved.lastActiveDate);
-      const todayDate = new Date(d);
-      const diff = Math.floor((todayDate.getTime() - lastDate.getTime()) / 86400000);
-      if (diff === 1) {
-        saved.streak += 1;
-        if (saved.streak > saved.longestStreak) saved.longestStreak = saved.streak;
-      } else if (diff > 1) {
-        saved.streak = 1;
-      }
+      const diff = Math.floor(
+        (new Date(d).getTime() - new Date(saved.lastActiveDate).getTime()) / 86400000,
+      );
+      saved.streak = diff === 1 ? saved.streak + 1 : diff > 1 ? 1 : saved.streak;
+      if (saved.streak > saved.longestStreak) saved.longestStreak = saved.streak;
       saved.lastActiveDate = d;
       saved.todayXp = 0;
     }
@@ -63,49 +61,109 @@ function loadState(): GamificationState {
   }
 }
 
+export function getSavedUser(): string | null {
+  return localStorage.getItem(CURRENT_USER_KEY) || null;
+}
+
+export function clearSavedUser() {
+  localStorage.removeItem(CURRENT_USER_KEY);
+}
+
 interface GamificationContextValue {
   state: GamificationState;
+  currentUser: string;
+  pipedriveData: GamificationResponse | null;
+  myMetrics: ConsultantMetrics | null;
+  loading: boolean;
   earnXp: (action: string, multiplier?: number) => void;
   progressQuest: (questId: string, amount?: number) => void;
   unlockAchievement: (achievementId: string) => void;
   popCelebration: () => string | undefined;
+  refreshPipedriveData: () => Promise<void>;
+  setCurrentUser: (name: string) => void;
 }
 
 const GamificationContext = createContext<GamificationContextValue | null>(null);
 
-export function GamificationProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<GamificationState>(loadState);
-  const saveRef = useRef<ReturnType<typeof setTimeout>>();
+export function GamificationProvider({ children, userName }: { children: ReactNode; userName: string }) {
+  const [state, setState] = useState<GamificationState>(() => loadLocal(userName));
+  const [pipedriveData, setPipedriveData] = useState<GamificationResponse | null>(null);
+  const [myMetrics, setMyMetrics] = useState<ConsultantMetrics | null>(null);
+  const [currentUser, setCurrentUserState] = useState<string>(userName);
+  const [loading, setLoading] = useState(false);
 
+  const setCurrentUser = useCallback((name: string) => {
+    setCurrentUserState(name);
+    localStorage.setItem(CURRENT_USER_KEY, name);
+    setState(loadLocal(name));
+  }, []);
+
+  // Persist to localStorage per user
   useEffect(() => {
-    if (saveRef.current) clearTimeout(saveRef.current);
-    saveRef.current = setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }, 300);
-    return () => { if (saveRef.current) clearTimeout(saveRef.current); };
-  }, [state]);
+    if (!currentUser) return;
+    const t = setTimeout(() => localStorage.setItem(storageKey(currentUser), JSON.stringify(state)), 300);
+    return () => clearTimeout(t);
+  }, [state, currentUser]);
+
+  // Merge Pipedrive XP with local state
+  useEffect(() => {
+    if (!myMetrics) return;
+    setState((prev) => {
+      const pipedriveXp = myMetrics.xp;
+      if (pipedriveXp <= prev.totalXp) return prev;
+      return {
+        ...prev,
+        totalXp: pipedriveXp,
+        weeklyXp: myMetrics.activities_this_week * 15,
+        level: getLevel(pipedriveXp),
+        league: getLeague(pipedriveXp),
+        streak: myMetrics.streak_days > 0 ? myMetrics.streak_days : prev.streak,
+      };
+    });
+  }, [myMetrics]);
+
+  const refreshPipedriveData = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
+    setLoading(true);
+    try {
+      const data = await fetchGamificationMetrics();
+      setPipedriveData(data);
+      if (currentUser) {
+        const me = data.consultants.find((c) => c.name === currentUser);
+        setMyMetrics(me || null);
+      } else if (data.consultants.length > 0) {
+        setMyMetrics(data.consultants[0]);
+        setCurrentUser(data.consultants[0].name);
+      }
+    } catch {
+      // API not available (preview mode)
+    }
+    setLoading(false);
+  }, [currentUser]);
+
+  // Fetch on mount
+  useEffect(() => {
+    refreshPipedriveData();
+  }, []);
 
   const earnXp = useCallback((action: string, multiplier = 1) => {
-    const config = XP_ACTIONS[action];
-    if (!config) return;
-    const xp = config.xp * multiplier;
+    const xpMap: Record<string, number> = {
+      checklist_item: 10, phase_complete: 50, ai_briefing: 15,
+      meeting_logged: 30, meeting_notes: 20, status_update: 25,
+      job_match: 15, recommendation_created: 20, candidate_placed: 200,
+      knowledge_view: 5,
+    };
+    const xp = (xpMap[action] || 10) * multiplier;
 
     setState((prev) => {
       const totalXp = prev.totalXp + xp;
       const newLevel = getLevel(totalXp);
       const celebrations = [...prev.celebrationQueue];
-
-      if (newLevel > prev.level) {
-        celebrations.push(`level_up_${newLevel}`);
-      }
-
+      if (newLevel > prev.level) celebrations.push(`level_up_${newLevel}`);
       return {
         ...prev,
-        totalXp,
-        weeklyXp: prev.weeklyXp + xp,
-        todayXp: prev.todayXp + xp,
-        level: newLevel,
-        league: getLeague(totalXp),
+        totalXp, weeklyXp: prev.weeklyXp + xp, todayXp: prev.todayXp + xp,
+        level: newLevel, league: getLeague(totalXp),
         xpHistory: [...prev.xpHistory.slice(-99), { action, xp, timestamp: Date.now() }],
         celebrationQueue: celebrations,
       };
@@ -117,51 +175,32 @@ export function GamificationProvider({ children }: { children: ReactNode }) {
       const quests = prev.dailyQuests.map((q): DailyQuest => {
         if (q.id !== questId || q.completed) return q;
         const current = Math.min(q.current + amount, q.target);
-        const completed = current >= q.target;
-        return { ...q, current, completed };
+        return { ...q, current, completed: current >= q.target };
       });
-
-      const justCompleted = quests.find(
+      const justDone = quests.find(
         (q) => q.id === questId && q.completed && !prev.dailyQuests.find((p) => p.id === questId)?.completed,
       );
-
-      let totalXp = prev.totalXp;
-      let todayXp = prev.todayXp;
-      let weeklyXp = prev.weeklyXp;
-      const celebrations = [...prev.celebrationQueue];
-
-      if (justCompleted) {
-        totalXp += justCompleted.xpReward;
-        todayXp += justCompleted.xpReward;
-        weeklyXp += justCompleted.xpReward;
-        celebrations.push(`quest_${questId}`);
-      }
-
+      if (!justDone) return { ...prev, dailyQuests: quests };
+      const totalXp = prev.totalXp + justDone.xpReward;
       return {
-        ...prev,
-        dailyQuests: quests,
-        totalXp,
-        todayXp,
-        weeklyXp,
-        level: getLevel(totalXp),
-        league: getLeague(totalXp),
-        celebrationQueue: celebrations,
+        ...prev, dailyQuests: quests, totalXp,
+        todayXp: prev.todayXp + justDone.xpReward,
+        weeklyXp: prev.weeklyXp + justDone.xpReward,
+        level: getLevel(totalXp), league: getLeague(totalXp),
+        celebrationQueue: [...prev.celebrationQueue, `quest_${questId}`],
       };
     });
   }, []);
 
-  const unlockAchievement = useCallback((achievementId: string) => {
+  const unlockAchievement = useCallback((id: string) => {
     setState((prev) => {
-      const already = prev.achievements.find((a) => a.id === achievementId && a.unlocked);
-      if (already) return prev;
-
-      const achievements = prev.achievements.map((a) =>
-        a.id === achievementId ? { ...a, unlocked: true, unlockedAt: Date.now() } : a,
-      );
+      if (prev.achievements.find((a) => a.id === id && a.unlocked)) return prev;
       return {
         ...prev,
-        achievements,
-        celebrationQueue: [...prev.celebrationQueue, `achievement_${achievementId}`],
+        achievements: prev.achievements.map((a) =>
+          a.id === id ? { ...a, unlocked: true, unlockedAt: Date.now() } : a,
+        ),
+        celebrationQueue: [...prev.celebrationQueue, `achievement_${id}`],
       };
     });
   }, []);
@@ -177,7 +216,13 @@ export function GamificationProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <GamificationContext.Provider value={{ state, earnXp, progressQuest, unlockAchievement, popCelebration }}>
+    <GamificationContext.Provider
+      value={{
+        state, currentUser, pipedriveData, myMetrics, loading,
+        earnXp, progressQuest, unlockAchievement, popCelebration,
+        refreshPipedriveData, setCurrentUser,
+      }}
+    >
       {children}
     </GamificationContext.Provider>
   );

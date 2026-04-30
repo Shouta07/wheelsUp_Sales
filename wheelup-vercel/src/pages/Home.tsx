@@ -1,126 +1,188 @@
 import { useGamification } from "../gamification/GamificationProvider";
+import { syncPipedriveDeals, syncPipedriveActivities } from "../api/client";
 import StatsOverview from "../components/gamification/StatsOverview";
 import SkillPath from "../components/gamification/SkillPath";
 import DailyQuests from "../components/gamification/DailyQuests";
+import ConsultantRanking from "../components/gamification/ConsultantRanking";
+import CoachingPanel from "../components/gamification/CoachingPanel";
+import PlaybookPanel from "../components/gamification/PlaybookPanel";
 import Achievements from "../components/gamification/Achievements";
-import Leaderboard from "../components/gamification/Leaderboard";
+import { useState } from "react";
 
 export default function Home() {
-  const { state, earnXp, unlockAchievement, progressQuest } = useGamification();
+  const { state, currentUser, pipedriveData, myMetrics, loading, refreshPipedriveData, earnXp, unlockAchievement, progressQuest } = useGamification();
+  const [syncing, setSyncing] = useState(false);
 
-  const handleDemoXp = (action: string) => {
-    earnXp(action);
-
-    if (action === "checklist_item") {
-      progressQuest("q_checklist_3");
-      progressQuest("q_checklist_5");
-      if (!state.achievements.find((a) => a.id === "first_check")?.unlocked) {
-        unlockAchievement("first_check");
-      }
-    }
-    if (action === "ai_briefing") {
-      progressQuest("q_briefing");
-    }
-    if (action === "meeting_logged") {
-      progressQuest("q_meeting");
-    }
-    if (action === "job_match") {
-      progressQuest("q_match");
-    }
-    if (action === "knowledge_view") {
-      progressQuest("q_knowledge");
-    }
-    if (action === "recommendation_created") {
-      progressQuest("q_recommendation");
-    }
-
-    if (state.totalXp + 10 >= 1000) {
-      unlockAchievement("xp_1000");
-    }
-    if (state.streak >= 7) {
-      unlockAchievement("streak_7");
-    }
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await Promise.all([syncPipedriveDeals(), syncPipedriveActivities()]);
+      await refreshPipedriveData();
+    } catch { /* preview mode */ }
+    setSyncing(false);
   };
 
+  const handleDemoAction = (action: string) => {
+    earnXp(action);
+    const questMap: Record<string, string[]> = {
+      checklist_item: ["q_checklist_3", "q_checklist_5"],
+      ai_briefing: ["q_briefing"],
+      meeting_logged: ["q_meeting"],
+      job_match: ["q_match"],
+      knowledge_view: ["q_knowledge"],
+      recommendation_created: ["q_recommendation"],
+      status_update: ["q_status"],
+    };
+    (questMap[action] || []).forEach((qid) => progressQuest(qid));
+    if (action === "checklist_item" && !state.achievements.find((a) => a.id === "first_check")?.unlocked) {
+      unlockAchievement("first_check");
+    }
+    if (state.totalXp >= 990) unlockAchievement("xp_1000");
+    if (state.streak >= 7) unlockAchievement("streak_7");
+  };
+
+  const hasPipedriveData = pipedriveData && pipedriveData.consultants.length > 0;
+
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6">
-      {/* Header */}
-      <div className="mb-8 text-center">
-        <h1 className="text-3xl font-black text-gray-900 mb-1">
-          おかえりなさい！
-        </h1>
-        <p className="text-gray-500 font-medium">
-          今日もセールススキルを磨いていきましょう
-        </p>
-      </div>
+    <div className="min-h-screen bg-[#f7f7f7]">
+      <div className="mx-auto max-w-6xl px-4 py-6">
 
-      {/* Main Grid: Duolingo-style 3-column layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Stats + Skill Path */}
-        <div className="lg:col-span-3 space-y-6">
-          <StatsOverview />
-          <SkillPath />
-        </div>
-
-        {/* Center Column: Daily Quests + Quick Actions */}
-        <div className="lg:col-span-5 space-y-6">
-          <DailyQuests />
-
-          {/* Quick XP Actions (Demo) */}
-          <div className="rounded-2xl bg-white border-2 border-gray-100 p-5 shadow-duo">
-            <h3 className="text-lg font-black text-gray-800 mb-4">クイックアクション</h3>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { action: "checklist_item", label: "チェックリスト", icon: "✅", color: "bg-duo-green hover:bg-green-600" },
-                { action: "ai_briefing", label: "AI ブリーフィング", icon: "🤖", color: "bg-duo-blue hover:bg-blue-600" },
-                { action: "meeting_logged", label: "面談記録", icon: "📝", color: "bg-duo-orange hover:bg-orange-600" },
-                { action: "job_match", label: "求人マッチ", icon: "🔍", color: "bg-duo-purple hover:bg-purple-600" },
-                { action: "recommendation_created", label: "推薦作成", icon: "🔗", color: "bg-cyan-500 hover:bg-cyan-600" },
-                { action: "knowledge_view", label: "業界知識", icon: "📚", color: "bg-pink-500 hover:bg-pink-600" },
-              ].map(({ action, label, icon, color }) => (
-                <button
-                  key={action}
-                  onClick={() => handleDemoXp(action)}
-                  className={`${color} text-white rounded-xl p-3 font-bold text-sm shadow-lg hover:shadow-xl transition-all active:scale-95 flex items-center gap-2`}
-                >
-                  <span className="text-lg">{icon}</span>
-                  <div className="text-left">
-                    <div className="text-xs font-black">{label}</div>
-                    <div className="text-[10px] opacity-80">+{({ checklist_item: 10, ai_briefing: 15, meeting_logged: 30, job_match: 15, recommendation_created: 20, knowledge_view: 5 } as Record<string, number>)[action]} XP</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <p className="text-[10px] text-gray-400 text-center mt-3">
-              各フェーズでのアクションで自動的にXPが獲得されます
-            </p>
+        {/* Sync bar */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-xl font-black text-[#4b4b4b]">
+              {currentUser ? `${currentUser}さん` : "ダッシュボード"}
+            </h1>
+            {myMetrics && (
+              <p className="text-xs font-bold text-[#afafaf] mt-0.5">
+                成約 {myMetrics.deals_won}件 | 活動 {myMetrics.total_activities}件 | 成約率 {myMetrics.conversion_rate}%
+              </p>
+            )}
           </div>
-
-          {/* XP History */}
-          {state.xpHistory.length > 0 && (
-            <div className="rounded-2xl bg-white border-2 border-gray-100 p-5 shadow-duo">
-              <h3 className="text-lg font-black text-gray-800 mb-3">最近の活動</h3>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {[...state.xpHistory].reverse().slice(0, 10).map((event, i) => (
-                  <div key={i} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
-                    <span className="text-sm text-gray-600">
-                      {event.action in ({ checklist_item: 1, ai_briefing: 1, meeting_logged: 1, job_match: 1, recommendation_created: 1, knowledge_view: 1, status_update: 1, meeting_notes: 1, candidate_placed: 1, phase_complete: 1, daily_quest: 1 })
-                        ? ({ checklist_item: "✅ チェックリスト", ai_briefing: "🤖 AI生成", meeting_logged: "📝 面談記録", job_match: "🔍 求人マッチ", recommendation_created: "🔗 推薦作成", knowledge_view: "📚 業界知識", status_update: "📊 ステータス", meeting_notes: "📋 メモ追加", candidate_placed: "🏆 成約！", phase_complete: "🎯 フェーズ完了", daily_quest: "📜 クエスト達成" } as Record<string, string>)[event.action]
-                        : event.action
-                      }
-                    </span>
-                    <span className="text-sm font-black text-duo-green">+{event.xp} XP</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <button
+            onClick={handleSync}
+            disabled={syncing || loading}
+            className="btn-duo btn-duo-blue !px-4 !py-2 !text-xs"
+          >
+            {syncing ? "同期中..." : "Pipedrive同期"}
+          </button>
         </div>
 
-        {/* Right Column: Leaderboard + Achievements */}
-        <div className="lg:col-span-4 space-y-6">
-          <Leaderboard />
-          <Achievements />
+        {/* Main 3-column layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] gap-6">
+
+          {/* LEFT */}
+          <aside className="hidden lg:flex flex-col gap-5">
+            <StatsOverview />
+            <SkillPath />
+          </aside>
+
+          {/* CENTER */}
+          <main className="space-y-5">
+            {/* Coaching (real data or prompt to sync) */}
+            <CoachingPanel />
+
+            {/* Leader playbook extraction */}
+            <PlaybookPanel />
+
+            {/* Weekly activity comparison */}
+            {hasPipedriveData && myMetrics && (
+              <div className="card-duo p-5">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-7 h-7 rounded-lg bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+                  </div>
+                  <span className="text-base font-extrabold text-[#4b4b4b]">今週のパフォーマンス</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { label: "今週の活動", value: myMetrics.activities_this_week, prev: myMetrics.activities_last_week, unit: "件" },
+                    { label: "成約率", value: myMetrics.conversion_rate, prev: pipedriveData.team_avg.conversion_rate, unit: "%", vsLabel: "チーム平均" },
+                    { label: "Deal進行中", value: myMetrics.deals_open, unit: "件" },
+                    { label: "成約金額", value: Math.round(myMetrics.won_value / 10000), unit: "万円" },
+                  ].map((m) => {
+                    const delta = m.prev !== undefined ? m.value - m.prev : null;
+                    return (
+                      <div key={m.label} className="rounded-2xl bg-[#f7f7f7] p-3 text-center">
+                        <div className="text-xl font-black text-[#4b4b4b]">
+                          {typeof m.value === "number" ? m.value.toLocaleString() : m.value}
+                          <span className="text-xs text-[#afafaf] font-bold">{m.unit}</span>
+                        </div>
+                        <div className="text-[10px] font-bold text-[#afafaf]">{m.label}</div>
+                        {delta !== null && (
+                          <div className={`text-[10px] font-extrabold mt-0.5 ${
+                            delta > 0 ? "text-duo-green" : delta < 0 ? "text-duo-red" : "text-[#afafaf]"
+                          }`}>
+                            {delta > 0 ? `+${delta}` : delta} vs {m.vsLabel || "先週"}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Demo actions (when no Pipedrive data) */}
+            {!hasPipedriveData && (
+              <div className="card-duo p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="#4b4b4b"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                  <span className="text-base font-extrabold text-[#4b4b4b]">アクションでXPを獲得</span>
+                </div>
+                <p className="text-xs font-bold text-[#afafaf] mb-4">Pipedrive連携後は自動でXPが加算されます。今はデモモードです。</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {[
+                    { action: "checklist_item", label: "チェック完了", xp: 10, color: "#58CC02", dark: "#46a302" },
+                    { action: "ai_briefing", label: "AI ブリーフィング", xp: 15, color: "#CE82FF", dark: "#a85fd6" },
+                    { action: "meeting_logged", label: "面談を記録", xp: 30, color: "#1CB0F6", dark: "#1899D6" },
+                    { action: "job_match", label: "求人マッチ", xp: 15, color: "#FF9600", dark: "#d97f00" },
+                    { action: "recommendation_created", label: "推薦を作成", xp: 20, color: "#FF4B4B", dark: "#d93636" },
+                    { action: "knowledge_view", label: "知識を閲覧", xp: 5, color: "#4b4b4b", dark: "#333" },
+                  ].map(({ action, label, xp, color, dark }) => (
+                    <button
+                      key={action}
+                      onClick={() => handleDemoAction(action)}
+                      className="btn-duo text-left flex flex-col gap-0.5 !px-4 !py-3 !rounded-xl"
+                      style={{ backgroundColor: color, borderBottomColor: dark }}
+                    >
+                      <span className="text-white text-xs font-extrabold">{label}</span>
+                      <span className="text-white/70 text-[10px] font-bold">+{xp} XP</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Activity history */}
+            {state.xpHistory.length > 0 && (
+              <div className="card-duo p-5">
+                <span className="text-base font-extrabold text-[#4b4b4b]">最近のアクティビティ</span>
+                <div className="mt-3">
+                  {[...state.xpHistory].reverse().slice(0, 8).map((ev, i) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b border-[#f0f0f0] last:border-0">
+                      <span className="text-sm font-bold text-[#777]">{
+                        ({
+                          checklist_item: "チェックリスト完了", ai_briefing: "AIブリーフィング",
+                          meeting_logged: "面談記録", job_match: "求人マッチ",
+                          recommendation_created: "推薦作成", knowledge_view: "業界知識閲覧",
+                          status_update: "ステータス更新", candidate_placed: "成約",
+                        } as Record<string, string>)[ev.action] || ev.action
+                      }</span>
+                      <span className="text-sm font-black text-duo-green">+{ev.xp}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* RIGHT */}
+          <aside className="space-y-5">
+            <DailyQuests />
+            <ConsultantRanking />
+            <Achievements />
+          </aside>
         </div>
       </div>
     </div>

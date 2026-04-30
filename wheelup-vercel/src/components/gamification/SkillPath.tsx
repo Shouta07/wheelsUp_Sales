@@ -1,87 +1,93 @@
 import { useNavigate } from "react-router-dom";
-import { useGamification } from "../../gamification/GamificationProvider";
 
 interface PhaseNode {
   phase: number;
   label: string;
-  sublabel: string;
   route: string;
-  icon: string;
   color: string;
-  bgColor: string;
-  borderColor: string;
+  darkColor: string;
+  done: boolean;
 }
 
 const PHASES: PhaseNode[] = [
-  { phase: 1, label: "前準備", sublabel: "仮説を立て準備", route: "/", icon: "📋", color: "text-blue-700", bgColor: "bg-blue-500", borderColor: "border-blue-400" },
-  { phase: 2, label: "面談・商談", sublabel: "キーワード発見", route: "/meeting", icon: "🤝", color: "text-emerald-700", bgColor: "bg-emerald-500", borderColor: "border-emerald-400" },
-  { phase: 3, label: "直後対応", sublabel: "議事録・アクション", route: "/after", icon: "⚡", color: "text-orange-700", bgColor: "bg-orange-500", borderColor: "border-orange-400" },
-  { phase: 4, label: "クロージング", sublabel: "推薦〜成約", route: "/closing", icon: "🏆", color: "text-purple-700", bgColor: "bg-purple-500", borderColor: "border-purple-400" },
+  { phase: 1, label: "準備", route: "/prep", color: "#58CC02", darkColor: "#46a302", done: false },
+  { phase: 2, label: "面談", route: "/meeting", color: "#1CB0F6", darkColor: "#1899D6", done: false },
+  { phase: 3, label: "直後", route: "/after", color: "#FF9600", darkColor: "#d97f00", done: false },
+  { phase: 4, label: "成約", route: "/closing", color: "#CE82FF", darkColor: "#a85fd6", done: false },
 ];
+
+const PATH_OFFSETS = [0, 60, 0, -60, 0];
 
 export default function SkillPath() {
   const navigate = useNavigate();
-  const { state } = useGamification();
 
   return (
-    <div className="rounded-2xl bg-white border-2 border-gray-100 p-6 shadow-duo">
-      <h3 className="text-lg font-black text-gray-800 mb-6 text-center">スキルパス</h3>
+    <div className="flex flex-col items-center py-6 px-4">
+      {/* Section header */}
+      <div className="card-duo px-5 py-3 mb-8 inline-flex items-center gap-2">
+        <div className="w-6 h-6 rounded-md bg-duo-green flex items-center justify-center" style={{ borderBottom: "2px solid #46a302" }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
+        </div>
+        <span className="text-sm font-extrabold text-[#4b4b4b]">セールスパス</span>
+      </div>
 
-      <div className="flex flex-col items-center gap-2">
+      <div className="relative flex flex-col items-center" style={{ minHeight: PHASES.length * 120 }}>
         {PHASES.map((phase, idx) => {
-          const isActive = state.level >= phase.phase;
-          const isLocked = state.level < phase.phase;
-          const offset = idx % 2 === 0 ? "-translate-x-8" : "translate-x-8";
+          const offset = PATH_OFFSETS[idx];
+          const isLast = idx === PHASES.length - 1;
 
           return (
-            <div key={phase.phase} className="flex flex-col items-center">
+            <div key={phase.phase} className="relative flex flex-col items-center" style={{ marginLeft: offset }}>
+              {/* Connector line */}
               {idx > 0 && (
-                <div className={`w-1 h-6 ${isActive ? "bg-duo-green" : "bg-gray-200"} rounded-full`} />
+                <div className="w-1 h-8 rounded-full bg-[#e5e5e5] -mt-1 mb-1" />
               )}
+
+              {/* Node */}
               <button
-                onClick={() => !isLocked && navigate(phase.route)}
-                disabled={isLocked}
-                className={`relative ${offset} transition-all duration-300 ${
-                  isLocked ? "opacity-40 cursor-not-allowed" : "hover:scale-110 cursor-pointer"
-                }`}
+                onClick={() => navigate(phase.route)}
+                className="node-circle w-[72px] h-[72px] group"
+                style={{
+                  backgroundColor: phase.color,
+                  borderBottomColor: phase.darkColor,
+                }}
               >
-                <div
-                  className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl border-4 shadow-lg transition-all ${
-                    isActive
-                      ? `${phase.bgColor} ${phase.borderColor} shadow-xl`
-                      : "bg-gray-200 border-gray-300"
-                  }`}
-                >
-                  {isLocked ? "🔒" : phase.icon}
+                <div className="flex flex-col items-center">
+                  <span className="text-white text-2xl font-black leading-none">{phase.phase}</span>
                 </div>
-                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-white border-2 border-gray-200 rounded-full px-2 py-0.5 shadow-sm">
-                  <span className="text-[10px] font-black text-gray-600">Phase {phase.phase}</span>
+
+                {/* Tooltip */}
+                <div className="absolute -bottom-9 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                  <div
+                    className="px-3 py-1 rounded-xl text-xs font-extrabold text-white whitespace-nowrap"
+                    style={{ backgroundColor: phase.color }}
+                  >
+                    {phase.label}
+                  </div>
                 </div>
               </button>
-              <div className={`mt-3 text-center ${offset}`}>
-                <div className={`text-sm font-black ${isActive ? phase.color : "text-gray-400"}`}>
-                  {phase.label}
-                </div>
-                <div className="text-[10px] text-gray-400">{phase.sublabel}</div>
-              </div>
+
+              {/* Phase label (below) */}
+              <span className="mt-2 text-xs font-bold text-[#afafaf] uppercase tracking-wider">
+                {phase.label}
+              </span>
+
+              {/* Spacer */}
+              {!isLast && <div className="h-4" />}
             </div>
           );
         })}
-      </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-3">
-        <button
-          onClick={() => navigate("/recommendations")}
-          className="rounded-xl bg-gradient-to-r from-duo-blue to-blue-500 p-3 text-center text-white font-bold text-sm shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
-        >
-          🔗 推薦管理
-        </button>
-        <button
-          onClick={() => navigate("/industry")}
-          className="rounded-xl bg-gradient-to-r from-duo-purple to-purple-600 p-3 text-center text-white font-bold text-sm shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
-        >
-          🗺 業界知識
-        </button>
+        {/* Final crown */}
+        <div className="mt-4 flex flex-col items-center" style={{ marginLeft: PATH_OFFSETS[PHASES.length] || 0 }}>
+          <div className="w-1 h-6 rounded-full bg-[#e5e5e5]" />
+          <div className="w-14 h-14 rounded-full bg-[#FFC800] flex items-center justify-center" style={{ borderBottom: "5px solid #d9a800" }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+              <path d="M5 16L3 5L8.5 10L12 4L15.5 10L21 5L19 16H5ZM19 19C19 19.6 18.6 20 18 20H6C5.4 20 5 19.6 5 19V18H19V19Z"/>
+            </svg>
+          </div>
+          <span className="mt-2 text-xs font-extrabold text-duo-yellow">成約ゴール</span>
+        </div>
       </div>
     </div>
   );

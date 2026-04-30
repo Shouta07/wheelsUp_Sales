@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchRecommendations, updateRecommendation, type RecommendationItem } from "../api/client";
 import { useRecommendationChecklist } from "../hooks/usePhaseProgress";
+import PhaseCoaching from "../components/gamification/PhaseCoaching";
 
 const CANDIDATE_SECTIONS = [
   { section: "推薦時", items: [
@@ -156,6 +157,18 @@ export default function Phase4Closing() {
               </p>
               <p className="text-xs text-gray-400">チェック完了</p>
             </div>
+          </div>
+
+          {/* AIコーチング */}
+          <div className="mb-6">
+            <PhaseCoaching
+              phase={4}
+              candidateId={selected.candidate_id}
+              companyId={selected.company_id}
+              dealId={selected.deal_id || undefined}
+              candidateName={selected.candidates.name}
+              companyName={selected.companies.name}
+            />
           </div>
 
           {/* Deal連携情報 */}
