@@ -850,6 +850,9 @@ export interface MeetingTranscript {
   id: string;
   deal_id: string | null;
   candidate_id: string | null;
+  consultant_name: string | null;
+  is_leader: boolean;
+  score_data: MeetingScore | null;
   title: string;
   transcript_text: string;
   summary: string | null;
@@ -869,10 +872,14 @@ export interface MeetingTranscript {
 export async function fetchMeetings(
   dealId?: string,
   candidateId?: string,
+  consultantName?: string,
+  isLeader?: boolean,
 ): Promise<{ transcripts: MeetingTranscript[]; total: number }> {
   const params = new URLSearchParams();
   if (dealId) params.set("deal_id", dealId);
   if (candidateId) params.set("candidate_id", candidateId);
+  if (consultantName) params.set("consultant_name", consultantName);
+  if (isLeader !== undefined) params.set("is_leader", String(isLeader));
   const qs = params.toString();
   return request(`/meetings${qs ? `?${qs}` : ""}`);
 }

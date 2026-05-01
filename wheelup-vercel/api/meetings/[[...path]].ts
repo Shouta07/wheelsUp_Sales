@@ -70,10 +70,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 /* ========== CRUD ========== */
 
 async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
-  const { deal_id, candidate_id } = req.query;
+  const { deal_id, candidate_id, consultant_name, is_leader } = req.query;
   let query = db.from("meeting_transcripts").select("*").order("recorded_at", { ascending: false });
   if (deal_id && typeof deal_id === "string") query = query.eq("deal_id", deal_id);
   if (candidate_id && typeof candidate_id === "string") query = query.eq("candidate_id", candidate_id);
+  if (consultant_name && typeof consultant_name === "string") query = query.eq("consultant_name", consultant_name);
+  if (is_leader === "true") query = query.eq("is_leader", true);
+  if (is_leader === "false") query = query.eq("is_leader", false);
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ transcripts: data || [], total: (data || []).length });
@@ -84,6 +87,8 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
   const { data, error } = await db.from("meeting_transcripts").insert({
     deal_id: b.deal_id || null,
     candidate_id: b.candidate_id || null,
+    consultant_name: b.consultant_name || null,
+    is_leader: b.is_leader || false,
     title: b.title || "面談記録",
     transcript_text: b.transcript_text || "",
     summary: b.summary || null,
@@ -127,7 +132,7 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees } = req.body;
+  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader } = req.body;
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
@@ -189,6 +194,8 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const { data, error } = await db.from("meeting_transcripts").insert({
     deal_id: deal_id || null,
     candidate_id: candidate_id || null,
+    consultant_name: consultant_name || null,
+    is_leader: is_leader || false,
     title: title || "Gemini 文字起こし",
     transcript_text: sections.transcript,
     summary: sections.summary,
@@ -354,6 +361,11 @@ ${text.slice(0, 6000)}
     parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw };
   } catch {
     parsed = { raw };
+  }
+
+  // Persist score to DB
+  if (parsed.scores) {
+    await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
   }
 
   return res.json({ meeting_id: id, ...parsed });
