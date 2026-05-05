@@ -25,6 +25,12 @@ export default function MeetingHub() {
     queryKey: ["meetings", "mine", currentUser],
     queryFn: () => fetchMeetings(undefined, undefined, currentUser, false),
     enabled: !!currentUser,
+    refetchInterval: (query) => {
+      const hasUnscored = query.state.data?.transcripts?.some(
+        (m: MeetingTranscript) => m.transcript_text && !m.score_data
+      );
+      return hasUnscored ? 5000 : false;
+    },
   });
 
   const { data: leaderMeetings } = useQuery({

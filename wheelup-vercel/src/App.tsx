@@ -1,25 +1,11 @@
 import { useState, useEffect } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import { GamificationProvider, getSavedUser, clearSavedUser } from "./gamification/GamificationProvider";
 import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
-import PhaseNav from "./components/PhaseNav";
 import UserSelectPage from "./pages/UserSelectPage";
 import Home from "./pages/Home";
-import Phase1Prep from "./pages/Phase1Prep";
-import Phase2Meeting from "./pages/Phase2Meeting";
-import Phase3After from "./pages/Phase3After";
-import Phase4Closing from "./pages/Phase4Closing";
-import Recommendations from "./pages/Recommendations";
-import Companies from "./pages/Companies";
-import JobPostings from "./pages/JobPostings";
-import IndustryMap from "./pages/IndustryMap";
 
-/**
- * Supabase Auth ログインページ
- * メールアドレス + マジックリンク（パスワードなし）
- */
 function LoginPage() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
@@ -46,7 +32,7 @@ function LoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="rounded-xl bg-white shadow-lg border border-gray-200 p-8 max-w-sm w-full text-center">
         <h1 className="text-xl font-bold text-gray-900 mb-1">wheelsUp</h1>
-        <p className="text-sm text-gray-500 mb-6">Sales Enablement Platform</p>
+        <p className="text-sm text-gray-500 mb-6">面談フィードバック＆強化システム</p>
 
         {sent ? (
           <div className="space-y-3">
@@ -85,15 +71,37 @@ function LoginPage() {
             >
               {loading ? "送信中…" : "ログインリンクを送信"}
             </button>
-            <p className="text-xs text-gray-400 mt-4">
-              社内メンバーのメールアドレスを入力してください。
-              <br />
-              パスワード不要でログインできます。
-            </p>
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function NavBar({ currentUser, onSwitchUser }: { currentUser: string; onSwitchUser: () => void }) {
+  return (
+    <header className="bg-white border-b-2 border-[#e5e5e5] sticky top-0 z-50">
+      <div className="mx-auto max-w-5xl flex items-center justify-between h-12 px-4">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-duo-green flex items-center justify-center" style={{ borderBottom: "2px solid #46a302" }}>
+            <span className="text-white text-[10px] font-black">W</span>
+          </div>
+          <span className="text-sm font-black text-[#4b4b4b]">wheelsUp</span>
+          <span className="text-[10px] font-bold text-[#afafaf] hidden sm:inline">面談フィードバック</span>
+        </div>
+
+        <button
+          onClick={onSwitchUser}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-xl hover:bg-gray-50 transition-colors"
+          title="ユーザー切替"
+        >
+          <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
+            <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
+          </div>
+          <span className="text-xs font-bold text-[#4b4b4b] hidden sm:inline">{currentUser}</span>
+        </button>
+      </div>
+    </header>
   );
 }
 
@@ -149,24 +157,14 @@ export default function App() {
     <GamificationProvider userName={activeUser} key={activeUser}>
       <div className="min-h-screen bg-gray-50">
         <CelebrationOverlay />
-        <PhaseNav
+        <NavBar
+          currentUser={activeUser}
           onSwitchUser={() => {
             clearSavedUser();
             setActiveUser(null);
           }}
         />
-        <Routes>
-          <Route path="/" element={<Navigate to="/home" replace />} />
-          <Route path="/home" element={<Home />} />
-          <Route path="/prep" element={<Phase1Prep />} />
-          <Route path="/meeting" element={<Phase2Meeting />} />
-          <Route path="/after" element={<Phase3After />} />
-          <Route path="/closing" element={<Phase4Closing />} />
-          <Route path="/recommendations" element={<Recommendations />} />
-          <Route path="/companies" element={<Companies />} />
-          <Route path="/jobs" element={<JobPostings />} />
-          <Route path="/industry" element={<IndustryMap />} />
-        </Routes>
+        <Home />
       </div>
     </GamificationProvider>
   );
