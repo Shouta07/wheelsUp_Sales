@@ -21,9 +21,11 @@ export default function MeetingHub() {
   const [titleInput, setTitleInput] = useState("");
   const [showUpload, setShowUpload] = useState(false);
 
+  const isLeaderUser = currentUser === "小林";
+
   const { data: myMeetings } = useQuery({
     queryKey: ["meetings", "mine", currentUser],
-    queryFn: () => fetchMeetings(undefined, undefined, currentUser, false),
+    queryFn: () => fetchMeetings(undefined, undefined, currentUser),
     enabled: !!currentUser,
     refetchInterval: (query) => {
       const hasUnscored = query.state.data?.transcripts?.some(
@@ -75,8 +77,8 @@ export default function MeetingHub() {
         audio_base64: base64,
         mime_type: file.type || "audio/webm",
         title: titleInput || `${currentUser} 面談録音`,
-        consultant_name: tab === "leader" ? undefined : currentUser,
-        is_leader: tab === "leader",
+        consultant_name: currentUser,
+        is_leader: isLeaderUser,
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
@@ -93,10 +95,10 @@ export default function MeetingHub() {
     setUploading(true);
     try {
       await createMeeting({
-        title: titleInput || `${tab === "leader" ? "リーダー" : currentUser} 面談記録`,
+        title: titleInput || `${currentUser} 面談記録`,
         transcript_text: textInput,
-        consultant_name: tab === "leader" ? undefined : currentUser,
-        is_leader: tab === "leader",
+        consultant_name: currentUser,
+        is_leader: isLeaderUser,
         source: "manual",
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
@@ -150,7 +152,7 @@ export default function MeetingHub() {
       <div className="flex gap-1 mb-4">
         {([
           { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          { key: "leader" as const, label: "リーダーの面談", count: leaderMeetings?.total || 0 },
+          { key: "leader" as const, label: "小林（リーダー）の面談", count: leaderMeetings?.total || 0 },
         ]).map(({ key, label, count }) => (
           <button
             key={key}
@@ -207,7 +209,7 @@ export default function MeetingHub() {
             </div>
           </div>
           <p className="text-[10px] font-bold text-[#afafaf] text-center">
-            {tab === "leader" ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
+            {isLeaderUser ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
           </p>
         </div>
       )}
