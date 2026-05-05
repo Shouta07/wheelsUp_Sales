@@ -7,11 +7,9 @@ import {
   createMeeting,
   transcribeAudio,
   summarizeMeeting,
-  scoreMeeting,
   type MeetingTranscript,
   type MeetingScore,
 } from "../../api/client";
-import MeetingScoreCard from "./MeetingScoreCard";
 
 export default function MeetingHub() {
   const { currentUser } = useGamification();
@@ -52,6 +50,9 @@ export default function MeetingHub() {
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
+      // Auto-score runs server-side; poll for result
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
     } catch (err) { console.error(err); }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
@@ -72,6 +73,9 @@ export default function MeetingHub() {
       setTextInput("");
       setTitleInput("");
       setShowUpload(false);
+      // Auto-score runs server-side; poll for result
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
     } catch (err) { console.error(err); }
     setUploading(false);
   };
@@ -270,8 +274,11 @@ function MeetingEntry({
                 AI要約
               </button>
             )}
-            {!score && (
-              <MeetingScoreCard meetingId={m.id} meetingTitle={m.title} />
+            {!score && m.transcript_text && (
+              <span className="flex items-center gap-1.5 text-[10px] font-bold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
+                <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
+                自動採点中...
+              </span>
             )}
           </div>
 
@@ -285,6 +292,23 @@ function MeetingEntry({
           {/* Score details */}
           {score?.scores && (
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
+          )}
+
+          {/* Evidence — the "事実っぽさ" that builds trust */}
+          {score?.evidence && (
+            <div className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3 space-y-1.5">
+              <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">採点根拠（面談からの引用）</div>
+              {DIMS.map(({ key, label, color }) => {
+                const ev = score.evidence?.[key as keyof typeof score.evidence];
+                if (!ev) return null;
+                return (
+                  <div key={key} className="flex items-start gap-2">
+                    <span className="text-[10px] font-bold shrink-0 w-10 mt-0.5" style={{ color }}>{label}</span>
+                    <p className="text-[10px] font-bold text-[#555] leading-relaxed">「{ev}」</p>
+                  </div>
+                );
+              })}
+            </div>
           )}
 
           {/* Leader would */}

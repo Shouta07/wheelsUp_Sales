@@ -901,7 +901,9 @@ export async function transcribeAudio(data: {
   candidate_id?: string;
   title?: string;
   attendees?: string[];
-}): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string }> {
+  consultant_name?: string;
+  is_leader?: boolean;
+}): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string; auto_scoring?: boolean }> {
   return request("/meetings/transcribe", { method: "POST", body: JSON.stringify(data) });
 }
 
@@ -922,6 +924,7 @@ export interface MeetingScore {
   scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
   total: number;
   grade: string;
+  evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
   strengths: string[];
   improvements: string[];
   leader_would: string;

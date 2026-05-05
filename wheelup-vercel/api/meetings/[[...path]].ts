@@ -101,7 +101,17 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
     recorded_at: b.recorded_at || new Date().toISOString(),
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
-  return res.status(201).json(data);
+
+  // Auto-score if transcript has text content
+  if (b.transcript_text && b.transcript_text.trim().length > 50) {
+    scoreMeetingInternal(db, data.id).then((scoreResult) => {
+      if (!("error" in scoreResult)) {
+        console.log(`Auto-scored meeting ${data.id}: grade=${scoreResult.grade}`);
+      }
+    }).catch(() => {});
+  }
+
+  return res.status(201).json({ ...data, auto_scoring: !!(b.transcript_text && b.transcript_text.trim().length > 50) });
 }
 
 async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
@@ -209,9 +219,17 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
 
   if (error) return res.status(500).json({ error: error.message });
 
+  // Auto-score: fire scoring in background, don't block response
+  scoreMeetingInternal(db, data.id).then((scoreResult) => {
+    if (!("error" in scoreResult)) {
+      console.log(`Auto-scored meeting ${data.id}: grade=${scoreResult.grade}`);
+    }
+  }).catch(() => {});
+
   return res.json({
     transcript: data,
     raw_gemini_output: fullText,
+    auto_scoring: true,
   });
 }
 
@@ -310,14 +328,23 @@ async function scoreMeeting(
   id: string,
   res: VercelResponse,
 ) {
+  const result = await scoreMeetingInternal(db, id);
+  if ("error" in result) return res.status((result.status as number) || 500).json({ error: result.error });
+  return res.json(result);
+}
+
+async function scoreMeetingInternal(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+): Promise<Record<string, unknown>> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+  if (!apiKey) return { error: "GEMINI_API_KEY not set", status: 500 };
 
   const { data: meeting } = await db.from("meeting_transcripts").select("*").eq("id", id).single();
-  if (!meeting) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!meeting) return { error: "議事録が見つかりません", status: 404 };
 
   const text = (meeting.transcript_text as string) || (meeting.summary as string) || "";
-  if (!text) return res.status(400).json({ error: "テキストがありません" });
+  if (!text) return { error: "テキストがありません", status: 400 };
 
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
@@ -325,32 +352,42 @@ async function scoreMeeting(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
-以下の面談記録を5つの観点で10点満点で採点し、具体的な改善アドバイスを出してください。
+以下の面談記録を5つの観点で10点満点で採点してください。
+**必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
 
 ## 面談記録:
 ${text.slice(0, 6000)}
 
 ## 採点基準（各10点）:
-1. **ニーズ深掘り**: 候補者/企業の本音・課題を引き出せたか
-2. **提案力**: 具体的な求人・候補者を提示し、なぜマッチするか説明できたか
-3. **信頼構築**: 業界知識を示し、専門家としての信頼を得られたか
-4. **クロージング**: 次のアクションを明確にし、期限付きのコミットを得られたか
-5. **情報収集**: 他社状況・温度感・意思決定者情報を聞き出せたか
+1. **ニーズ深掘り(needs)**: 候補者/企業の本音・課題を引き出せたか
+2. **提案力(proposal)**: 具体的な求人・候補者を提示し、なぜマッチするか説明できたか
+3. **信頼構築(trust)**: 業界知識を示し、専門家としての信頼を得られたか
+4. **クロージング(closing)**: 次のアクションを明確にし、期限付きのコミットを得られたか
+5. **情報収集(intel)**: 他社状況・温度感・意思決定者情報を聞き出せたか
 
-## 出力形式（JSON）:
+## 出力形式（JSON厳守）:
 {
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "total": 30,
   "grade": "B",
+  "evidence": {
+    "needs": "「〇〇さんが本当に求めているのは…」と深掘りできている",
+    "proposal": "具体的な求人提示がなく、一般論にとどまった",
+    "trust": "「施工管理の現場では…」と業界知識を交えて話せている",
+    "closing": "「来週までに…」と期限を切れていない",
+    "intel": "他社選考状況を聞き出せた「実は〇〇社も受けていて…」"
+  },
   "strengths": ["具体的な強み1", "強み2"],
   "improvements": ["具体的な改善点1（どう言い換えれば良かったか含む）", "改善点2"],
-  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現"
-}` }] }],
+  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）"
+}
+
+重要: evidenceは面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。` }] }],
       generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
     }),
   });
 
-  if (!geminiRes.ok) return res.status(500).json({ error: "Gemini API error" });
+  if (!geminiRes.ok) return { error: "Gemini API error", status: 500 };
 
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -363,12 +400,11 @@ ${text.slice(0, 6000)}
     parsed = { raw };
   }
 
-  // Persist score to DB
   if (parsed.scores) {
     await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
   }
 
-  return res.json({ meeting_id: id, ...parsed });
+  return { meeting_id: id, ...parsed };
 }
 
 /* ========== Leader Playbook Extraction ========== */

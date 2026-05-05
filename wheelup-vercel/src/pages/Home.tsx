@@ -3,6 +3,7 @@ import MeetingHub from "../components/gamification/MeetingHub";
 import SkillRadar from "../components/gamification/SkillRadar";
 import StatsOverview from "../components/gamification/StatsOverview";
 import SkillPath from "../components/gamification/SkillPath";
+import NotificationFeed from "../components/gamification/NotificationFeed";
 import DailyQuests from "../components/gamification/DailyQuests";
 import PlaybookPanel from "../components/gamification/PlaybookPanel";
 import Achievements from "../components/gamification/Achievements";
@@ -43,8 +44,9 @@ export default function Home() {
             <PlaybookPanel />
           </main>
 
-          {/* RIGHT — Gamification */}
+          {/* RIGHT — Feed & Gamification */}
           <aside className="space-y-5">
+            <NotificationFeed />
             <DailyQuests />
             <Achievements />
           </aside>
