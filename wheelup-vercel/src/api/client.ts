@@ -867,7 +867,13 @@ export interface MeetingTranscript {
   updated_at: string;
 }
 
-/* ---------- Meeting API ---------- */
+/* ---------- Meeting API (with demo fallback) ---------- */
+
+import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, seedDemoData } from "./demo";
+
+seedDemoData();
+
+const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
 
 export async function fetchMeetings(
   dealId?: string,
@@ -875,6 +881,7 @@ export async function fetchMeetings(
   consultantName?: string,
   isLeader?: boolean,
 ): Promise<{ transcripts: MeetingTranscript[]; total: number }> {
+  if (DEMO_MODE) return demoFetchMeetings(dealId, candidateId, consultantName, isLeader);
   const params = new URLSearchParams();
   if (dealId) params.set("deal_id", dealId);
   if (candidateId) params.set("candidate_id", candidateId);
@@ -887,6 +894,7 @@ export async function fetchMeetings(
 export async function createMeeting(
   data: Partial<MeetingTranscript>,
 ): Promise<MeetingTranscript> {
+  if (DEMO_MODE) return demoCreateMeeting(data);
   return request("/meetings", { method: "POST", body: JSON.stringify(data) });
 }
 
@@ -910,6 +918,7 @@ export async function transcribeAudio(data: {
 export async function summarizeMeeting(
   id: string,
 ): Promise<{ summary: string; action_items: string[]; key_points: string[] }> {
+  if (DEMO_MODE) return demoSummarizeMeeting(id);
   return request(`/meetings/${id}/summarize`, { method: "POST" });
 }
 
@@ -946,6 +955,7 @@ export interface ContextualCoachingResponse {
 }
 
 export async function scoreMeeting(id: string): Promise<MeetingScore> {
+  if (DEMO_MODE) return demoScoreMeeting(id);
   return request(`/meetings/${id}/score`, { method: "POST" });
 }
 
