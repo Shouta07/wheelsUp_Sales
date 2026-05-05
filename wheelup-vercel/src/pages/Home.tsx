@@ -1,12 +1,11 @@
 import { useGamification } from "../gamification/GamificationProvider";
 import MeetingHub from "../components/gamification/MeetingHub";
 import SkillRadar from "../components/gamification/SkillRadar";
-import StatsOverview from "../components/gamification/StatsOverview";
-import SkillPath from "../components/gamification/SkillPath";
+import WeeklyReport from "../components/gamification/WeeklyReport";
+import WeeklyChallenge from "../components/gamification/WeeklyChallenge";
 import NotificationFeed from "../components/gamification/NotificationFeed";
-import DailyQuests from "../components/gamification/DailyQuests";
+import TeamHighlights from "../components/gamification/TeamHighlights";
 import PlaybookPanel from "../components/gamification/PlaybookPanel";
-import Achievements from "../components/gamification/Achievements";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -28,27 +27,23 @@ export default function Home() {
         {/* Main 3-column layout */}
         <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr_300px] gap-6">
 
-          {/* LEFT — Skill overview */}
+          {/* LEFT — Skill & Progress */}
           <aside className="hidden lg:flex flex-col gap-5">
             <SkillRadar />
-            <StatsOverview />
-            <SkillPath />
+            <WeeklyReport />
+            <WeeklyChallenge />
           </aside>
 
           {/* CENTER — Meeting comparison hub */}
           <main className="space-y-5">
-            {/* Meeting library (the core) */}
             <MeetingHub />
-
-            {/* Leader playbook */}
             <PlaybookPanel />
           </main>
 
-          {/* RIGHT — Feed & Gamification */}
+          {/* RIGHT — Feed & Team */}
           <aside className="space-y-5">
             <NotificationFeed />
-            <DailyQuests />
-            <Achievements />
+            <TeamHighlights />
           </aside>
         </div>
       </div>
