@@ -1,5 +1,7 @@
 import { useGamification } from "../../gamification/GamificationProvider";
-import { getLevel, getLeagueInfo, MOCK_LEADERBOARD } from "../../gamification/config";
+import { getLevel, getLeagueInfo } from "../../gamification/config";
+
+const MOCK_LEADERBOARD: { name: string; xp: number; streak: number; avatar: string }[] = [];
 
 const RANK_STYLES = [
   "bg-[#FFC800] text-white",
