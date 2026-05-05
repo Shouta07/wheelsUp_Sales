@@ -4,6 +4,8 @@ import SkillRadar from "../components/gamification/SkillRadar";
 import NotificationFeed from "../components/gamification/NotificationFeed";
 import WeeklyChallenge from "../components/gamification/WeeklyChallenge";
 import WeeklyReport from "../components/gamification/WeeklyReport";
+import TeamHighlights from "../components/gamification/TeamHighlights";
+import PlaybookPanel from "../components/gamification/PlaybookPanel";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -25,9 +27,10 @@ export default function Home() {
         {/* 2-column: Meetings (main) + Gamification (side) */}
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
 
-          {/* MAIN — Meeting feedback */}
+          {/* MAIN — Meeting feedback + Playbook */}
           <main className="space-y-5">
             <MeetingHub />
+            <PlaybookPanel />
           </main>
 
           {/* SIDE — Score results + gamification */}
@@ -36,6 +39,7 @@ export default function Home() {
             <SkillRadar />
             <WeeklyChallenge />
             <WeeklyReport />
+            <TeamHighlights />
           </aside>
         </div>
       </div>

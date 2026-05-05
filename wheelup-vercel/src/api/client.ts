@@ -869,7 +869,7 @@ export interface MeetingTranscript {
 
 /* ---------- Meeting API (with demo fallback) ---------- */
 
-import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, seedDemoData } from "./demo";
+import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
 
 seedDemoData();
 
@@ -963,6 +963,7 @@ export async function extractPlaybook(
   leaderName?: string,
   limit?: number,
 ): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  if (DEMO_MODE) return demoExtractPlaybook();
   return request("/meetings/extract-playbook", {
     method: "POST",
     body: JSON.stringify({ leader_name: leaderName, limit }),

@@ -3,6 +3,7 @@ import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import { GamificationProvider, getSavedUser, clearSavedUser } from "./gamification/GamificationProvider";
 import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
+import StreakFlame from "./components/gamification/StreakFlame";
 import UserSelectPage from "./pages/UserSelectPage";
 import Home from "./pages/Home";
 
@@ -90,16 +91,19 @@ function NavBar({ currentUser, onSwitchUser }: { currentUser: string; onSwitchUs
           <span className="text-[10px] font-bold text-[#afafaf] hidden sm:inline">面談フィードバック</span>
         </div>
 
-        <button
-          onClick={onSwitchUser}
-          className="flex items-center gap-1.5 px-2 py-1 rounded-xl hover:bg-gray-50 transition-colors"
-          title="ユーザー切替"
-        >
-          <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
-            <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
-          </div>
-          <span className="text-xs font-bold text-[#4b4b4b] hidden sm:inline">{currentUser}</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <StreakFlame />
+          <button
+            onClick={onSwitchUser}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-xl hover:bg-gray-50 transition-colors"
+            title="ユーザー切替"
+          >
+            <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
+              <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
+            </div>
+            <span className="text-xs font-bold text-[#4b4b4b] hidden sm:inline">{currentUser}</span>
+          </button>
+        </div>
       </div>
     </header>
   );

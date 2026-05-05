@@ -1,4 +1,4 @@
-import type { MeetingTranscript, MeetingScore } from "./client";
+import type { MeetingTranscript, MeetingScore, PlaybookEntry } from "./client";
 
 let meetings: MeetingTranscript[] = [];
 let idCounter = 1;
@@ -137,6 +137,55 @@ export async function demoSummarizeMeeting(id: string): Promise<{ summary: strin
   return { summary, action_items: actionItems, key_points: keyPoints };
 }
 
+export async function demoExtractPlaybook(): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  return {
+    source_meetings: meetings.filter((m) => m.is_leader).length,
+    leader_name: "リーダー",
+    playbook: [
+      {
+        situation: "候補者の転職動機が曖昧な時",
+        trigger: "「なんとなく転職したい」「特に不満はないけど」と言われた場合",
+        leader_approach: "「なるほど、今の環境に大きな不満がないのは良いことですね。ただ、5年後を想像した時に今と同じポジションにいる自分はイメージできますか？」と未来視点に切り替える。漠然とした不安を具体的なキャリアギャップとして言語化する。",
+        key_phrases: ["5年後を想像すると", "キャリアの天井を感じませんか", "今の環境で学べることは残っていますか"],
+        avoid: "「転職すべきです」と一方的に押す。候補者の現状を否定する発言。",
+        success_rate_hint: "この切り口で本音が出る確率: 約80%",
+      },
+      {
+        situation: "年収交渉で候補者が弱気な時",
+        trigger: "「年収は現状維持でいいです」「あまり高望みしても...」と言われた場合",
+        leader_approach: "「田中さんのご経験と資格で、市場的にはこのレンジが適正です」と客観データを提示。候補者が値切る前に市場価値を伝えて、交渉のアンカーを上に置く。",
+        key_phrases: ["市場的にはこのレンジ", "同経験年数の方の相場は", "企業側もこの水準は想定しています"],
+        avoid: "候補者の希望額をそのまま受け入れる。根拠なく「もっと上を目指しましょう」と言う。",
+        success_rate_hint: "適正相場を提示した場合、年収UPで決まる確率: 約65%",
+      },
+      {
+        situation: "他社選考が先行している時",
+        trigger: "「実は他社でもう内定が出ていて...」「来週までに返事しないと」と言われた場合",
+        leader_approach: "焦らず「それは素晴らしいですね。ちなみにその企業のどこが決め手ですか？」と深掘り。他社の条件を聞いた上で、「一点だけ確認させてください。〇〇の点は大丈夫ですか？」と候補者が気づいていないリスクを指摘し、比較材料を増やす。",
+        key_phrases: ["決め手は何ですか", "一点だけ確認させてください", "比較せずに決めると後悔することも"],
+        avoid: "他社を悪く言う。「うちの方が絶対いい」と根拠なく主張する。",
+        success_rate_hint: "冷静に比較材料を提示した場合、再検討してくれる確率: 約50%",
+      },
+      {
+        situation: "候補者の温度感が低い（情報収集段階）",
+        trigger: "「まだ転職は考えてないけど話だけ聞きたい」「いい話があれば」程度の場合",
+        leader_approach: "無理に面談を設定しない。「今の市場の面白い動きだけお伝えしますね」と情報提供に徹し、信頼を構築。2週間後に「あの話の続きですが」と具体案件で再アプローチ。",
+        key_phrases: ["情報提供だけさせてください", "面白い動きがあるので共有します", "来週あの件の続報をお伝えします"],
+        avoid: "初回から「いつまでに転職しますか」��期限を詰める。温度感が低い段階で企業面接を組もうとする。",
+        success_rate_hint: "信頼構築後の本格検討移行率: 約40%",
+      },
+      {
+        situation: "面談後のフォローアップ（次回アクション設定）",
+        trigger: "面談の終盤、次のステップを決める場面",
+        leader_approach: "「来週水曜までに3件の求人をお送りします。金曜16時に15分だけお電話で感想を聞かせてください」と、期限+具体アクション+次の接点を1文で設定。曖昧な「また連絡します」は絶対に避ける。",
+        key_phrases: ["来週水曜までに", "金曜に15分だけ", "3件お送りするので優先順位をつけてください"],
+        avoid: "「またいいのがあったら連絡します」と曖昧に終わる。次回の日時を決めずに電話を切る。",
+        success_rate_hint: "期限を切った場合の次回面談実施率: 約90%",
+      },
+    ],
+  };
+}
+
 // Pre-load demo data: leader meetings
 export function seedDemoData() {
   if (meetings.length > 0) return;
@@ -176,6 +225,53 @@ export function seedDemoData() {
       score_data: score,
       title: lm.title,
       transcript_text: lm.text,
+      summary: null,
+      action_items: [],
+      key_points: [],
+      next_steps: null,
+      attendees: [],
+      duration_minutes: null,
+      source: "manual",
+      recorded_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  // Sample consultant meetings for team highlights demo
+  const sampleConsultants = [
+    {
+      name: "山田太郎",
+      title: "山田: 鈴木様（電気工事士→設備管理）",
+      text: "鈴木さんは電気工事士として7年。第二種電気工事士の資格あり。転職の理由は体力面の不安と将来性。希望は設備管理で年収維持。提案として〇〇ビルメンテナンスの案件を紹介。来週中に履歴書を更新してもらう。",
+    },
+    {
+      name: "山田太郎",
+      title: "山田: 中村様（営業→施工管理）",
+      text: "中村さんは不動産営業5年。資格はなし。動機は手に職をつけたい。年収は下がっても構わないとのこと。未経験歓迎の施工管理求人を3件紹介予定。来週火曜に電話する約束。",
+    },
+    {
+      name: "佐々木花子",
+      title: "佐々木: 吉田様（設備→プラント）",
+      text: "吉田さんはプラント設備のメンテナンス8年目。危険物取扱者の資格持ち。本音は年収アップと出張を減らしたい。他社の選考はまだ受けていない。プラント系の設備管理で年収600万以上の求人を探す。来週木曜までに情報共有。",
+    },
+  ];
+
+  for (const sc of sampleConsultants) {
+    const id = nextId();
+    const now = new Date(Date.now() - Math.random() * 5 * 24 * 60 * 60 * 1000).toISOString();
+    const score = scoreFromText(sc.text);
+    score.meeting_id = id;
+
+    meetings.push({
+      id,
+      deal_id: null,
+      candidate_id: null,
+      consultant_name: sc.name,
+      is_leader: false,
+      score_data: score,
+      title: sc.title,
+      transcript_text: sc.text,
       summary: null,
       action_items: [],
       key_points: [],

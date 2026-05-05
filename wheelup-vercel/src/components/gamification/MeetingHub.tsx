@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
@@ -39,6 +39,30 @@ export default function MeetingHub() {
   });
 
   const meetings = tab === "mine" ? myMeetings?.transcripts : leaderMeetings?.transcripts;
+
+  // Track scored meetings to trigger celebrations
+  const prevScoredRef = useRef<Set<string>>(new Set());
+  const { earnXp, unlockAchievement } = useGamification();
+
+  useEffect(() => {
+    const scored = (myMeetings?.transcripts || []).filter((m) => m.score_data);
+    const scoredIds = new Set(scored.map((m) => m.id));
+
+    const newlyScored = scored.filter((m) => !prevScoredRef.current.has(m.id));
+    if (newlyScored.length > 0 && prevScoredRef.current.size > 0) {
+      for (const m of newlyScored) {
+        earnXp("meeting_scored");
+        const s = m.score_data!;
+        if (s.total >= 40) unlockAchievement("score_40");
+        else if (s.total >= 35) unlockAchievement("score_35");
+        else if (s.total >= 30) unlockAchievement("score_30");
+      }
+      if (scored.length === 1) unlockAchievement("first_score");
+      if (scored.length >= 5) unlockAchievement("meetings_5");
+      if (scored.length >= 20) unlockAchievement("meetings_20");
+    }
+    prevScoredRef.current = scoredIds;
+  }, [myMeetings]);
 
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
