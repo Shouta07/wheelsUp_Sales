@@ -111,103 +111,272 @@ const INTEL_KEYWORDS_WEAK = [
   "カジュアル面談", "先行中", "返答待ち",
 ];
 
-function countKeywordHits(text: string, strong: string[], weak: string[]): { strong: number; weak: number } {
-  let s = 0;
-  let w = 0;
-  for (const kw of strong) if (text.includes(kw)) s++;
-  for (const kw of weak) if (text.includes(kw)) w++;
-  return { strong: s, weak: w };
-}
+// --- フレーズパターン（複数語マッチ = 文脈を捉えた高精度スコアリング） ---
+const NEEDS_PHRASES = [
+  "5年後どうなっていたい", "キャリアの方向性", "転職のきっかけ",
+  "本音を聞かせ", "何を叶えていきたい", "なぜそこにこだわる",
+  "どうなりたい", "何がしたい", "今の環境で成長",
+  "キャリアビジョン", "転職理由を", "推薦文に使いたい",
+  "優先順位を", "目指す方向", "本当にやりたいこと",
+  "キャリアギャップ", "言語化", "将来どう",
+  "働き方を改善", "子供が生まれ", "家族ができ",
+  "所長になる自信", "構造的な問題なのか", "会社の問題ですか",
+];
+const PROPOSAL_PHRASES = [
+  "例えばこの企業", "選択肢として", "ご紹介します",
+  "市場価値としては", "具体的な企業名", "セーフティーゾーン",
+  "挑戦枠として", "出口戦略", "社内異動の可能性",
+  "正直に言うと今の", "市場的にはこのレンジ", "発注者側の立場",
+  "構造的に残業が減る", "こういう会社が合", "選択肢を出",
+  "業務フローとしては", "2段階説法", "体系的に説明",
+  "事業会社という選択肢", "不動産管理会社", "物流倉庫系",
+  "特建事業部", "サラカン的", "企業名と理由をセット",
+];
+const TRUST_PHRASES = [
+  "業界の実態", "構造的な問題", "デベロッパーの業務フロー",
+  "設計事務所の場合", "業界構造から", "市場的には",
+  "内装と建築の違い", "収まり検討", "正直に言うと",
+  "元請けの立場", "発注者側だと", "具体的な数字",
+  "私も実は", "経験者として", "業界水準と照らし",
+  "品質基準の違い", "価格帯のレンジ", "ブランド力の差",
+  "指定業者制度", "4大管理", "一次請負で入る",
+  "第三者支援", "発注者支援", "コンサルに委託",
+];
+const CLOSING_PHRASES = [
+  "来週までに", "件お送りします", "次回は具体",
+  "LINE交換", "ポートフォリオの準備", "スケジュールとしては",
+  "グループLINE", "面談を設定", "逆算してスケジュール",
+  "退職交渉は内定後", "入社時期から逆算", "水曜までに",
+  "金曜に電話", "GW明けに", "月曜に面談",
+  "件ご紹介", "求人をお送り", "商談があるので確認",
+];
+const INTEL_PHRASES = [
+  "他社エージェント", "選考状況を", "希望年収は",
+  "現年収を", "温度感は", "転職時期は",
+  "何社ぐらい", "他に受けている", "内定は出ている",
+  "ビズリーチ経由", "再応募の制限", "前回受けた企業",
+  "残業代の内訳", "見込み残業", "福利厚生は",
+  "診断書は", "休職中の伝え方", "有給消化として",
+];
 
-function axisScore(strongHits: number, weakHits: number, textLength: number): number {
-  const lengthBonus = textLength > 3000 ? 1 : textLength > 1000 ? 0.5 : 0;
-  const raw = Math.min(10, 3 + strongHits * 1.2 + weakHits * 0.4 + lengthBonus);
-  const jitter = (Math.random() - 0.5) * 0.8;
-  return Math.max(1, Math.min(10, Math.round(raw + jitter)));
-}
-
-function findEvidence(text: string, keywords: string[]): string {
-  const sentences = text.split(/[。\n]/).filter((s) => s.trim().length > 10);
-  for (const kw of keywords) {
-    const found = sentences.find((s) => s.includes(kw));
-    if (found) return found.trim().slice(0, 60);
+// --- 出現回数カウント ---
+function countOccurrences(text: string, pattern: string): number {
+  let count = 0;
+  let pos = 0;
+  while ((pos = text.indexOf(pattern, pos)) !== -1) {
+    count++;
+    pos += pattern.length;
   }
-  return "";
+  return count;
+}
+
+// --- 軸スコア算出（フレーズ3.0 > 強1.5 > 弱0.5、頻度逓減） ---
+interface AxisResult {
+  score: number;
+  weight: number;
+  phraseHits: string[];
+  strongHits: string[];
+  weakHits: string[];
+}
+
+function scoreAxis(
+  text: string,
+  phrases: string[],
+  strong: string[],
+  weak: string[],
+  textLength: number,
+): AxisResult {
+  const phraseHits: string[] = [];
+  const strongHits: string[] = [];
+  const weakHits: string[] = [];
+  let totalWeight = 0;
+
+  for (const p of phrases) {
+    const c = countOccurrences(text, p);
+    if (c > 0) {
+      phraseHits.push(p);
+      totalWeight += 3.0 + Math.min(c - 1, 2) * 1.0;
+    }
+  }
+
+  for (const kw of strong) {
+    if (phraseHits.some((p) => p.includes(kw))) continue;
+    const c = countOccurrences(text, kw);
+    if (c > 0) {
+      strongHits.push(kw);
+      totalWeight += 1.5 + Math.min(c - 1, 3) * 0.3;
+    }
+  }
+
+  for (const kw of weak) {
+    if (strongHits.some((s) => s.includes(kw)) || phraseHits.some((p) => p.includes(kw))) continue;
+    const c = countOccurrences(text, kw);
+    if (c > 0) {
+      weakHits.push(kw);
+      totalWeight += 0.5 + Math.min(c - 1, 2) * 0.1;
+    }
+  }
+
+  const lenBonus = textLength > 10000 ? 2 : textLength > 5000 ? 1.5 : textLength > 3000 ? 1 : textLength > 1000 ? 0.5 : 0;
+  totalWeight += lenBonus;
+
+  const score = Math.max(1, Math.min(10, Math.round(2 + 8 * (1 - Math.exp(-totalWeight / 12)))));
+  return { score, weight: totalWeight, phraseHits, strongHits, weakHits };
+}
+
+// --- 最良エビデンス抽出（最もスコアの高い文を選択） ---
+function findBestEvidence(text: string, phrases: string[], strong: string[]): string {
+  const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 15);
+  let bestScore = 0;
+  let bestSentence = "";
+
+  for (const sent of sentences) {
+    let sc = 0;
+    for (const p of phrases) if (sent.includes(p)) sc += 3;
+    for (const kw of strong) if (sent.includes(kw)) sc += 1;
+    if (sc > bestScore || (sc === bestScore && sent.length > bestSentence.length && sent.length <= 120)) {
+      bestScore = sc;
+      bestSentence = sent.trim();
+    }
+  }
+  return bestSentence.slice(0, 80);
 }
 
 function scoreFromText(text: string): MeetingScore {
-  const needs = countKeywordHits(text, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK);
-  const proposal = countKeywordHits(text, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK);
-  const trust = countKeywordHits(text, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK);
-  const closing = countKeywordHits(text, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK);
-  const intel = countKeywordHits(text, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK);
-
   const len = text.length;
-  const needsScore = axisScore(needs.strong, needs.weak, len);
-  const proposalScore = axisScore(proposal.strong, proposal.weak, len);
-  const trustScore = axisScore(trust.strong, trust.weak, len);
-  const closingScore = axisScore(closing.strong, closing.weak, len);
-  const intelScore = axisScore(intel.strong, intel.weak, len);
+  const n = scoreAxis(text, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK, len);
+  const p = scoreAxis(text, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK, len);
+  const t = scoreAxis(text, TRUST_PHRASES, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK, len);
+  const c = scoreAxis(text, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK, len);
+  const i = scoreAxis(text, INTEL_PHRASES, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK, len);
 
-  const total = needsScore + proposalScore + trustScore + closingScore + intelScore;
-  const grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 28 ? "B" : total >= 20 ? "C" : "D";
+  const total = n.score + p.score + t.score + c.score + i.score;
+  const grade = total >= 42 ? "S" : total >= 36 ? "A" : total >= 28 ? "B" : total >= 20 ? "C" : "D";
 
-  const needsEv = findEvidence(text, NEEDS_KEYWORDS_STRONG);
-  const proposalEv = findEvidence(text, PROPOSAL_KEYWORDS_STRONG);
-  const trustEv = findEvidence(text, TRUST_KEYWORDS_STRONG);
-  const closingEv = findEvidence(text, CLOSING_KEYWORDS_STRONG);
-  const intelEv = findEvidence(text, INTEL_KEYWORDS_STRONG);
+  const nEv = findBestEvidence(text, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG);
+  const pEv = findBestEvidence(text, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG);
+  const tEv = findBestEvidence(text, TRUST_PHRASES, TRUST_KEYWORDS_STRONG);
+  const cEv = findBestEvidence(text, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG);
+  const iEv = findBestEvidence(text, INTEL_PHRASES, INTEL_KEYWORDS_STRONG);
+
+  const hasFamily = text.includes("子供") || text.includes("結婚") || text.includes("家族");
+  const isZenekon = text.includes("ゼネコン") || text.includes("施工管理");
+  const isDesign = text.includes("設計") || text.includes("建築士");
 
   return {
     meeting_id: "",
-    scores: {
-      needs: needsScore,
-      proposal: proposalScore,
-      trust: trustScore,
-      closing: closingScore,
-      intel: intelScore,
-    },
+    scores: { needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score },
     total,
     grade,
     evidence: {
-      needs: needsEv
-        ? `「${needsEv}」と候補者の本音・動機を深掘りしている`
-        : "候補者のキャリアビジョンや転職動機への踏み込みが不足",
-      proposal: proposalEv
-        ? `「${proposalEv}」と具体的な提案・市場情報を提示している`
-        : "具体的な企業名や市場価値の提示がなく、一般論にとどまった",
-      trust: trustEv
-        ? `「${trustEv}」と業界知識を交えた専門的な会話ができている`
-        : "建築・不動産業界特有の知見を活かした会話がなかった",
-      closing: closingEv
-        ? `「${closingEv}」と期限・次回アクションを明確に設定している`
-        : "次のアクションが曖昧で具体的な期限設定がない",
-      intel: intelEv
-        ? `「${intelEv}」と候補者の状況・他社動向を把握できている`
-        : "他社選考状況や転職時期・温度感の確認が不足",
+      needs: nEv
+        ? `「${nEv}」— ${n.phraseHits.length > 0 ? "深掘り質問で本音を引き出している" : "転職動機に触れているが、さらに深掘りの余地あり"}`
+        : n.strongHits.length > 0
+          ? `${n.strongHits.slice(0, 3).join("・")}に触れているが、候補者の本音まで踏み込めていない`
+          : "候補者のキャリアビジョンや転職動機への質問がなく、表面的なヒアリングにとどまった",
+      proposal: pEv
+        ? `「${pEv}」— ${p.phraseHits.length > 0 ? "候補者の状況に合わせた具体的な提案ができている" : "提案はあるが、より候補者固有の選択肢提示が望ましい"}`
+        : p.strongHits.length > 0
+          ? `${p.strongHits.slice(0, 3).join("・")}の話題はあるが、具体的な企業名・ポジションの提案に至っていない`
+          : "具体的な企業名や市場価値の提示がなく、一般論にとどまった",
+      trust: tEv
+        ? `「${tEv}」— ${t.phraseHits.length > 0 ? "業界の構造・実態を具体的に説明し信頼を構築できている" : "業界用語を使えているが、実務レベルの知見提示があるとさらに良い"}`
+        : t.strongHits.length > 0
+          ? `${t.strongHits.slice(0, 3).join("・")}の用語は出ているが、業界構造の深い知見を示す場面がなかった`
+          : "建築・不動産業界特有の知見を活かした会話がなかった",
+      closing: cEv
+        ? `「${cEv}」— ${c.phraseHits.length > 0 ? "期限・具体アクション・次の接点を明確に設定している" : "次回の方向性はあるが、期限付きアクションの設定があるとさらに良い"}`
+        : c.strongHits.length > 0
+          ? `${c.strongHits.slice(0, 3).join("・")}の話はあるが、「いつまでに何をする」の明確な設定がない`
+          : "次のアクションが曖昧で具体的な期限設定がない",
+      intel: iEv
+        ? `「${iEv}」— ${i.phraseHits.length > 0 ? "競合状況・条件面を網羅的に把握できている" : "基本情報は把握しているが、他社動向の深掘りがあるとさらに良い"}`
+        : i.strongHits.length > 0
+          ? `${i.strongHits.slice(0, 3).join("・")}を確認しているが、他社選考の温度感まで踏み込めていない`
+          : "他社選考状況や転職時期・温度感の確認が不足",
     },
-    strengths: [
-      ...(needsScore >= 7 ? ["候補者の本音・キャリアビジョンを引き出す深掘り力"] : []),
-      ...(trustScore >= 7 ? ["建築・不動産業界の専門知識を活かした信頼構築"] : []),
-      ...(closingScore >= 7 ? ["具体的な期限・アクション設定によるクロージング"] : []),
-      ...(proposalScore >= 7 ? ["候補者に合わせた具体的企業・ポジションの提案"] : []),
-      ...(intelScore >= 7 ? ["他社状況・年収相場など的確な情報収集"] : []),
-    ].slice(0, 2),
-    improvements: [
-      ...(closingScore <= 4 ? ["「来週水曜までに3件お送りします」等、期限付きの次回アクションを設定する"] : []),
-      ...(intelScore <= 4 ? ["他社エージェントの利用状況・選考状況・温度感を必ず確認する"] : []),
-      ...(proposalScore <= 4 ? ["候補者のニーズに合った具体的な企業名・ポジションを2-3件提示する"] : []),
-      ...(needsScore <= 4 ? ["「5年後どうなっていたいですか？」等で候補者のキャリアビジョンを深掘りする"] : []),
-      ...(trustScore <= 4 ? ["建築業界の市場動向や企業の内情など専門的な情報を会話に織り交ぜる"] : []),
-    ].slice(0, 2),
+    strengths: buildStrengths(n, p, t, c, i, { hasFamily, isZenekon, isDesign }),
+    improvements: buildImprovements(n, p, t, c, i, { hasFamily, isZenekon, isDesign }),
     leader_would: generateLeaderWould(text, {
-      needs: needsScore,
-      proposal: proposalScore,
-      trust: trustScore,
-      closing: closingScore,
-      intel: intelScore,
+      needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score,
     }),
   };
+}
+
+function buildStrengths(
+  n: AxisResult, p: AxisResult, t: AxisResult, c: AxisResult, i: AxisResult,
+  ctx: { hasFamily: boolean; isZenekon: boolean; isDesign: boolean },
+): string[] {
+  const out: string[] = [];
+  if (n.score >= 7) {
+    out.push(n.phraseHits.length >= 2
+      ? "「なぜ」「どうなりたい」等の深掘り質問で候補者の本音を多角的に引き出している"
+      : "候補者の転職動機・キャリアビジョンに踏み込んだヒアリングができている");
+  }
+  if (t.score >= 7) {
+    out.push(t.phraseHits.length >= 2
+      ? "業界構造・業務フロー・企業比較を具体的に説明し、専門家としての信頼を構築している"
+      : "建築・不動産業界の専門知識を活かした信頼構築ができている");
+  }
+  if (c.score >= 7) {
+    out.push(c.phraseHits.length >= 2
+      ? "期限・具体アクション・連絡手段を1セットで設定し、次回面談の確度を高めている"
+      : "具体的な期限・アクション設定によるクロージングができている");
+  }
+  if (p.score >= 7) {
+    out.push(p.phraseHits.length >= 2
+      ? "候補者の状況を踏まえた複数の選択肢を体系的に提示し、比較検討を促している"
+      : "候補者に合わせた具体的な企業・ポジションの提案ができている");
+  }
+  if (i.score >= 7) {
+    out.push(i.phraseHits.length >= 2
+      ? "年収内訳・他社状況・転職時期を網羅的に把握し、戦略的な情報収集ができている"
+      : "他社状況・年収相場など的確な情報収集ができている");
+  }
+  if (out.length === 0 && n.score >= 5) out.push("候補者の基本情報を丁寧にヒアリングしている");
+  return out.slice(0, 3);
+}
+
+function buildImprovements(
+  n: AxisResult, p: AxisResult, t: AxisResult, c: AxisResult, i: AxisResult,
+  ctx: { hasFamily: boolean; isZenekon: boolean; isDesign: boolean },
+): string[] {
+  const out: string[] = [];
+  const sorted = [
+    { axis: "closing", score: c.score, hits: c },
+    { axis: "intel", score: i.score, hits: i },
+    { axis: "proposal", score: p.score, hits: p },
+    { axis: "needs", score: n.score, hits: n },
+    { axis: "trust", score: t.score, hits: t },
+  ].sort((a, b) => a.score - b.score);
+
+  for (const { axis, score, hits } of sorted) {
+    if (score >= 7 || out.length >= 3) continue;
+    if (axis === "closing") {
+      out.push(hits.strongHits.length > 0
+        ? "「来週水曜までに3件お送りします。金曜16時にお電話します」のように期限＋具体アクション＋次の接点を1文で設定する"
+        : "面談の最後に「いつまでに・何を・どの連絡手段で」を必ず明確にしてから閉じる");
+    } else if (axis === "intel") {
+      out.push(hits.strongHits.length > 0
+        ? "年収の内訳（基本給vs残業代）、他社エージェントの提案内容、選考の温度感まで深掘りする"
+        : "「他社エージェントさんとは何名お話しされましたか？どういう方向性の求人が来ていますか？」と競合状況を必ず確認する");
+    } else if (axis === "proposal") {
+      out.push(ctx.isZenekon
+        ? "ゼネコン経験者には、デベ・CM・事業会社・不動産管理会社の4方向を構造的に整理して提案する（小林の「2段階説法」）"
+        : hits.strongHits.length > 0
+          ? "「この企業を勧める理由は〇〇です」と企業名と根拠をセットで提示し、候補者が比較検討できる材料を出す"
+          : "候補者のニーズに合った具体的な企業名・ポジションを2-3件、理由付きで提示する");
+    } else if (axis === "needs") {
+      out.push(ctx.hasFamily
+        ? "「ご家族の状況が変わると優先順位も変わりますよね。今一番大事にしたいことは何ですか？」とライフイベントから本音を深掘りする"
+        : "「5年後どうなっていたいですか？」「それは会社の問題？業界の構造？」と未来視点・構造視点で候補者の本音に迫る");
+    } else if (axis === "trust") {
+      out.push(ctx.isDesign
+        ? "「設計事務所の残業は構造的な問題で、上流に行くと変わります」等、業界構造を分解して説明し専門家としての信頼を示す"
+        : "候補者の経験領域に関連する業界の実態・企業比較・市場動向を具体的な数字やエピソードで共有する");
+    }
+  }
+  return out.slice(0, 3);
 }
 
 function generateLeaderWould(
@@ -216,29 +385,59 @@ function generateLeaderWould(
 ): string {
   const weakest = Object.entries(scores).sort((a, b) => a[1] - b[1])[0][0];
 
+  const isZenekon = text.includes("ゼネコン") || text.includes("施工管理");
+  const isDesign = text.includes("設計") || text.includes("建築士");
+  const hasFamily = text.includes("子供") || text.includes("結婚") || text.includes("家族");
+  const isSick = text.includes("休職") || text.includes("精神");
+  const hasOtherAgent = text.includes("エージェント") || text.includes("ビズリーチ");
+
   const templates: Record<string, string[]> = {
     needs: [
       "「5年後を想像した時に、今と同じポジションにいる自分はイメージできますか？」と未来視点でキャリアの方向性を深掘りし、候補者自身も気づいていない本音を引き出す。漠然とした不安を具体的なキャリアギャップとして言語化していく。",
       "「今の環境で成長できていると実感できていますか？」と現状への満足度を掘り下げ、転職動機の核心に迫る。候補者が言語化できていない不満やビジョンを一緒に整理していく。",
       "「図面を書きたいのか、コンセプトを決めたいのか？ここで行くべき会社が全く変わります」と、候補者の漠然とした希望を具体的な職種・ポジションに落とし込み、本当にやりたいことを特定する。",
+      ...(hasFamily
+        ? ["「ご家族ができると優先順位が変わりますよね。今一番守りたいものは何ですか？ その上で、キャリアで実現したいことを分けて整理しましょう」と、ライフイベントの変化を起点に候補者の価値観の優先順位を明確にする。小林は河原様の面談で、子供が生まれたことを起点に働き方の本音を引き出している。"]
+        : ["「それは今の会社だけの問題ですか？ それとも業界全体の構造的な問題ですか？ ここの切り分けで行くべき方向が全く変わります」と、不満の本質が会社固有か構造的かを切り分けて、候補者の本当の課題を特定する。小林は岩本様の面談で日商エステムの品質基準と阪急・野村の基準を比較し、問題の本質を切り分けている。"]),
+      ...(isZenekon
+        ? ["「所長になっていく将来像にリアリティがないなら、その不安は正直に言っていいと思います。40-50代の方との知識差は世代の構造問題で、あなただけの課題ではない」と、候補者の漠然とした不安を業界構造の問題として整理し、自責ではなく構造で捉え直す視点を与える。小林は河原様の面談で世代間ギャップの問題を業界構造として言語化している。"]
+        : []),
     ],
     proposal: [
       "「〇〇さんのご経験であれば、例えば島田アセットパートナーさんのような、設計から竣工まで一気通貫で携われるデベロッパーが合いそうです」と、候補者のニーズに合った具体的な企業名と理由をセットで提示する。",
       "「デベロッパーの年収が高いイメージは、実はトップ5の企業が作り上げているもので、中途だと意外とそこまで上がらないケースも多いです。むしろ〇〇系の方が待遇面では有利な場合もあります」と、市場の現実を踏まえた具体的な選択肢を提示する。",
       "「正直に言うと、前職への出戻りが一番確度の高い選択肢です。社内のつながりを活用してリファラルで戻る方が、エージェント経由より資格のハードルを超えやすい」と、エージェントの利益よりも候補者の最善を優先した提案をする。",
+      ...(isZenekon
+        ? ["「選択肢を整理すると、デベロッパー・CM・事業会社・不動産管理会社の4方向があります。それぞれ立場と責任が構造的に異なる。まず①働く環境をどう整えるか、②その上で業界を選ぶ。この2段階で考えましょう」と、多選択肢を体系的に整理して提示する。小林は河原様の面談で「2段階説法」として展開し、松竹の歌舞伎座管理や物流倉庫CMなど候補者が知らない選択肢も具体的に提示している。"]
+        : ["「まず社内の選択肢を確認させてください。別部門への異動や内勤ポジションは検討されましたか？ 転職せずに解決できるなら、それが一番リスクが低い選択肢です」と、転職ありきではなく、社内の可能性を先に探ることで信頼を獲得する。小林は河原様・佐藤様の面談でまず現職残留の可能性を確認している。"]),
+      "「セーフティーゾーンとして今より確実に良くなる企業、挑戦枠として発注者側やキャリアチェンジの企業、この二軸で求人を整理していきましょう」と、リスクの異なる選択肢をバランスよく提示し、候補者が安心して挑戦できる戦略を設計する。小林は日野様の面談で「セーフティーゾーンと挑戦枠」の二軸戦略を提案している。",
     ],
     trust: [
-      "「デベロッパーの業務フローで言うと、土地仕入れの段階でボリューム検討や法規チェックをして、基本設計・実施設計は外注に出していく形です。図面を自分で書くことはなくなりますが、企画段階での法規知識は活きてきます」と、業界の実務を具体的に説明して候補者の理解を深める。",
+      "「デベロッパーの業務フローで言うと、土地仕入れの段階でボリューム検討や法規チェックをして、基本設計・実施設計は外注に出していく形です。図面を自分で書くことはなくなりますが、企画段階での法規知識は活きてきます」と、業界の実務フローを具体的に説明して候補者の理解を深める。",
       "「このエリアだと物件の価格帯はこのレンジで、ブランド力の差で同じ造成地でも1000万近く差がつくことがあります」と、業界内部の知見を共有して専門家としての信頼を構築する。",
       "「内装は仕上げの1-2mmのズレが問題になる精密な世界。建築は10mmでも許容される世界。収まり検討の重要性が全く違います」と、具体的な数字を交えた業界知識で専門家としての信頼を示す。",
+      ...(isZenekon
+        ? ["「住宅メーカーの施工管理は、ゼネコンと全然違います。指定業者制度があるので業者手配・工程管理の負担は減る。原価管理もほぼ業者任せ。ただし複数物件の並行管理と一般顧客対応のストレスは別の形であります」と、自身の住宅メーカー経験を交えて実態を具体的に説明する。小林は河原様の面談で元ミサワホームの経験からハウスメーカー施工管理の実態を具体説明している。"]
+        : []),
+      "「CM会社の実態を説明すると、事業会社が建物を建てたい→建築技術者がいない→コンサルに委託して第三者支援・発注者支援をする立ち位置です。自社物件ではないのでデベとは異なりますが、発注者側につくので構造的に働き方が整いやすい」と、候補者が知らない業態を構造的に説明する。小林は河原様の面談でCMの構造を分解して説明し、物流倉庫系CMという具体的な方向性まで提示している。",
     ],
     closing: [
       "「来週水曜までに3件の求人をお送りします。金曜16時に15分だけお電話で感想を聞かせてください。あと、ポートフォリオのご準備もお願いできますか」と、期限＋具体アクション＋次の接点を1文で設定する。",
       "「次回のところでは具体の企業求人をご紹介できればと思います。その前に、目指す方向性—設計の技術を極めるか、発注者側に行くか—をざっくりでいいので整理しておいていただけますか」と、候補者側のアクションも含めた具体的なネクストステップを設定する。",
+      "「入社時期から逆算してスケジュールを組みましょう。有給が40日あるなら8月中旬から消化開始で逆算。それまでに内定先を確定させる必要があるので、6月中に面接を集中させます」と、逆算型のタイムスケジュールで候補者と目線を合わせる。小林は石原様の面談で「6月内定→9月末退職→10月入社」の具体スケジュールを提示している。",
+      "「まず現職に異動の可能性を打診してください。並行して転職活動を進め、異動OKなら残る・NGなら転職と判断する。両面で動くことで最善の結果を出せます」と、転職ありきではない並行戦略を提案して、候補者の信頼を得ながら面談を閉じる。",
+      "「来週ちょうどこの企業の人事と商談があるので、気になる点があれば直接確認してきます。求人票に載らない配属先の実態や休日体制の本当のところを聞けます」と、自社のネットワークを活かした情報提供を約束し、次回面談へのフックを作る。小林は河原様の面談で旭化成との商談を活用すると提案している。",
     ],
     intel: [
       "「他社のエージェントさんとはどのぐらいお話しされましたか？実際に求人を見た中で、ここ面白いなと思った企業はありましたか？」と、競合状況と候補者の反応を同時に把握する。選考が先行している場合は焦らず「決め手は何ですか」と深掘りする。",
       "「再応募の制限がある企業もあるので、前回受けられた企業をお聞きしたいのですが」と、候補者の選考履歴を把握し、紹介可能な企業を正確に絞り込む。",
+      "「年収の内訳を教えてください。残業代込みと基本給のみでは比較が全く変わります。例えば45時間の残業代が月10万含まれているなら、実質基本給ベースで比較しないと入社後にギャップが出ます」と、年収の構造を正確に把握する。小林は河原様の面談で残業代の内訳（月10万、45時間上限）を具体的に確認している。",
+      ...(isSick
+        ? ["「今のお休みの状況については、企業には有給消化中と伝えましょう。診断書は取得しない方が後々のリスクが少ないです。離職期間が短ければ面接でも深掘りされません」と、休職中の候補者に対して面接での伝え方を具体的にアドバイスする。小林は河原様の面談で「有給消化として伝える、診断書はもらわない方がいい」と西村と連携してアドバイスしている。"]
+        : ["「他のエージェントさんからはどういう方向性の求人が来ていますか？ 同じジャンルが多いなら我々は別の切り口で提案しますし、バラバラなら一度方向性を整理してから進めた方が効率的です」と、他社との差別化ポイントを探りながら情報収集する。"]),
+      ...(hasOtherAgent
+        ? ["「他社エージェントさんで進んでいる選考の温度感はいかがですか？ もし決め手に欠けている状態なら、何が足りないのか一緒に整理しましょう。そこが分かれば我々の提案の方向性も明確になります」と、競合エージェントの提案の弱点を把握し、自社の提案に活かす。"]
+        : []),
     ],
   };
 
@@ -561,10 +760,10 @@ export function seedDemoData() {
     const now = new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString();
     const score = scoreFromText(lm.text);
     score.meeting_id = id;
-    score.scores.needs = Math.min(10, score.scores.needs + 2);
+    score.scores.needs = Math.min(10, score.scores.needs + 1);
     score.scores.proposal = Math.min(10, score.scores.proposal + 1);
     score.scores.trust = Math.min(10, score.scores.trust + 1);
-    score.scores.closing = Math.min(10, score.scores.closing + 2);
+    score.scores.closing = Math.min(10, score.scores.closing + 1);
     score.scores.intel = Math.min(10, score.scores.intel + 1);
     score.total = Object.values(score.scores).reduce((a, b) => a + b, 0);
     score.grade = score.total >= 40 ? "S" : score.total >= 35 ? "A" : "B";
