@@ -7,6 +7,73 @@ function nextId(): string {
   return `demo-${idCounter++}`;
 }
 
+// --- localStorage 永続化（リロードしてもデータ保持） ---
+const STORAGE_KEY = "wheelsup_meetings_v1";
+
+function loadFromStorage(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.m) || data.m.length === 0) return false;
+    meetings = data.m;
+    idCounter = data.c || meetings.length + 1;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function saveToStorage(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ m: meetings, c: idCounter }));
+  } catch { /* storage full — ignore */ }
+}
+
+// --- トランスクリプト話者分離（コンサルタント vs 候補者） ---
+const TEAM_NAMES = ["小林", "西村", "辻内", "安藤", "村上"];
+
+interface ParsedTranscript {
+  consultantText: string;
+  candidateName: string | null;
+  consultantName: string | null;
+  isFormatted: boolean;
+}
+
+function parseTranscript(text: string): ParsedTranscript {
+  const speakerRegex = /^(.+?)\s*\(\d{4}\/\d{2}\/\d{2}\s+[午前後]+\d{1,2}:\d{2}\)/gm;
+  const matches = [...text.matchAll(speakerRegex)];
+
+  if (matches.length < 4) {
+    return { consultantText: text, candidateName: null, consultantName: null, isFormatted: false };
+  }
+
+  const speakers = [...new Set(matches.map((m) => m[1].trim()))];
+  const consultants = speakers.filter((s) => TEAM_NAMES.some((t) => s.includes(t)) || s === "あなた");
+  const candidates = speakers.filter((s) => !consultants.includes(s));
+
+  let consultantText = "";
+  let isConsultantSpeaking = false;
+
+  for (const line of text.split("\n")) {
+    const m = line.match(/^(.+?)\s*\(\d{4}\/\d{2}\/\d{2}/);
+    if (m) {
+      isConsultantSpeaking = consultants.includes(m[1].trim());
+      continue;
+    }
+    if (isConsultantSpeaking && line.trim()) {
+      consultantText += line + "\n";
+    }
+  }
+
+  return {
+    consultantText,
+    candidateName: candidates[0] || null,
+    consultantName: consultants.find((c) => c !== "あなた") || (consultants.includes("あなた") ? "小林" : null),
+    isFormatted: true,
+  };
+}
+
 // --- 教師データから抽出したスコアリングロジック ---
 // 小林リーダーの実面談パターンに基づくキーワード重み付け
 
@@ -243,12 +310,30 @@ function findBestEvidence(text: string, phrases: string[], strong: string[]): st
 }
 
 function scoreFromText(text: string): MeetingScore {
+  const parsed = parseTranscript(text);
   const len = text.length;
   const n = scoreAxis(text, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK, len);
   const p = scoreAxis(text, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK, len);
   const t = scoreAxis(text, TRUST_PHRASES, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK, len);
   const c = scoreAxis(text, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK, len);
   const i = scoreAxis(text, INTEL_PHRASES, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK, len);
+
+  // 話者分離できた場合：コンサルタント発言を重視したブレンドスコア
+  if (parsed.isFormatted && parsed.consultantText.length > 200) {
+    const cLen = parsed.consultantText.length;
+    const cn = scoreAxis(parsed.consultantText, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK, cLen);
+    const cp = scoreAxis(parsed.consultantText, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK, cLen);
+    const ct = scoreAxis(parsed.consultantText, TRUST_PHRASES, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK, cLen);
+    const cc = scoreAxis(parsed.consultantText, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK, cLen);
+    const ci = scoreAxis(parsed.consultantText, INTEL_PHRASES, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK, cLen);
+    // ニーズ把握・提案力・クロージング → コンサルの行動が重要（65%）
+    n.score = Math.max(1, Math.min(10, Math.round(n.score * 0.35 + cn.score * 0.65)));
+    p.score = Math.max(1, Math.min(10, Math.round(p.score * 0.35 + cp.score * 0.65)));
+    c.score = Math.max(1, Math.min(10, Math.round(c.score * 0.35 + cc.score * 0.65)));
+    // 信頼構築・情報収集 → 会話全体の内容が重要（65%）
+    t.score = Math.max(1, Math.min(10, Math.round(t.score * 0.65 + ct.score * 0.35)));
+    i.score = Math.max(1, Math.min(10, Math.round(i.score * 0.60 + ci.score * 0.40)));
+  }
 
   const total = n.score + p.score + t.score + c.score + i.score;
   const grade = total >= 42 ? "S" : total >= 36 ? "A" : total >= 28 ? "B" : total >= 20 ? "C" : "D";
@@ -461,16 +546,31 @@ export function demoFetchMeetings(
 export async function demoCreateMeeting(data: Partial<MeetingTranscript>): Promise<MeetingTranscript> {
   const id = nextId();
   const now = new Date().toISOString();
+  const transcriptText = data.transcript_text || "";
+
+  // トランスクリプトから話者を自動検出
+  const parsed = parseTranscript(transcriptText);
+  let consultantName = data.consultant_name || null;
+  let title = data.title || "面談記録";
+
+  if (parsed.isFormatted) {
+    if (!consultantName && parsed.consultantName) {
+      consultantName = parsed.consultantName;
+    }
+    if ((!data.title || data.title === "面談記録") && parsed.candidateName) {
+      title = `${consultantName || "担当者"}: ${parsed.candidateName}様 面談`;
+    }
+  }
 
   const meeting: MeetingTranscript = {
     id,
     deal_id: null,
     candidate_id: null,
-    consultant_name: data.consultant_name || null,
+    consultant_name: consultantName,
     is_leader: data.is_leader || false,
     score_data: null,
-    title: data.title || "面談記録",
-    transcript_text: data.transcript_text || "",
+    title,
+    transcript_text: transcriptText,
     summary: null,
     action_items: [],
     key_points: [],
@@ -484,12 +584,14 @@ export async function demoCreateMeeting(data: Partial<MeetingTranscript>): Promi
   };
 
   meetings.push(meeting);
+  saveToStorage();
 
   if (meeting.transcript_text && meeting.transcript_text.length > 30) {
     setTimeout(() => {
       const score = scoreFromText(meeting.transcript_text);
       score.meeting_id = id;
       meeting.score_data = score;
+      saveToStorage();
     }, 2000);
   }
 
@@ -502,6 +604,7 @@ export async function demoScoreMeeting(id: string): Promise<MeetingScore> {
   const score = scoreFromText(meeting.transcript_text);
   score.meeting_id = id;
   meeting.score_data = score;
+  saveToStorage();
   return score;
 }
 
@@ -525,6 +628,7 @@ export async function demoSummarizeMeeting(id: string): Promise<{ summary: strin
   meeting.summary = summary;
   meeting.action_items = actionItems;
   meeting.key_points = keyPoints;
+  saveToStorage();
 
   return { summary, action_items: actionItems, key_points: keyPoints };
 }
@@ -686,6 +790,7 @@ export async function demoExtractPlaybook(): Promise<{ playbook: PlaybookEntry[]
 
 // --- 実面談トランスクリプトを基にした教師データ ---
 export function seedDemoData() {
+  if (loadFromStorage()) return;
   if (meetings.length > 0) return;
 
   const leaderMeetings = [
@@ -895,4 +1000,6 @@ export function seedDemoData() {
       updated_at: now,
     });
   }
+
+  saveToStorage();
 }
