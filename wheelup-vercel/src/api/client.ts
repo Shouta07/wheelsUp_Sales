@@ -865,6 +865,7 @@ export interface MeetingTranscript {
   recorded_at: string;
   created_at: string;
   updated_at: string;
+  leader_feedback?: string;
 }
 
 /* ---------- Meeting API (with demo fallback) ---------- */
@@ -926,7 +927,35 @@ export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
   return request(`/meetings/${id}`, { method: "DELETE" });
 }
 
+export async function addLeaderFeedback(
+  id: string,
+  feedback: string,
+): Promise<MeetingTranscript> {
+  if (DEMO_MODE) {
+    const { demoAddLeaderFeedback } = await import("./demo");
+    return demoAddLeaderFeedback(id, feedback);
+  }
+  return request(`/meetings/${id}/leader-feedback`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
 /* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
+
+export interface LearningResource {
+  axis: string;
+  title: string;
+  description: string;
+  playbook_situation?: string;
+}
+
+export interface KeyMoment {
+  text: string;
+  axis: string;
+  axis_label: string;
+  relevance: number;
+}
 
 export interface MeetingScore {
   meeting_id: string;
@@ -937,6 +966,8 @@ export interface MeetingScore {
   strengths: string[];
   improvements: string[];
   leader_would: string;
+  learning_resources?: LearningResource[];
+  key_moments?: KeyMoment[];
 }
 
 export interface PlaybookEntry {

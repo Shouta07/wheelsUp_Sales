@@ -385,6 +385,8 @@ function scoreFromText(text: string): MeetingScore {
     leader_would: generateLeaderWould(text, {
       needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score,
     }),
+    learning_resources: generateLearningResources({ needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score }),
+    key_moments: extractKeyMoments(text),
   };
 }
 
@@ -633,6 +635,108 @@ export async function demoSummarizeMeeting(id: string): Promise<{ summary: strin
   return { summary, action_items: actionItems, key_points: keyPoints };
 }
 
+// --- 小林リーダーの直接フィードバック入力 ---
+export function demoAddLeaderFeedback(id: string, feedback: string): MeetingTranscript {
+  const meeting = meetings.find((m) => m.id === id);
+  if (!meeting) throw new Error("Meeting not found");
+  meeting.leader_feedback = feedback;
+  meeting.updated_at = new Date().toISOString();
+  saveToStorage();
+  return meeting;
+}
+
+// --- 学習リソース生成（弱い軸→関連プレイブック紐付け） ---
+const AXIS_LABELS: Record<string, string> = {
+  needs: "ニーズ把握", proposal: "提案力", trust: "信頼構築", closing: "クロージング", intel: "情報収集",
+};
+
+const AXIS_LEARNING: Record<string, { title: string; description: string; situation: string }[]> = {
+  needs: [
+    { title: "本音の深掘りテクニック", description: "「5年後どうなっていたいですか？」「それは会社の問題？業界の構造？」— 未来視点と構造視点で候補者が言語化できていない不満を引き出す", situation: "候補者のキャリア方向性が定まっていない時" },
+    { title: "ライフイベント起点の質問法", description: "「ご家族ができると優先順位が変わりますよね」— 結婚・出産・転勤などの変化を起点に本音を引き出す（河原様・石原様パターン）", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+  proposal: [
+    { title: "2段階説法", description: "①働く環境下をどう整えるか→②その上で業界を選ぶ。候補者が自分で選ぶプロセスを支援する（河原様パターン）", situation: "ゼネコン経験者が方向性を決めきれず複数エージェントを渡り歩いている時" },
+    { title: "セーフティーゾーン＋挑戦枠の二軸戦略", description: "確実に改善する企業＋キャリアチェンジの企業を並行で提示し、候補者が安心して挑戦できる構造を作る（日野様パターン）", situation: "候補者のキャリア方向性が定まっていない時" },
+    { title: "企業名と理由のセット提示", description: "「この企業を勧める理由はこうです」— 具体名だけでなく、なぜその候補者に合うかの根拠を必ずセットで伝える", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+  trust: [
+    { title: "業界構造の分解説明", description: "デベ・CM・事業会社・不動産管理会社の立場と責任の違いを構造的に説明。「立場によって追われ方が変わる」（河原様パターン）", situation: "候補者の不満が会社固有か構造的かわからない時" },
+    { title: "自身の経験共有", description: "「私もミサワホームで施工管理をしていたので」— 同じ業界出身者としての実体験を共有し、一気に信頼を構築する", situation: "残業・働き方の不満が転職動機の時" },
+  ],
+  closing: [
+    { title: "期限＋アクション＋接点の三点セット", description: "「来週水曜までに3件送ります。金曜16時に電話します」— 1文で次の接点を確定させる", situation: "面談終盤の次回アクション設定" },
+    { title: "逆算型スケジュール設計", description: "「入社から逆算して、有給消化40日→8月退職→6月内定確定」— 候補者と共にゴールから逆算して計画を立てる（石原様パターン）", situation: "退職交渉と入社時期のプランニングが必要な時" },
+  ],
+  intel: [
+    { title: "年収内訳の構造把握", description: "「残業代込みと基本給のみでは比較が全く変わります」— 表面上の年収ではなく構造を正確に把握する（河原様パターン）", situation: "年収・待遇に対する期待値が市場と乖離している時" },
+    { title: "他社エージェントとの差別化", description: "「どういう方向性の求人が来ていますか？同じジャンルなら別の切り口で提案します」— 競合の弱点を把握して自社の提案に活かす", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+};
+
+function generateLearningResources(scores: Record<string, number>): import("./client").LearningResource[] {
+  const resources: import("./client").LearningResource[] = [];
+  const sorted = Object.entries(scores).sort((a, b) => a[1] - b[1]);
+
+  for (const [axis, score] of sorted) {
+    if (score >= 8 || resources.length >= 4) continue;
+    const items = AXIS_LEARNING[axis] || [];
+    for (const item of items) {
+      resources.push({
+        axis: AXIS_LABELS[axis] || axis,
+        title: item.title,
+        description: item.description,
+        playbook_situation: item.situation,
+      });
+    }
+  }
+  return resources.slice(0, 5);
+}
+
+// --- ダイジェスト抽出（面談の重要ポイントハイライト） ---
+function extractKeyMoments(text: string): import("./client").KeyMoment[] {
+  const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 20);
+  const moments: import("./client").KeyMoment[] = [];
+
+  const axisChecks: { axis: string; label: string; phrases: string[]; strong: string[] }[] = [
+    { axis: "needs", label: "ニーズ把握", phrases: NEEDS_PHRASES, strong: NEEDS_KEYWORDS_STRONG },
+    { axis: "proposal", label: "提案力", phrases: PROPOSAL_PHRASES, strong: PROPOSAL_KEYWORDS_STRONG },
+    { axis: "trust", label: "信頼構築", phrases: TRUST_PHRASES, strong: TRUST_KEYWORDS_STRONG },
+    { axis: "closing", label: "クロージング", phrases: CLOSING_PHRASES, strong: CLOSING_KEYWORDS_STRONG },
+    { axis: "intel", label: "情報収集", phrases: INTEL_PHRASES, strong: INTEL_KEYWORDS_STRONG },
+  ];
+
+  for (const sent of sentences) {
+    let bestAxis = "";
+    let bestLabel = "";
+    let bestRelevance = 0;
+
+    for (const { axis, label, phrases, strong } of axisChecks) {
+      let rel = 0;
+      for (const p of phrases) if (sent.includes(p)) rel += 3;
+      for (const kw of strong) if (sent.includes(kw)) rel += 1;
+      if (rel > bestRelevance) {
+        bestRelevance = rel;
+        bestAxis = axis;
+        bestLabel = label;
+      }
+    }
+
+    if (bestRelevance >= 3) {
+      moments.push({
+        text: sent.trim().slice(0, 100),
+        axis: bestAxis,
+        axis_label: bestLabel,
+        relevance: bestRelevance,
+      });
+    }
+  }
+
+  return moments
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, 10);
+}
+
 // --- 実面談から抽出したプレイブック ---
 export async function demoExtractPlaybook(): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
   return {
@@ -865,10 +969,10 @@ export function seedDemoData() {
     const now = new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString();
     const score = scoreFromText(lm.text);
     score.meeting_id = id;
-    score.scores.needs = Math.min(10, score.scores.needs + 1);
+    score.scores.needs = Math.min(10, score.scores.needs + 2);
     score.scores.proposal = Math.min(10, score.scores.proposal + 1);
     score.scores.trust = Math.min(10, score.scores.trust + 1);
-    score.scores.closing = Math.min(10, score.scores.closing + 1);
+    score.scores.closing = Math.min(10, score.scores.closing + 2);
     score.scores.intel = Math.min(10, score.scores.intel + 1);
     score.total = Object.values(score.scores).reduce((a, b) => a + b, 0);
     score.grade = score.total >= 40 ? "S" : score.total >= 35 ? "A" : "B";
