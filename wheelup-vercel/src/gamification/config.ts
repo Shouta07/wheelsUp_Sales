@@ -1,17 +1,14 @@
-import type { Achievement, DailyQuest, League } from "./types";
+import type { Achievement, League } from "./types";
 
+// XP is earned ONLY from meeting-related actions
 export const XP_ACTIONS: Record<string, { xp: number; label: string }> = {
-  checklist_item: { xp: 10, label: "チェックリスト完了" },
-  phase_complete: { xp: 50, label: "フェーズ完了ボーナス" },
-  ai_briefing: { xp: 15, label: "AIブリーフィング生成" },
-  meeting_logged: { xp: 30, label: "面談記録" },
-  meeting_notes: { xp: 20, label: "面談メモ追加" },
-  status_update: { xp: 25, label: "ステータス更新" },
-  job_match: { xp: 15, label: "求人マッチング実行" },
-  recommendation_created: { xp: 20, label: "推薦案件作成" },
-  candidate_placed: { xp: 200, label: "成約！" },
-  daily_quest: { xp: 20, label: "デイリークエスト達成" },
-  knowledge_view: { xp: 5, label: "業界知識閲覧" },
+  meeting_uploaded: { xp: 30, label: "面談を記録" },
+  meeting_scored: { xp: 50, label: "面談を採点" },
+  score_improved: { xp: 40, label: "スコアアップ" },
+  beat_leader_axis: { xp: 60, label: "リーダー超え（1軸）" },
+  grade_up: { xp: 100, label: "グレード昇格" },
+  playbook_viewed: { xp: 10, label: "プレイブック参照" },
+  streak_bonus: { xp: 20, label: "連続記録ボーナス" },
 };
 
 export const LEVEL_THRESHOLDS = [
@@ -53,15 +50,29 @@ export function getLeagueInfo(league: League) {
   return LEAGUE_THRESHOLDS.find((l) => l.league === league) || LEAGUE_THRESHOLDS[0];
 }
 
+// All achievements tied to meeting performance
+export const ALL_ACHIEVEMENTS: Achievement[] = [
+  { id: "first_score", title: "はじめの採点", description: "最初の面談をスコアリング", icon: "🎯", unlocked: false, tier: "bronze" },
+  { id: "score_30", title: "Bランク到達", description: "面談スコア30点以上を記録", icon: "✅", unlocked: false, tier: "bronze" },
+  { id: "score_35", title: "Aランク到達", description: "面談スコア35点以上を記録", icon: "🌟", unlocked: false, tier: "silver" },
+  { id: "score_40", title: "Sランク到達", description: "面談スコア40点以上を記録", icon: "👑", unlocked: false, tier: "gold" },
+  { id: "beat_leader_1", title: "リーダー超え", description: "1軸でリーダー平均を上回る", icon: "💪", unlocked: false, tier: "silver" },
+  { id: "beat_leader_3", title: "リーダーに肉薄", description: "3軸でリーダー平均を上回る", icon: "🔥", unlocked: false, tier: "gold" },
+  { id: "beat_leader_5", title: "リーダー超越", description: "全5軸でリーダー平均を上回る", icon: "🏆", unlocked: false, tier: "platinum" },
+  { id: "meetings_5", title: "5面談達成", description: "5件の面談をスコアリング", icon: "📝", unlocked: false, tier: "bronze" },
+  { id: "meetings_20", title: "面談マスター", description: "20件の面談をスコアリング", icon: "📊", unlocked: false, tier: "silver" },
+  { id: "streak_7", title: "1週間連続", description: "7日連続で面談を記録", icon: "🔥", unlocked: false, tier: "silver" },
+  { id: "improvement_5", title: "成長の証", description: "スコアが5点以上向上", icon: "📈", unlocked: false, tier: "bronze" },
+  { id: "improvement_15", title: "急成長", description: "スコアが15点以上向上", icon: "🚀", unlocked: false, tier: "gold" },
+];
+
+import type { DailyQuest } from "./types";
+
 const QUEST_POOL: Omit<DailyQuest, "current" | "completed">[] = [
-  { id: "q_checklist_3", label: "チェックリストを3件完了", icon: "✅", target: 3, xpReward: 20 },
-  { id: "q_checklist_5", label: "チェックリストを5件完了", icon: "✅", target: 5, xpReward: 30 },
-  { id: "q_briefing", label: "AIブリーフィングを生成", icon: "🤖", target: 1, xpReward: 20 },
-  { id: "q_meeting", label: "面談を記録する", icon: "📝", target: 1, xpReward: 25 },
-  { id: "q_status", label: "ステータスを更新", icon: "📊", target: 1, xpReward: 15 },
-  { id: "q_match", label: "求人マッチングを実行", icon: "🔍", target: 1, xpReward: 15 },
-  { id: "q_knowledge", label: "業界知識を閲覧", icon: "📚", target: 2, xpReward: 10 },
-  { id: "q_recommendation", label: "推薦案件を作成", icon: "🔗", target: 1, xpReward: 20 },
+  { id: "q_upload", label: "面談を1件記録する", icon: "📝", target: 1, xpReward: 30 },
+  { id: "q_upload_2", label: "面談を2件記録する", icon: "📝", target: 2, xpReward: 50 },
+  { id: "q_playbook", label: "プレイブックを確認する", icon: "📖", target: 1, xpReward: 10 },
+  { id: "q_review", label: "過去の採点結果を振り返る", icon: "📊", target: 1, xpReward: 15 },
 ];
 
 export function generateDailyQuests(date: string): DailyQuest[] {
@@ -71,28 +82,5 @@ export function generateDailyQuests(date: string): DailyQuest[] {
     const hb = (seed * 31 + b.id.charCodeAt(2)) % 100;
     return ha - hb;
   });
-  return shuffled.slice(0, 3).map((q) => ({ ...q, current: 0, completed: false }));
+  return shuffled.slice(0, 2).map((q) => ({ ...q, current: 0, completed: false }));
 }
-
-export const ALL_ACHIEVEMENTS: Achievement[] = [
-  { id: "first_check", title: "ファーストステップ", description: "最初のチェックリストを完了", icon: "👣", unlocked: false, tier: "bronze" },
-  { id: "phase_master", title: "フェーズマスター", description: "1つのフェーズを完全クリア", icon: "🎯", unlocked: false, tier: "silver" },
-  { id: "matchmaker_5", title: "マッチメーカー", description: "推薦案件を5件作成", icon: "💘", unlocked: false, tier: "silver" },
-  { id: "meeting_10", title: "面談のプロ", description: "面談を10回記録", icon: "🎤", unlocked: false, tier: "gold" },
-  { id: "first_place", title: "初成約！", description: "初めての候補者成約", icon: "🏆", unlocked: false, tier: "gold" },
-  { id: "streak_7", title: "1週間連続", description: "7日連続ログイン", icon: "🔥", unlocked: false, tier: "bronze" },
-  { id: "streak_30", title: "鉄人", description: "30日連続ログイン", icon: "⚡", unlocked: false, tier: "platinum" },
-  { id: "xp_1000", title: "XPハンター", description: "累計1000 XP獲得", icon: "💫", unlocked: false, tier: "silver" },
-  { id: "xp_5000", title: "XPマスター", description: "累計5000 XP獲得", icon: "🌟", unlocked: false, tier: "gold" },
-  { id: "daily_quest_7", title: "クエストクリア", description: "デイリークエストを7回達成", icon: "📜", unlocked: false, tier: "bronze" },
-  { id: "ai_power", title: "AI活用マスター", description: "AIブリーフィングを10回生成", icon: "🧠", unlocked: false, tier: "silver" },
-  { id: "knowledge", title: "業界通", description: "全ての業界カテゴリを閲覧", icon: "🗺️", unlocked: false, tier: "bronze" },
-];
-
-export const MOCK_LEADERBOARD: { name: string; xp: number; streak: number; avatar: string }[] = [
-  { name: "田中 翔太", xp: 4820, streak: 15, avatar: "🧑‍💼" },
-  { name: "鈴木 美咲", xp: 3540, streak: 22, avatar: "👩‍💼" },
-  { name: "佐藤 健一", xp: 2890, streak: 8, avatar: "👨‍💼" },
-  { name: "高橋 あい", xp: 2210, streak: 12, avatar: "👩‍💻" },
-  { name: "山本 大輔", xp: 1680, streak: 5, avatar: "🧑‍💻" },
-];

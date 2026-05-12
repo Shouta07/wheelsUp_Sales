@@ -850,6 +850,9 @@ export interface MeetingTranscript {
   id: string;
   deal_id: string | null;
   candidate_id: string | null;
+  consultant_name: string | null;
+  is_leader: boolean;
+  score_data: MeetingScore | null;
   title: string;
   transcript_text: string;
   summary: string | null;
@@ -862,17 +865,29 @@ export interface MeetingTranscript {
   recorded_at: string;
   created_at: string;
   updated_at: string;
+  leader_feedback?: string;
 }
 
-/* ---------- Meeting API ---------- */
+/* ---------- Meeting API (with demo fallback) ---------- */
+
+import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
+
+seedDemoData();
+
+const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
 
 export async function fetchMeetings(
   dealId?: string,
   candidateId?: string,
+  consultantName?: string,
+  isLeader?: boolean,
 ): Promise<{ transcripts: MeetingTranscript[]; total: number }> {
+  if (DEMO_MODE) return demoFetchMeetings(dealId, candidateId, consultantName, isLeader);
   const params = new URLSearchParams();
   if (dealId) params.set("deal_id", dealId);
   if (candidateId) params.set("candidate_id", candidateId);
+  if (consultantName) params.set("consultant_name", consultantName);
+  if (isLeader !== undefined) params.set("is_leader", String(isLeader));
   const qs = params.toString();
   return request(`/meetings${qs ? `?${qs}` : ""}`);
 }
@@ -880,6 +895,7 @@ export async function fetchMeetings(
 export async function createMeeting(
   data: Partial<MeetingTranscript>,
 ): Promise<MeetingTranscript> {
+  if (DEMO_MODE) return demoCreateMeeting(data);
   return request("/meetings", { method: "POST", body: JSON.stringify(data) });
 }
 
@@ -894,13 +910,16 @@ export async function transcribeAudio(data: {
   candidate_id?: string;
   title?: string;
   attendees?: string[];
-}): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string }> {
+  consultant_name?: string;
+  is_leader?: boolean;
+}): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string; auto_scoring?: boolean }> {
   return request("/meetings/transcribe", { method: "POST", body: JSON.stringify(data) });
 }
 
 export async function summarizeMeeting(
   id: string,
 ): Promise<{ summary: string; action_items: string[]; key_points: string[] }> {
+  if (DEMO_MODE) return demoSummarizeMeeting(id);
   return request(`/meetings/${id}/summarize`, { method: "POST" });
 }
 
@@ -908,16 +927,47 @@ export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
   return request(`/meetings/${id}`, { method: "DELETE" });
 }
 
+export async function addLeaderFeedback(
+  id: string,
+  feedback: string,
+): Promise<MeetingTranscript> {
+  if (DEMO_MODE) {
+    const { demoAddLeaderFeedback } = await import("./demo");
+    return demoAddLeaderFeedback(id, feedback);
+  }
+  return request(`/meetings/${id}/leader-feedback`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
 /* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
+
+export interface LearningResource {
+  axis: string;
+  title: string;
+  description: string;
+  playbook_situation?: string;
+}
+
+export interface KeyMoment {
+  text: string;
+  axis: string;
+  axis_label: string;
+  relevance: number;
+}
 
 export interface MeetingScore {
   meeting_id: string;
   scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
   total: number;
   grade: string;
+  evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
   strengths: string[];
   improvements: string[];
   leader_would: string;
+  learning_resources?: LearningResource[];
+  key_moments?: KeyMoment[];
 }
 
 export interface PlaybookEntry {
@@ -936,6 +986,7 @@ export interface ContextualCoachingResponse {
 }
 
 export async function scoreMeeting(id: string): Promise<MeetingScore> {
+  if (DEMO_MODE) return demoScoreMeeting(id);
   return request(`/meetings/${id}/score`, { method: "POST" });
 }
 
@@ -943,6 +994,7 @@ export async function extractPlaybook(
   leaderName?: string,
   limit?: number,
 ): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  if (DEMO_MODE) return demoExtractPlaybook();
   return request("/meetings/extract-playbook", {
     method: "POST",
     body: JSON.stringify({ leader_name: leaderName, limit }),

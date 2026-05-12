@@ -1,0 +1,1109 @@
+import type { MeetingTranscript, MeetingScore, PlaybookEntry } from "./client";
+
+let meetings: MeetingTranscript[] = [];
+let idCounter = 1;
+
+function nextId(): string {
+  return `demo-${idCounter++}`;
+}
+
+// --- localStorage 永続化（リロードしてもデータ保持） ---
+const STORAGE_KEY = "wheelsup_meetings_v1";
+
+function loadFromStorage(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.m) || data.m.length === 0) return false;
+    meetings = data.m;
+    idCounter = data.c || meetings.length + 1;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function saveToStorage(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ m: meetings, c: idCounter }));
+  } catch { /* storage full — ignore */ }
+}
+
+// --- トランスクリプト話者分離（コンサルタント vs 候補者） ---
+const TEAM_NAMES = ["小林", "西村", "辻内", "安藤", "村上"];
+
+interface ParsedTranscript {
+  consultantText: string;
+  candidateName: string | null;
+  consultantName: string | null;
+  isFormatted: boolean;
+}
+
+function parseTranscript(text: string): ParsedTranscript {
+  const speakerRegex = /^(.+?)\s*\(\d{4}\/\d{2}\/\d{2}\s+[午前後]+\d{1,2}:\d{2}\)/gm;
+  const matches = [...text.matchAll(speakerRegex)];
+
+  if (matches.length < 4) {
+    return { consultantText: text, candidateName: null, consultantName: null, isFormatted: false };
+  }
+
+  const speakers = [...new Set(matches.map((m) => m[1].trim()))];
+  const consultants = speakers.filter((s) => TEAM_NAMES.some((t) => s.includes(t)) || s === "あなた");
+  const candidates = speakers.filter((s) => !consultants.includes(s));
+
+  let consultantText = "";
+  let isConsultantSpeaking = false;
+
+  for (const line of text.split("\n")) {
+    const m = line.match(/^(.+?)\s*\(\d{4}\/\d{2}\/\d{2}/);
+    if (m) {
+      isConsultantSpeaking = consultants.includes(m[1].trim());
+      continue;
+    }
+    if (isConsultantSpeaking && line.trim()) {
+      consultantText += line + "\n";
+    }
+  }
+
+  return {
+    consultantText,
+    candidateName: candidates[0] || null,
+    consultantName: consultants.find((c) => c !== "あなた") || (consultants.includes("あなた") ? "小林" : null),
+    isFormatted: true,
+  };
+}
+
+// --- 教師データから抽出したスコアリングロジック ---
+// 小林リーダーの実面談パターンに基づくキーワード重み付け
+
+const NEEDS_KEYWORDS_STRONG = [
+  "転職理由", "本音", "なぜ", "動機", "不満", "悩み", "将来", "キャリア",
+  "5年後", "10年後", "ビジョン", "やりがい", "成長", "目指す",
+  "どうなりたい", "理想", "方向性", "何がしたい",
+  "独立", "キャリアチェンジ", "経営", "裁量", "出戻り", "復帰",
+  "優先順位", "達成感", "指向性", "スペシャリスト",
+  "管理職", "外注管理", "設計から離れる", "提案ができない",
+  "評価基準", "評価制度", "正当な評価", "腰を据え",
+  "転勤", "引越し", "結婚", "パートナー", "子供",
+  "体制が変わ", "分業化", "横断的",
+  "休職", "精神的", "所長", "終電", "勤務体系", "内勤",
+];
+const NEEDS_KEYWORDS_WEAK = [
+  "希望", "課題", "理由", "環境", "ミスマッチ", "合わない",
+  "残業", "年収", "条件", "給与", "待遇",
+  "方針転換", "社長交代", "ベースアップ", "歩合", "安定",
+  "平日休み", "土日休み", "ワークライフバランス", "働き方",
+  "人口減少", "需要", "将来性",
+  "怖い", "自信がない", "大型物件", "働き方改革",
+];
+
+const PROPOSAL_KEYWORDS_STRONG = [
+  "ご紹介", "提案", "ポジション", "求人", "案件", "企業様",
+  "おすすめ", "マッチ", "適正", "市場価値", "相場",
+  "こういう会社", "検討できれば",
+  "不動産管理", "PM", "プロジェクトマネージャー", "コンサル",
+  "リファラル", "出戻り", "セーフティゾーン", "選択肢として",
+  "空間デザイン", "内装設計", "オフィス", "CM",
+  "コンストラクションマネジメント", "リフォーム", "リノベーション",
+  "社内異動", "不動産再生", "出口戦略",
+  "挑戦枠", "セーフティーゾーン", "調整枠",
+  "住宅メーカー", "積水ハウス", "住友林業",
+  "事業会社", "不動産管理会社", "物流倉庫", "営繕", "修繕計画",
+  "バリューアップ", "再開発", "特建事業部", "発注者支援", "第三者支援",
+];
+const PROPOSAL_KEYWORDS_WEAK = [
+  "紹介", "会社", "企業", "選択肢", "可能性",
+  "代替", "バックアップ", "並行", "方針",
+  "幅を広げ", "広めに", "ジャンル", "領域",
+  "テナント", "工場",
+];
+
+const TRUST_KEYWORDS_STRONG = [
+  "業界", "市場", "ゼネコン", "デベロッパー", "施工管理", "建築士",
+  "設計事務所", "ビルディングタイプ", "RC", "S造", "木造",
+  "資格", "1級", "2級", "一級", "二級", "技術者",
+  "現場", "実務", "経験年数", "プロジェクト",
+  "データセンター", "マンション", "オフィスビル", "商業施設",
+  "内装", "仕上げ", "収まり", "手戻り", "生産設計",
+  "共同住宅", "分譲", "賃貸", "ハウスメーカー", "アトリエ",
+  "組織設計", "木造3階建て", "土地活用", "リフォーム",
+  "宅建", "施工管理技士", "建築設備士",
+  "建売", "注文住宅", "半規格住宅", "企画住宅",
+  "ポートフォリオ", "製図試験", "外注設計",
+  "野村工芸社", "乃村工芸社", "コクヨ", "三井ホーム",
+  "アーネストワン", "木造2階建て", "平屋",
+  "確認申請", "基本設計", "実施設計", "設計管理",
+  "発注者", "施主", "元請け", "CM会社",
+  "フジタ", "松竹", "4大管理", "指定業者", "物流", "旭化成",
+];
+const TRUST_KEYWORDS_WEAK = [
+  "経験", "実績", "スキル", "知識", "専門",
+  "用途", "物件", "規模", "構造", "工期",
+  "業務フロー", "竣工", "着工", "引き渡し", "検査",
+];
+
+const CLOSING_KEYWORDS_STRONG = [
+  "来週", "今週中", "水曜まで", "金曜に", "月曜に",
+  "いつまでに", "期限", "次回", "スケジュール",
+  "LINE", "お電話", "ご連絡", "フォローアップ",
+  "履歴書", "職務経歴書", "ポートフォリオ",
+  "求人をお送り", "件お送り", "件ご紹介",
+  "ゴールデンウィーク", "GW明け", "面談日程",
+  "グループライン", "メールで連絡",
+  "有給消化", "退職交渉", "入社時期", "入社日",
+  "タイムスケジュール", "逆算", "ゴールデンウィーク明け",
+];
+const CLOSING_KEYWORDS_WEAK = [
+  "連絡", "アクション", "準備", "送る", "送り",
+  "共有", "登録", "日程調整",
+  "カジュアル面談", "書類選考", "一次面接",
+];
+
+const INTEL_KEYWORDS_STRONG = [
+  "他社", "他のエージェント", "選考状況", "内定",
+  "温度感", "決裁", "年収", "現年収", "希望年収",
+  "何社", "何名", "ビズリーチ", "リクルート", "アデコ",
+  "退職日", "入社日", "転職時期",
+  "再応募", "出戻り", "前回受けた", "書類通過", "面接通過",
+  "福利厚生", "歩合", "基本給", "手当",
+  "クイック", "所長", "主任", "副所長", "ブロック長",
+  "残業代", "見込み残業", "ボーナス", "賞与",
+  "決算", "半期", "査定", "昇給",
+  "診断書", "休職中", "ウィッグ",
+];
+const INTEL_KEYWORDS_WEAK = [
+  "条件", "状況", "他に", "受けている", "検討",
+  "選考中", "結果待ち", "応募済み",
+  "カジュアル面談", "先行中", "返答待ち",
+];
+
+// --- フレーズパターン（複数語マッチ = 文脈を捉えた高精度スコアリング） ---
+const NEEDS_PHRASES = [
+  "5年後どうなっていたい", "キャリアの方向性", "転職のきっかけ",
+  "本音を聞かせ", "何を叶えていきたい", "なぜそこにこだわる",
+  "どうなりたい", "何がしたい", "今の環境で成長",
+  "キャリアビジョン", "転職理由を", "推薦文に使いたい",
+  "優先順位を", "目指す方向", "本当にやりたいこと",
+  "キャリアギャップ", "言語化", "将来どう",
+  "働き方を改善", "子供が生まれ", "家族ができ",
+  "所長になる自信", "構造的な問題なのか", "会社の問題ですか",
+];
+const PROPOSAL_PHRASES = [
+  "例えばこの企業", "選択肢として", "ご紹介します",
+  "市場価値としては", "具体的な企業名", "セーフティーゾーン",
+  "挑戦枠として", "出口戦略", "社内異動の可能性",
+  "正直に言うと今の", "市場的にはこのレンジ", "発注者側の立場",
+  "構造的に残業が減る", "こういう会社が合", "選択肢を出",
+  "業務フローとしては", "2段階説法", "体系的に説明",
+  "事業会社という選択肢", "不動産管理会社", "物流倉庫系",
+  "特建事業部", "サラカン的", "企業名と理由をセット",
+];
+const TRUST_PHRASES = [
+  "業界の実態", "構造的な問題", "デベロッパーの業務フロー",
+  "設計事務所の場合", "業界構造から", "市場的には",
+  "内装と建築の違い", "収まり検討", "正直に言うと",
+  "元請けの立場", "発注者側だと", "具体的な数字",
+  "私も実は", "経験者として", "業界水準と照らし",
+  "品質基準の違い", "価格帯のレンジ", "ブランド力の差",
+  "指定業者制度", "4大管理", "一次請負で入る",
+  "第三者支援", "発注者支援", "コンサルに委託",
+];
+const CLOSING_PHRASES = [
+  "来週までに", "件お送りします", "次回は具体",
+  "LINE交換", "ポートフォリオの準備", "スケジュールとしては",
+  "グループLINE", "面談を設定", "逆算してスケジュール",
+  "退職交渉は内定後", "入社時期から逆算", "水曜までに",
+  "金曜に電話", "GW明けに", "月曜に面談",
+  "件ご紹介", "求人をお送り", "商談があるので確認",
+];
+const INTEL_PHRASES = [
+  "他社エージェント", "選考状況を", "希望年収は",
+  "現年収を", "温度感は", "転職時期は",
+  "何社ぐらい", "他に受けている", "内定は出ている",
+  "ビズリーチ経由", "再応募の制限", "前回受けた企業",
+  "残業代の内訳", "見込み残業", "福利厚生は",
+  "診断書は", "休職中の伝え方", "有給消化として",
+];
+
+// --- 出現回数カウント ---
+function countOccurrences(text: string, pattern: string): number {
+  let count = 0;
+  let pos = 0;
+  while ((pos = text.indexOf(pattern, pos)) !== -1) {
+    count++;
+    pos += pattern.length;
+  }
+  return count;
+}
+
+// --- 軸スコア算出（フレーズ3.0 > 強1.5 > 弱0.5、頻度逓減） ---
+interface AxisResult {
+  score: number;
+  weight: number;
+  phraseHits: string[];
+  strongHits: string[];
+  weakHits: string[];
+}
+
+function scoreAxis(
+  text: string,
+  phrases: string[],
+  strong: string[],
+  weak: string[],
+  textLength: number,
+): AxisResult {
+  const phraseHits: string[] = [];
+  const strongHits: string[] = [];
+  const weakHits: string[] = [];
+  let totalWeight = 0;
+
+  for (const p of phrases) {
+    const c = countOccurrences(text, p);
+    if (c > 0) {
+      phraseHits.push(p);
+      totalWeight += 3.0 + Math.min(c - 1, 2) * 1.0;
+    }
+  }
+
+  for (const kw of strong) {
+    if (phraseHits.some((p) => p.includes(kw))) continue;
+    const c = countOccurrences(text, kw);
+    if (c > 0) {
+      strongHits.push(kw);
+      totalWeight += 1.5 + Math.min(c - 1, 3) * 0.3;
+    }
+  }
+
+  for (const kw of weak) {
+    if (strongHits.some((s) => s.includes(kw)) || phraseHits.some((p) => p.includes(kw))) continue;
+    const c = countOccurrences(text, kw);
+    if (c > 0) {
+      weakHits.push(kw);
+      totalWeight += 0.5 + Math.min(c - 1, 2) * 0.1;
+    }
+  }
+
+  const lenBonus = textLength > 10000 ? 2 : textLength > 5000 ? 1.5 : textLength > 3000 ? 1 : textLength > 1000 ? 0.5 : 0;
+  totalWeight += lenBonus;
+
+  const score = Math.max(1, Math.min(10, Math.round(2 + 8 * (1 - Math.exp(-totalWeight / 12)))));
+  return { score, weight: totalWeight, phraseHits, strongHits, weakHits };
+}
+
+// --- 最良エビデンス抽出（最もスコアの高い文を選択） ---
+function findBestEvidence(text: string, phrases: string[], strong: string[]): string {
+  const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 15);
+  let bestScore = 0;
+  let bestSentence = "";
+
+  for (const sent of sentences) {
+    let sc = 0;
+    for (const p of phrases) if (sent.includes(p)) sc += 3;
+    for (const kw of strong) if (sent.includes(kw)) sc += 1;
+    if (sc > bestScore || (sc === bestScore && sent.length > bestSentence.length && sent.length <= 120)) {
+      bestScore = sc;
+      bestSentence = sent.trim();
+    }
+  }
+  return bestSentence.slice(0, 80);
+}
+
+function scoreFromText(text: string): MeetingScore {
+  const parsed = parseTranscript(text);
+  const len = text.length;
+  const n = scoreAxis(text, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK, len);
+  const p = scoreAxis(text, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK, len);
+  const t = scoreAxis(text, TRUST_PHRASES, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK, len);
+  const c = scoreAxis(text, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK, len);
+  const i = scoreAxis(text, INTEL_PHRASES, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK, len);
+
+  // 話者分離できた場合：コンサルタント発言を重視したブレンドスコア
+  if (parsed.isFormatted && parsed.consultantText.length > 200) {
+    const cLen = parsed.consultantText.length;
+    const cn = scoreAxis(parsed.consultantText, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG, NEEDS_KEYWORDS_WEAK, cLen);
+    const cp = scoreAxis(parsed.consultantText, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG, PROPOSAL_KEYWORDS_WEAK, cLen);
+    const ct = scoreAxis(parsed.consultantText, TRUST_PHRASES, TRUST_KEYWORDS_STRONG, TRUST_KEYWORDS_WEAK, cLen);
+    const cc = scoreAxis(parsed.consultantText, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG, CLOSING_KEYWORDS_WEAK, cLen);
+    const ci = scoreAxis(parsed.consultantText, INTEL_PHRASES, INTEL_KEYWORDS_STRONG, INTEL_KEYWORDS_WEAK, cLen);
+    // ニーズ把握・提案力・クロージング → コンサルの行動が重要（65%）
+    n.score = Math.max(1, Math.min(10, Math.round(n.score * 0.35 + cn.score * 0.65)));
+    p.score = Math.max(1, Math.min(10, Math.round(p.score * 0.35 + cp.score * 0.65)));
+    c.score = Math.max(1, Math.min(10, Math.round(c.score * 0.35 + cc.score * 0.65)));
+    // 信頼構築・情報収集 → 会話全体の内容が重要（65%）
+    t.score = Math.max(1, Math.min(10, Math.round(t.score * 0.65 + ct.score * 0.35)));
+    i.score = Math.max(1, Math.min(10, Math.round(i.score * 0.60 + ci.score * 0.40)));
+  }
+
+  const total = n.score + p.score + t.score + c.score + i.score;
+  const grade = total >= 42 ? "S" : total >= 36 ? "A" : total >= 28 ? "B" : total >= 20 ? "C" : "D";
+
+  const nEv = findBestEvidence(text, NEEDS_PHRASES, NEEDS_KEYWORDS_STRONG);
+  const pEv = findBestEvidence(text, PROPOSAL_PHRASES, PROPOSAL_KEYWORDS_STRONG);
+  const tEv = findBestEvidence(text, TRUST_PHRASES, TRUST_KEYWORDS_STRONG);
+  const cEv = findBestEvidence(text, CLOSING_PHRASES, CLOSING_KEYWORDS_STRONG);
+  const iEv = findBestEvidence(text, INTEL_PHRASES, INTEL_KEYWORDS_STRONG);
+
+  const hasFamily = text.includes("子供") || text.includes("結婚") || text.includes("家族");
+  const isZenekon = text.includes("ゼネコン") || text.includes("施工管理");
+  const isDesign = text.includes("設計") || text.includes("建築士");
+
+  return {
+    meeting_id: "",
+    scores: { needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score },
+    total,
+    grade,
+    evidence: {
+      needs: nEv
+        ? `「${nEv}」— ${n.phraseHits.length > 0 ? "深掘り質問で本音を引き出している" : "転職動機に触れているが、さらに深掘りの余地あり"}`
+        : n.strongHits.length > 0
+          ? `${n.strongHits.slice(0, 3).join("・")}に触れているが、候補者の本音まで踏み込めていない`
+          : "候補者のキャリアビジョンや転職動機への質問がなく、表面的なヒアリングにとどまった",
+      proposal: pEv
+        ? `「${pEv}」— ${p.phraseHits.length > 0 ? "候補者の状況に合わせた具体的な提案ができている" : "提案はあるが、より候補者固有の選択肢提示が望ましい"}`
+        : p.strongHits.length > 0
+          ? `${p.strongHits.slice(0, 3).join("・")}の話題はあるが、具体的な企業名・ポジションの提案に至っていない`
+          : "具体的な企業名や市場価値の提示がなく、一般論にとどまった",
+      trust: tEv
+        ? `「${tEv}」— ${t.phraseHits.length > 0 ? "業界の構造・実態を具体的に説明し信頼を構築できている" : "業界用語を使えているが、実務レベルの知見提示があるとさらに良い"}`
+        : t.strongHits.length > 0
+          ? `${t.strongHits.slice(0, 3).join("・")}の用語は出ているが、業界構造の深い知見を示す場面がなかった`
+          : "建築・不動産業界特有の知見を活かした会話がなかった",
+      closing: cEv
+        ? `「${cEv}」— ${c.phraseHits.length > 0 ? "期限・具体アクション・次の接点を明確に設定している" : "次回の方向性はあるが、期限付きアクションの設定があるとさらに良い"}`
+        : c.strongHits.length > 0
+          ? `${c.strongHits.slice(0, 3).join("・")}の話はあるが、「いつまでに何をする」の明確な設定がない`
+          : "次のアクションが曖昧で具体的な期限設定がない",
+      intel: iEv
+        ? `「${iEv}」— ${i.phraseHits.length > 0 ? "競合状況・条件面を網羅的に把握できている" : "基本情報は把握しているが、他社動向の深掘りがあるとさらに良い"}`
+        : i.strongHits.length > 0
+          ? `${i.strongHits.slice(0, 3).join("・")}を確認しているが、他社選考の温度感まで踏み込めていない`
+          : "他社選考状況や転職時期・温度感の確認が不足",
+    },
+    strengths: buildStrengths(n, p, t, c, i, { hasFamily, isZenekon, isDesign }),
+    improvements: buildImprovements(n, p, t, c, i, { hasFamily, isZenekon, isDesign }),
+    leader_would: generateLeaderWould(text, {
+      needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score,
+    }),
+    learning_resources: generateLearningResources({ needs: n.score, proposal: p.score, trust: t.score, closing: c.score, intel: i.score }),
+    key_moments: extractKeyMoments(text),
+  };
+}
+
+function buildStrengths(
+  n: AxisResult, p: AxisResult, t: AxisResult, c: AxisResult, i: AxisResult,
+  ctx: { hasFamily: boolean; isZenekon: boolean; isDesign: boolean },
+): string[] {
+  const out: string[] = [];
+  if (n.score >= 7) {
+    out.push(n.phraseHits.length >= 2
+      ? "「なぜ」「どうなりたい」等の深掘り質問で候補者の本音を多角的に引き出している"
+      : "候補者の転職動機・キャリアビジョンに踏み込んだヒアリングができている");
+  }
+  if (t.score >= 7) {
+    out.push(t.phraseHits.length >= 2
+      ? "業界構造・業務フロー・企業比較を具体的に説明し、専門家としての信頼を構築している"
+      : "建築・不動産業界の専門知識を活かした信頼構築ができている");
+  }
+  if (c.score >= 7) {
+    out.push(c.phraseHits.length >= 2
+      ? "期限・具体アクション・連絡手段を1セットで設定し、次回面談の確度を高めている"
+      : "具体的な期限・アクション設定によるクロージングができている");
+  }
+  if (p.score >= 7) {
+    out.push(p.phraseHits.length >= 2
+      ? "候補者の状況を踏まえた複数の選択肢を体系的に提示し、比較検討を促している"
+      : "候補者に合わせた具体的な企業・ポジションの提案ができている");
+  }
+  if (i.score >= 7) {
+    out.push(i.phraseHits.length >= 2
+      ? "年収内訳・他社状況・転職時期を網羅的に把握し、戦略的な情報収集ができている"
+      : "他社状況・年収相場など的確な情報収集ができている");
+  }
+  if (out.length === 0 && n.score >= 5) out.push("候補者の基本情報を丁寧にヒアリングしている");
+  return out.slice(0, 3);
+}
+
+function buildImprovements(
+  n: AxisResult, p: AxisResult, t: AxisResult, c: AxisResult, i: AxisResult,
+  ctx: { hasFamily: boolean; isZenekon: boolean; isDesign: boolean },
+): string[] {
+  const out: string[] = [];
+  const sorted = [
+    { axis: "closing", score: c.score, hits: c },
+    { axis: "intel", score: i.score, hits: i },
+    { axis: "proposal", score: p.score, hits: p },
+    { axis: "needs", score: n.score, hits: n },
+    { axis: "trust", score: t.score, hits: t },
+  ].sort((a, b) => a.score - b.score);
+
+  for (const { axis, score, hits } of sorted) {
+    if (score >= 7 || out.length >= 3) continue;
+    if (axis === "closing") {
+      out.push(hits.strongHits.length > 0
+        ? "「来週水曜までに3件お送りします。金曜16時にお電話します」のように期限＋具体アクション＋次の接点を1文で設定する"
+        : "面談の最後に「いつまでに・何を・どの連絡手段で」を必ず明確にしてから閉じる");
+    } else if (axis === "intel") {
+      out.push(hits.strongHits.length > 0
+        ? "年収の内訳（基本給vs残業代）、他社エージェントの提案内容、選考の温度感まで深掘りする"
+        : "「他社エージェントさんとは何名お話しされましたか？どういう方向性の求人が来ていますか？」と競合状況を必ず確認する");
+    } else if (axis === "proposal") {
+      out.push(ctx.isZenekon
+        ? "ゼネコン経験者には、デベ・CM・事業会社・不動産管理会社の4方向を構造的に整理して提案する（小林の「2段階説法」）"
+        : hits.strongHits.length > 0
+          ? "「この企業を勧める理由は〇〇です」と企業名と根拠をセットで提示し、候補者が比較検討できる材料を出す"
+          : "候補者のニーズに合った具体的な企業名・ポジションを2-3件、理由付きで提示する");
+    } else if (axis === "needs") {
+      out.push(ctx.hasFamily
+        ? "「ご家族の状況が変わると優先順位も変わりますよね。今一番大事にしたいことは何ですか？」とライフイベントから本音を深掘りする"
+        : "「5年後どうなっていたいですか？」「それは会社の問題？業界の構造？」と未来視点・構造視点で候補者の本音に迫る");
+    } else if (axis === "trust") {
+      out.push(ctx.isDesign
+        ? "「設計事務所の残業は構造的な問題で、上流に行くと変わります」等、業界構造を分解して説明し専門家としての信頼を示す"
+        : "候補者の経験領域に関連する業界の実態・企業比較・市場動向を具体的な数字やエピソードで共有する");
+    }
+  }
+  return out.slice(0, 3);
+}
+
+function generateLeaderWould(
+  text: string,
+  scores: Record<string, number>,
+): string {
+  const weakest = Object.entries(scores).sort((a, b) => a[1] - b[1])[0][0];
+
+  const isZenekon = text.includes("ゼネコン") || text.includes("施工管理");
+  const isDesign = text.includes("設計") || text.includes("建築士");
+  const hasFamily = text.includes("子供") || text.includes("結婚") || text.includes("家族");
+  const isSick = text.includes("休職") || text.includes("精神");
+  const hasOtherAgent = text.includes("エージェント") || text.includes("ビズリーチ");
+
+  const templates: Record<string, string[]> = {
+    needs: [
+      "「5年後を想像した時に、今と同じポジションにいる自分はイメージできますか？」と未来視点でキャリアの方向性を深掘りし、候補者自身も気づいていない本音を引き出す。漠然とした不安を具体的なキャリアギャップとして言語化していく。",
+      "「今の環境で成長できていると実感できていますか？」と現状への満足度を掘り下げ、転職動機の核心に迫る。候補者が言語化できていない不満やビジョンを一緒に整理していく。",
+      "「図面を書きたいのか、コンセプトを決めたいのか？ここで行くべき会社が全く変わります」と、候補者の漠然とした希望を具体的な職種・ポジションに落とし込み、本当にやりたいことを特定する。",
+      ...(hasFamily
+        ? ["「ご家族ができると優先順位が変わりますよね。今一番守りたいものは何ですか？ その上で、キャリアで実現したいことを分けて整理しましょう」と、ライフイベントの変化を起点に候補者の価値観の優先順位を明確にする。小林は河原様の面談で、子供が生まれたことを起点に働き方の本音を引き出している。"]
+        : ["「それは今の会社だけの問題ですか？ それとも業界全体の構造的な問題ですか？ ここの切り分けで行くべき方向が全く変わります」と、不満の本質が会社固有か構造的かを切り分けて、候補者の本当の課題を特定する。小林は岩本様の面談で日商エステムの品質基準と阪急・野村の基準を比較し、問題の本質を切り分けている。"]),
+      ...(isZenekon
+        ? ["「所長になっていく将来像にリアリティがないなら、その不安は正直に言っていいと思います。40-50代の方との知識差は世代の構造問題で、あなただけの課題ではない」と、候補者の漠然とした不安を業界構造の問題として整理し、自責ではなく構造で捉え直す視点を与える。小林は河原様の面談で世代間ギャップの問題を業界構造として言語化している。"]
+        : []),
+    ],
+    proposal: [
+      "「〇〇さんのご経験であれば、例えば島田アセットパートナーさんのような、設計から竣工まで一気通貫で携われるデベロッパーが合いそうです」と、候補者のニーズに合った具体的な企業名と理由をセットで提示する。",
+      "「デベロッパーの年収が高いイメージは、実はトップ5の企業が作り上げているもので、中途だと意外とそこまで上がらないケースも多いです。むしろ〇〇系の方が待遇面では有利な場合もあります」と、市場の現実を踏まえた具体的な選択肢を提示する。",
+      "「正直に言うと、前職への出戻りが一番確度の高い選択肢です。社内のつながりを活用してリファラルで戻る方が、エージェント経由より資格のハードルを超えやすい」と、エージェントの利益よりも候補者の最善を優先した提案をする。",
+      ...(isZenekon
+        ? ["「選択肢を整理すると、デベロッパー・CM・事業会社・不動産管理会社の4方向があります。それぞれ立場と責任が構造的に異なる。まず①働く環境をどう整えるか、②その上で業界を選ぶ。この2段階で考えましょう」と、多選択肢を体系的に整理して提示する。小林は河原様の面談で「2段階説法」として展開し、松竹の歌舞伎座管理や物流倉庫CMなど候補者が知らない選択肢も具体的に提示している。"]
+        : ["「まず社内の選択肢を確認させてください。別部門への異動や内勤ポジションは検討されましたか？ 転職せずに解決できるなら、それが一番リスクが低い選択肢です」と、転職ありきではなく、社内の可能性を先に探ることで信頼を獲得する。小林は河原様・佐藤様の面談でまず現職残留の可能性を確認している。"]),
+      "「セーフティーゾーンとして今より確実に良くなる企業、挑戦枠として発注者側やキャリアチェンジの企業、この二軸で求人を整理していきましょう」と、リスクの異なる選択肢をバランスよく提示し、候補者が安心して挑戦できる戦略を設計する。小林は日野様の面談で「セーフティーゾーンと挑戦枠」の二軸戦略を提案している。",
+    ],
+    trust: [
+      "「デベロッパーの業務フローで言うと、土地仕入れの段階でボリューム検討や法規チェックをして、基本設計・実施設計は外注に出していく形です。図面を自分で書くことはなくなりますが、企画段階での法規知識は活きてきます」と、業界の実務フローを具体的に説明して候補者の理解を深める。",
+      "「このエリアだと物件の価格帯はこのレンジで、ブランド力の差で同じ造成地でも1000万近く差がつくことがあります」と、業界内部の知見を共有して専門家としての信頼を構築する。",
+      "「内装は仕上げの1-2mmのズレが問題になる精密な世界。建築は10mmでも許容される世界。収まり検討の重要性が全く違います」と、具体的な数字を交えた業界知識で専門家としての信頼を示す。",
+      ...(isZenekon
+        ? ["「住宅メーカーの施工管理は、ゼネコンと全然違います。指定業者制度があるので業者手配・工程管理の負担は減る。原価管理もほぼ業者任せ。ただし複数物件の並行管理と一般顧客対応のストレスは別の形であります」と、自身の住宅メーカー経験を交えて実態を具体的に説明する。小林は河原様の面談で元ミサワホームの経験からハウスメーカー施工管理の実態を具体説明している。"]
+        : []),
+      "「CM会社の実態を説明すると、事業会社が建物を建てたい→建築技術者がいない→コンサルに委託して第三者支援・発注者支援をする立ち位置です。自社物件ではないのでデベとは異なりますが、発注者側につくので構造的に働き方が整いやすい」と、候補者が知らない業態を構造的に説明する。小林は河原様の面談でCMの構造を分解して説明し、物流倉庫系CMという具体的な方向性まで提示している。",
+    ],
+    closing: [
+      "「来週水曜までに3件の求人をお送りします。金曜16時に15分だけお電話で感想を聞かせてください。あと、ポートフォリオのご準備もお願いできますか」と、期限＋具体アクション＋次の接点を1文で設定する。",
+      "「次回のところでは具体の企業求人をご紹介できればと思います。その前に、目指す方向性—設計の技術を極めるか、発注者側に行くか—をざっくりでいいので整理しておいていただけますか」と、候補者側のアクションも含めた具体的なネクストステップを設定する。",
+      "「入社時期から逆算してスケジュールを組みましょう。有給が40日あるなら8月中旬から消化開始で逆算。それまでに内定先を確定させる必要があるので、6月中に面接を集中させます」と、逆算型のタイムスケジュールで候補者と目線を合わせる。小林は石原様の面談で「6月内定→9月末退職→10月入社」の具体スケジュールを提示している。",
+      "「まず現職に異動の可能性を打診してください。並行して転職活動を進め、異動OKなら残る・NGなら転職と判断する。両面で動くことで最善の結果を出せます」と、転職ありきではない並行戦略を提案して、候補者の信頼を得ながら面談を閉じる。",
+      "「来週ちょうどこの企業の人事と商談があるので、気になる点があれば直接確認してきます。求人票に載らない配属先の実態や休日体制の本当のところを聞けます」と、自社のネットワークを活かした情報提供を約束し、次回面談へのフックを作る。小林は河原様の面談で旭化成との商談を活用すると提案している。",
+    ],
+    intel: [
+      "「他社のエージェントさんとはどのぐらいお話しされましたか？実際に求人を見た中で、ここ面白いなと思った企業はありましたか？」と、競合状況と候補者の反応を同時に把握する。選考が先行している場合は焦らず「決め手は何ですか」と深掘りする。",
+      "「再応募の制限がある企業もあるので、前回受けられた企業をお聞きしたいのですが」と、候補者の選考履歴を把握し、紹介可能な企業を正確に絞り込む。",
+      "「年収の内訳を教えてください。残業代込みと基本給のみでは比較が全く変わります。例えば45時間の残業代が月10万含まれているなら、実質基本給ベースで比較しないと入社後にギャップが出ます」と、年収の構造を正確に把握する。小林は河原様の面談で残業代の内訳（月10万、45時間上限）を具体的に確認している。",
+      ...(isSick
+        ? ["「今のお休みの状況については、企業には有給消化中と伝えましょう。診断書は取得しない方が後々のリスクが少ないです。離職期間が短ければ面接でも深掘りされません」と、休職中の候補者に対して面接での伝え方を具体的にアドバイスする。小林は河原様の面談で「有給消化として伝える、診断書はもらわない方がいい」と西村と連携してアドバイスしている。"]
+        : ["「他のエージェントさんからはどういう方向性の求人が来ていますか？ 同じジャンルが多いなら我々は別の切り口で提案しますし、バラバラなら一度方向性を整理してから進めた方が効率的です」と、他社との差別化ポイントを探りながら情報収集する。"]),
+      ...(hasOtherAgent
+        ? ["「他社エージェントさんで進んでいる選考の温度感はいかがですか？ もし決め手に欠けている状態なら、何が足りないのか一緒に整理しましょう。そこが分かれば我々の提案の方向性も明確になります」と、競合エージェントの提案の弱点を把握し、自社の提案に活かす。"]
+        : []),
+    ],
+  };
+
+  const options = templates[weakest] || templates.needs;
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+export function demoFetchMeetings(
+  _dealId?: string,
+  _candidateId?: string,
+  consultantName?: string,
+  isLeader?: boolean,
+): { transcripts: MeetingTranscript[]; total: number } {
+  let filtered = meetings;
+  if (consultantName) filtered = filtered.filter((m) => m.consultant_name === consultantName);
+  if (isLeader === true) filtered = filtered.filter((m) => m.is_leader);
+  if (isLeader === false) filtered = filtered.filter((m) => !m.is_leader);
+  return { transcripts: filtered.sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)), total: filtered.length };
+}
+
+export async function demoCreateMeeting(data: Partial<MeetingTranscript>): Promise<MeetingTranscript> {
+  const id = nextId();
+  const now = new Date().toISOString();
+  const transcriptText = data.transcript_text || "";
+
+  // トランスクリプトから話者を自動検出
+  const parsed = parseTranscript(transcriptText);
+  let consultantName = data.consultant_name || null;
+  let title = data.title || "面談記録";
+
+  if (parsed.isFormatted) {
+    if (!consultantName && parsed.consultantName) {
+      consultantName = parsed.consultantName;
+    }
+    if ((!data.title || data.title === "面談記録") && parsed.candidateName) {
+      title = `${consultantName || "担当者"}: ${parsed.candidateName}様 面談`;
+    }
+  }
+
+  const meeting: MeetingTranscript = {
+    id,
+    deal_id: null,
+    candidate_id: null,
+    consultant_name: consultantName,
+    is_leader: data.is_leader || false,
+    score_data: null,
+    title,
+    transcript_text: transcriptText,
+    summary: null,
+    action_items: [],
+    key_points: [],
+    next_steps: null,
+    attendees: [],
+    duration_minutes: null,
+    source: data.source || "manual",
+    recorded_at: now,
+    created_at: now,
+    updated_at: now,
+  };
+
+  meetings.push(meeting);
+  saveToStorage();
+
+  if (meeting.transcript_text && meeting.transcript_text.length > 30) {
+    setTimeout(() => {
+      const score = scoreFromText(meeting.transcript_text);
+      score.meeting_id = id;
+      meeting.score_data = score;
+      saveToStorage();
+    }, 2000);
+  }
+
+  return meeting;
+}
+
+export async function demoScoreMeeting(id: string): Promise<MeetingScore> {
+  const meeting = meetings.find((m) => m.id === id);
+  if (!meeting) throw new Error("Meeting not found");
+  const score = scoreFromText(meeting.transcript_text);
+  score.meeting_id = id;
+  meeting.score_data = score;
+  saveToStorage();
+  return score;
+}
+
+export async function demoSummarizeMeeting(id: string): Promise<{ summary: string; action_items: string[]; key_points: string[] }> {
+  const meeting = meetings.find((m) => m.id === id);
+  if (!meeting) throw new Error("Meeting not found");
+
+  const text = meeting.transcript_text;
+  const lines = text.split(/[。\n]/).filter((l) => l.trim().length > 5);
+
+  const summary = `この面談では${lines.length > 0 ? lines[0].trim() : "候補者との初回面談"}について議論しました。候補者の現在の状況と転職動機を確認し、今後の進め方について合意しました。`;
+
+  const actionItems = [
+    "候補者の希望条件に合う求人を3件選定して送付",
+    "来週中にフォローアップの電話を実施",
+    "企業側に候補者のスペックを匿名で打診",
+  ];
+
+  const keyPoints = lines.slice(0, 3).map((l) => l.trim());
+
+  meeting.summary = summary;
+  meeting.action_items = actionItems;
+  meeting.key_points = keyPoints;
+  saveToStorage();
+
+  return { summary, action_items: actionItems, key_points: keyPoints };
+}
+
+// --- 小林リーダーの直接フィードバック入力 ---
+export function demoAddLeaderFeedback(id: string, feedback: string): MeetingTranscript {
+  const meeting = meetings.find((m) => m.id === id);
+  if (!meeting) throw new Error("Meeting not found");
+  meeting.leader_feedback = feedback;
+  meeting.updated_at = new Date().toISOString();
+  saveToStorage();
+  return meeting;
+}
+
+// --- 学習リソース生成（弱い軸→関連プレイブック紐付け） ---
+const AXIS_LABELS: Record<string, string> = {
+  needs: "ニーズ把握", proposal: "提案力", trust: "信頼構築", closing: "クロージング", intel: "情報収集",
+};
+
+const AXIS_LEARNING: Record<string, { title: string; description: string; situation: string }[]> = {
+  needs: [
+    { title: "本音の深掘りテクニック", description: "「5年後どうなっていたいですか？」「それは会社の問題？業界の構造？」— 未来視点と構造視点で候補者が言語化できていない不満を引き出す", situation: "候補者のキャリア方向性が定まっていない時" },
+    { title: "ライフイベント起点の質問法", description: "「ご家族ができると優先順位が変わりますよね」— 結婚・出産・転勤などの変化を起点に本音を引き出す（河原様・石原様パターン）", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+  proposal: [
+    { title: "2段階説法", description: "①働く環境下をどう整えるか→②その上で業界を選ぶ。候補者が自分で選ぶプロセスを支援する（河原様パターン）", situation: "ゼネコン経験者が方向性を決めきれず複数エージェントを渡り歩いている時" },
+    { title: "セーフティーゾーン＋挑戦枠の二軸戦略", description: "確実に改善する企業＋キャリアチェンジの企業を並行で提示し、候補者が安心して挑戦できる構造を作る（日野様パターン）", situation: "候補者のキャリア方向性が定まっていない時" },
+    { title: "企業名と理由のセット提示", description: "「この企業を勧める理由はこうです」— 具体名だけでなく、なぜその候補者に合うかの根拠を必ずセットで伝える", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+  trust: [
+    { title: "業界構造の分解説明", description: "デベ・CM・事業会社・不動産管理会社の立場と責任の違いを構造的に説明。「立場によって追われ方が変わる」（河原様パターン）", situation: "候補者の不満が会社固有か構造的かわからない時" },
+    { title: "自身の経験共有", description: "「私もミサワホームで施工管理をしていたので」— 同じ業界出身者としての実体験を共有し、一気に信頼を構築する", situation: "残業・働き方の不満が転職動機の時" },
+  ],
+  closing: [
+    { title: "期限＋アクション＋接点の三点セット", description: "「来週水曜までに3件送ります。金曜16時に電話します」— 1文で次の接点を確定させる", situation: "面談終盤の次回アクション設定" },
+    { title: "逆算型スケジュール設計", description: "「入社から逆算して、有給消化40日→8月退職→6月内定確定」— 候補者と共にゴールから逆算して計画を立てる（石原様パターン）", situation: "退職交渉と入社時期のプランニングが必要な時" },
+  ],
+  intel: [
+    { title: "年収内訳の構造把握", description: "「残業代込みと基本給のみでは比較が全く変わります」— 表面上の年収ではなく構造を正確に把握する（河原様パターン）", situation: "年収・待遇に対する期待値が市場と乖離している時" },
+    { title: "他社エージェントとの差別化", description: "「どういう方向性の求人が来ていますか？同じジャンルなら別の切り口で提案します」— 競合の弱点を把握して自社の提案に活かす", situation: "候補者が具体企業をイメージできていない時" },
+  ],
+};
+
+function generateLearningResources(scores: Record<string, number>): import("./client").LearningResource[] {
+  const resources: import("./client").LearningResource[] = [];
+  const sorted = Object.entries(scores).sort((a, b) => a[1] - b[1]);
+
+  for (const [axis, score] of sorted) {
+    if (score >= 8 || resources.length >= 4) continue;
+    const items = AXIS_LEARNING[axis] || [];
+    for (const item of items) {
+      resources.push({
+        axis: AXIS_LABELS[axis] || axis,
+        title: item.title,
+        description: item.description,
+        playbook_situation: item.situation,
+      });
+    }
+  }
+  return resources.slice(0, 5);
+}
+
+// --- ダイジェスト抽出（面談の重要ポイントハイライト） ---
+function extractKeyMoments(text: string): import("./client").KeyMoment[] {
+  const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 20);
+  const moments: import("./client").KeyMoment[] = [];
+
+  const axisChecks: { axis: string; label: string; phrases: string[]; strong: string[] }[] = [
+    { axis: "needs", label: "ニーズ把握", phrases: NEEDS_PHRASES, strong: NEEDS_KEYWORDS_STRONG },
+    { axis: "proposal", label: "提案力", phrases: PROPOSAL_PHRASES, strong: PROPOSAL_KEYWORDS_STRONG },
+    { axis: "trust", label: "信頼構築", phrases: TRUST_PHRASES, strong: TRUST_KEYWORDS_STRONG },
+    { axis: "closing", label: "クロージング", phrases: CLOSING_PHRASES, strong: CLOSING_KEYWORDS_STRONG },
+    { axis: "intel", label: "情報収集", phrases: INTEL_PHRASES, strong: INTEL_KEYWORDS_STRONG },
+  ];
+
+  for (const sent of sentences) {
+    let bestAxis = "";
+    let bestLabel = "";
+    let bestRelevance = 0;
+
+    for (const { axis, label, phrases, strong } of axisChecks) {
+      let rel = 0;
+      for (const p of phrases) if (sent.includes(p)) rel += 3;
+      for (const kw of strong) if (sent.includes(kw)) rel += 1;
+      if (rel > bestRelevance) {
+        bestRelevance = rel;
+        bestAxis = axis;
+        bestLabel = label;
+      }
+    }
+
+    if (bestRelevance >= 3) {
+      moments.push({
+        text: sent.trim().slice(0, 100),
+        axis: bestAxis,
+        axis_label: bestLabel,
+        relevance: bestRelevance,
+      });
+    }
+  }
+
+  return moments
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, 10);
+}
+
+// --- 実面談から抽出したプレイブック ---
+export async function demoExtractPlaybook(): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+  return {
+    source_meetings: meetings.filter((m) => m.is_leader).length,
+    leader_name: "小林",
+    playbook: [
+      {
+        situation: "候補者のキャリア方向性が定まっていない時",
+        trigger: "「設計かデベロッパーか迷っている」「まだ自分の中で決まっていない」等、方向性が未定の場合",
+        leader_approach: "小林は実際のデベロッパー業務フローを具体的に説明する。「デベロッパーだと土地仕入れのボリューム検討や法規チェックが中心で、図面は外注に出す形です。設計の技術を磨きたいなら遠ざかる部分もあります」と現実を伝え、候補者が判断できる材料を提供する。感覚ではなくファクトで整理を助ける。",
+        key_phrases: [
+          "発注者側だと図面は書かなくなります",
+          "業務フローとしてはこういう形です",
+          "技術者として何を大事にしたいですか",
+        ],
+        avoid: "候補者の希望を否定する。「デベロッパーの方がいいですよ」と一方的に誘導する。",
+        success_rate_hint: "具体的な業務フロー説明後に方向性が明確になる確率: 約75%",
+      },
+      {
+        situation: "年収・待遇に対する期待値が市場と乖離している時",
+        trigger: "「デベロッパーは年収が高いイメージ」「年収1000万を目指したい」等の発言があった場合",
+        leader_approach: "小林は市場の現実をデータで伝える。「デベロッパーの年収が高いイメージはトップ5の企業が作り上げているもので、中途入社だと意外とそこまで上がらないケースが多いです。むしろ設計事務所でない選択肢の方が待遇面で有利な場合もあります」と、イメージと現実のギャップを正直に伝えた上で、実現可能な選択肢を提示する。",
+        key_phrases: [
+          "市場的にはこのレンジが適正です",
+          "中途だと意外とそこまで上がらない",
+          "イメージと現実にギャップがあります",
+        ],
+        avoid: "候補者の希望額をそのまま受け入れる。根拠なく「もっと上を目指しましょう」と言う。",
+        success_rate_hint: "市場データ提示後、現実的な条件で納得する確率: 約70%",
+      },
+      {
+        situation: "早期離職リスクがある候補者（在籍1年未満）",
+        trigger: "「まだ1年経っていない」「短期で転職を繰り返している」等の場合",
+        leader_approach: "小林はリスクを正直に伝えつつ対策を一緒に考える。「1年以上間が空いていないと再応募できない企業もあります。企業側から長期就業できるか見られてしまうので、目指す先がどうかというところを強く握った上で、プロセスとして今の会社にいたと説明できるようにしましょう」と、ポジティブなストーリーの構築を手伝う。",
+        key_phrases: [
+          "企業様から長期就業できるか見られます",
+          "目指す先を明確にした上でプロセスとして説明",
+          "再応募制限がある企業もあります",
+        ],
+        avoid: "短期離職を責める。リスクを伝えずに楽観的な見通しだけ伝える。",
+        success_rate_hint: "ストーリー構築支援後、書類通過率が改善する確率: 約60%",
+      },
+      {
+        situation: "候補者が具体企業をイメージできていない時",
+        trigger: "「いい話があれば」「特に企業名は浮かんでいない」「探している状態」の場合",
+        leader_approach: "小林は候補者のニーズを踏まえて具体的な企業名と理由をセットで提案する。「一気通貫で携わりたいなら、例えば島田アセットパートナーさんはアトリエ系のデベに近くて、自分で設計も書けるポジションです。東京ならこの企業、福岡ならこの企業と選択肢を出せます」と、候補者が比較検討できる材料を複数提示する。",
+        key_phrases: [
+          "例えばこの企業さんだと",
+          "こういう理由で合いそうです",
+          "選択肢として3つほどご紹介します",
+        ],
+        avoid: "「また良いのがあったら連絡します」と曖昧に終わる。候補者任せで提案しない。",
+        success_rate_hint: "具体企業を理由付きで提案した場合の応募意欲UP率: 約80%",
+      },
+      {
+        situation: "面談終盤の次回アクション設定",
+        trigger: "情報収集が一通り終わり、次のステップを決める場面",
+        leader_approach: "小林は期限＋具体アクション＋次の接点を必ず1セットで設定する。「次回のところでは具体の企業求人をご紹介します。その前に方向性をざっくりでいいので整理しておいてください。ポートフォリオの準備もお願いします。LINEでやり取りできればと思うので交換しましょう」と、双方のアクションを明確にして面談を閉じる。",
+        key_phrases: [
+          "次回は具体の企業求人をご紹介します",
+          "それまでにこれを準備してください",
+          "LINEで連絡を取りましょう",
+        ],
+        avoid: "「またいいのがあったら連絡します」と曖昧に終わる。次回の日時やアクションを決めずに面談を閉じる。",
+        success_rate_hint: "期限付きアクション設定後の次回面談実施率: 約90%",
+      },
+      {
+        situation: "現職残留・出戻りの可能性がある時",
+        trigger: "「前職に戻りたい気持ちもある」「社内異動で解決できるかも」「現職の支店や別部門はどうか」等の場合",
+        leader_approach: "小林はエージェントの立場でありながら、出戻りや社内異動の方が最善だと判断すれば正直にそれを勧める。「大和ハウスさんに戻りたいなら、社内のつながりを活用してリファラルで戻るのが一番確度が高いです。エージェント経由より資格のハードルを超えやすい」と率直にアドバイス。現職残留も「三井デザインテックさんの福岡支店への異動は検討されましたか？」と先に社内の選択肢を探る。候補者の最善の道がエージェント経由でなくても、正直に伝えることで信頼を構築する。",
+        key_phrases: [
+          "社内の方に一度問い合わせてみてください",
+          "リファラルの方が確度は高いです",
+          "現職の別部門への異動は検討されましたか",
+        ],
+        avoid: "自社の売上のために出戻りや社内異動を選択肢から外す。候補者に転職を強要する。",
+        success_rate_hint: "正直に出戻りを勧めた後も継続的に相談を受ける率: 約85%",
+      },
+      {
+        situation: "候補者の不満が会社固有か構造的かわからない時",
+        trigger: "「上流に行きたい」「品質基準が低い」「裁量がない」等、漠然とした不満がある場合",
+        leader_approach: "小林は候補者の不満が「今の会社特有の問題なのか、ポジション全般に共通する構造的問題なのか」を切り分けて深掘りする。「日商エステムさんの品質基準と阪急さん・野村プラウドさんの基準は全く違います。品質への不満なら企業を変えるだけで解決するかもしれない」「分譲マンションの制約は業界構造。賃貸なら自由度が上がる」と、問題の本質を特定して解決策を具体化する。会社の問題なら転職先の選定で解決。構造的問題なら職種やポジションの変更が必要と整理する。",
+        key_phrases: [
+          "それは会社の問題ですか？それとも業界の構造ですか？",
+          "企業を変えるだけで解決する可能性もあります",
+          "ポジション自体を変える必要があるかもしれません",
+        ],
+        avoid: "候補者の不満をそのまま受け入れて安易に転職を勧める。問題の本質を特定せず企業を紹介する。",
+        success_rate_hint: "問題切り分け後に候補者の方向性が明確になる確率: 約80%",
+      },
+      {
+        situation: "候補者の指向性を推薦文に活かしたい時",
+        trigger: "「住宅にこだわりがある」「デザインが好き」「上流で企画したい」等、特定の志向が見える場合",
+        leader_approach: "小林は候補者の指向性を企業への推薦文に使えるレベルまで深掘りする。「住宅設計で何を叶えていきたいのか？経験があるからできるだけじゃなく、なぜそこにこだわるのか聞きたい。推薦文に入れたい」と目的を明示して質問する。分譲vs賃貸の違いも「分譲は万人受け設計、賃貸はコンセプト自由度が高い」と具体化し、候補者のクリエイティブ志向を言語化する。漠然とした「好き」を企業に伝わる言葉に変換するのがリーダーの役割。",
+        key_phrases: [
+          "企業に推薦する時にここをプッシュしたい",
+          "なぜそこにこだわるのか聞かせてください",
+          "この指向性なら合う企業はここです",
+        ],
+        avoid: "候補者の指向性を聞かずに求人を紹介する。「経験があるから」だけで推薦する。",
+        success_rate_hint: "指向性を明確に推薦文に反映した場合の書類通過率UP: 約25%",
+      },
+      {
+        situation: "残業・働き方の不満が転職動機の時",
+        trigger: "「残業が多い」「働き方を改善したい」「リモートで働きたい」等の場合",
+        leader_approach: "小林は残業の原因を業界構造から分析して説明する。「設計事務所の残業はクライアントありきの業務で工期リミットがある構造的問題。上流（デベロッパーやコンサル）に行くと発注者側の立場になるので、構造的に残業が減る」と根本原因を整理。コンサル会社の実態も正直に伝え「プロジェクト次第なので必ずしも楽ではないが、テレワークの柔軟性はある」とメリット・デメリットを提示。候補者が納得した上で方向性を選べるようにする。",
+        key_phrases: [
+          "残業の原因は会社ではなく業界構造です",
+          "上流に行くと構造的に働き方が変わります",
+          "コンサルもプロジェクト次第で忙しい時はあります",
+        ],
+        avoid: "「どこに行っても忙しいですよ」と突き放す。具体的な構造説明なしに「デベが楽」と安易に勧める。",
+        success_rate_hint: "業界構造説明後に候補者が納得して方向性を決める確率: 約85%",
+      },
+      {
+        situation: "現職の価値が高く転職が最善でない可能性がある時",
+        trigger: "「今の会社は悪くないけど」「もっと上を目指したい」等、現職に一定の満足がある場合",
+        leader_approach: "小林はエージェントの利益より候補者の最善を優先し、現職の価値を客観的に評価する。「正直に言うと、今のバランスはトップクラスに良い。年収・働き方・経験の三拍子が揃っている」と率直に伝える。その上で「社内異動で不動産再生事業部に行けばPMスキルが蓄積でき、3年後にデベへの出口戦略が描ける」と社内キャリアパスを提案。「1級建築士を取得した後の方が市場での選択肢が広がるので、今は資格取得に集中する方がコスパが良い」とタイミングのアドバイスも追加。転職を勧めないことで長期的な信頼関係を構築する。",
+        key_phrases: [
+          "正直に言うと今のバランスはトップクラスに良い",
+          "社内異動という選択肢も検討してみてください",
+          "資格を取ってから動いた方が選択肢が広がります",
+        ],
+        avoid: "すぐに転職を勧める。現職の良い点を伝えずに求人紹介に走る。",
+        success_rate_hint: "現職の価値を客観評価した後、継続的に相談を受ける率: 約90%",
+      },
+      {
+        situation: "退職交渉と入社時期のプランニングが必要な時",
+        trigger: "「いつ辞められるかわからない」「有給が溜まっている」「引越しが必要」等の場合",
+        leader_approach: "小林は入社時期から逆算してタイムスケジュールを設計する。「6月までに内定先を決めて、9月末まで在籍、有給消化後10月入社が現実的なライン」と具体的な日程を提示。「有給が40日あるなら8月20日から取得開始で逆算」と計算を手伝う。現職への交渉も「もう大阪に戻ると決断しているなら、半年後に異動できるか確認して、行けるなら残る・行けないなら転職と会社に伝えてもいい」と並行戦略をアドバイス。企業側にも入社時期を事前共有し、ずるずる延びないよう調整する。",
+        key_phrases: [
+          "入社から逆算してスケジュールを組みましょう",
+          "退職交渉は内定後がベストタイミングです",
+          "会社に決断を伝えても良いタイミングです",
+        ],
+        avoid: "入社時期を曖昧にしたまま選考を進める。企業側に正確な情報を伝えない。",
+        success_rate_hint: "タイムスケジュール設計後にスムーズに退職・入社できる確率: 約80%",
+      },
+      {
+        situation: "ゼネコン経験者が方向性を決めきれず複数エージェントを渡り歩いている時",
+        trigger: "「まだ方向性が決まっていない」「いろいろ話を聞いている」「CMって初めて聞いた」等、情報収集段階で迷走している場合",
+        leader_approach: "小林はまず現職残留（内勤・施工図作成・技術部門への異動）の可能性を確認し、候補者の退路を整理した上で、デベロッパー・CM・事業会社・不動産管理会社の4つの選択肢を体系的に説明する。「2段階説法」として①働く環境下をどう整えるか→②その上で業界を選ぶという順序を提案。CMの実態を「事業会社が自社建物を建てたい→建築技術者がいない→コンサルに委託→第三者支援・発注者支援」と構造分解し、事業会社（松竹＝歌舞伎座の修繕管理）や不動産管理会社という候補者が知らない選択肢も提示。住宅メーカーの実態も元経験者として「複数物件管理・指定業者制度・4大管理の負担軽減」を具体説明。積水ハウス特建事業部のサラカン的ポジションなどゼネコン経験者に親和性の高いルートを紹介。物流倉庫系CM会社など候補者の経験を活かしやすい具体的な方向性も提案する。",
+        key_phrases: [
+          "まず現職の内勤という選択肢は検討されましたか",
+          "立場によって責任の範囲が構造的に変わります",
+          "働く環境下をどう整えるかが第一条件です",
+          "事業会社や不動産管理会社という選択肢もあります",
+        ],
+        avoid: "候補者が他社エージェントで聞いた情報を否定する。特定ジャンルに無理に誘導する。選択肢を絞りすぎて候補者の視野を狭める。",
+        success_rate_hint: "体系的な選択肢提示後に候補者の方向性が明確になる確率: 約80%",
+      },
+    ],
+  };
+}
+
+// --- 実面談トランスクリプトを基にした教師データ ---
+export function seedDemoData() {
+  if (loadFromStorage()) return;
+  if (meetings.length > 0) return;
+
+  const leaderMeetings = [
+    {
+      title: "小林+村上: 福元一成様（施工管理・RC経験7年）",
+      text: "福元一成様との面談。村上が初期ヒアリングを実施し、小林がキャリア戦略を提案。候補者は施工管理でRC造経験7年、年収485万、3月末に離職済み。転職理由はコミュニケーション面でのフィードバックを受けて自信喪失した部分がある。小林は候補者の経験を業界水準と照らし合わせ「RC造7年の経験であれば施工管理として市場価値は十分ある。年収500万台は狙えるレンジ」と市場価値を提示。5年後のキャリアビジョンについて深掘りし、候補者の本音を引き出した。具体的な企業として中堅ゼネコンの施工管理ポジションを複数紹介。他社エージェントの利用状況を確認し、来週水曜までに求人3件をLINEで送る約束。次回面談を来週金曜に設定。",
+    },
+    {
+      title: "小林+安藤: komine wataru様（イオンネクスト建設部）",
+      text: "komine wataru様との面談。安藤が初期ヒアリング、小林がキャリア戦略と業界知識を提供。候補者はイオンネクスト建設部で発注者ポジション。年収850万、データセンター案件を希望。180億規模の物件を担当した経験あり。小林は「データセンターは今後も需要が拡大する分野で、この経験年数と実績であれば更に上のポジションも十分狙える」と市場分析を提示。デベロッパーとゼネコンの両面からキャリアパスを具体的に説明。候補者の転職動機を深掘りし、本音として「より大規模な案件に携わりたい」「技術的な成長を求めている」というビジョンを引き出した。選考状況として他社エージェントは1社利用中であることを確認。データセンター系の案件を持つ企業を3社ピックアップし、来週中に詳細情報を共有する約束。LINE交換済み。",
+    },
+    {
+      title: "小林+安藤: 新井雅也様（東急建設→デベロッパー希望）",
+      text: "新井雅也様との面談。安藤が状況確認、小林がキャリアの方向性を整理。候補者は東急建設からトレンドデザインへ転職。1級建築士の学科試験に合格。デベロッパー側へのキャリアチェンジを希望。年収は500-550万のレンジ。小林は「デベロッパーの年収が高いイメージは実はトップ5の企業が作り上げているもので、中途入社だと意外とそこまで上がらないケースが多い」と市場の現実を正直に伝達。「設計事務所ではない選択肢でも待遇面では十分叶う可能性がある」と視野を広げる提案。候補者の転職理由を深掘りし、技術者としての成長志向が強いことを把握。一級建築士の資格取得に向けた動機と将来のキャリアビジョンについて議論。他社での選考状況と温度感を確認し、まだ初期段階であることを把握。具体的な企業紹介は次回面談で行う予定として、来週までに方向性を整理しておくよう依頼。",
+    },
+    {
+      title: "小林+西村: 角陸斗様（設計一気通貫・一級建築士）",
+      text: "角陸斗様との面談。西村が初期ヒアリングを実施、小林が業界知識とキャリア戦略を提供。候補者はプランテック在籍の一級建築士。年収620万。東京・福岡の二拠点で検討中。転職理由は「設計の一気通貫に携わりたいが、現職では基本設計までで実施設計以降はゼネコンに投げてしまう。成長できる環境にない」という本音を把握。小林はデベロッパーの業務フローを具体的に説明。「発注者側だと土地仕入れのボリューム検討や法規チェックが中心で、図面を自分で書くことはなくなる。技術者としての成長志向が強いなら遠ざかる部分もある」と現実を提示。在籍1年未満の早期離職リスクについても「企業から長期就業できるか見られるので、目指す先を明確にしてプロセスとして説明できるようにしましょう」とアドバイス。具体企業として島田アセットパートナーを紹介。「アトリエ系デベロッパーで設計も書ける。ただしポートフォリオの提出が必要」と実務的な準備事項も提示。アデコ経由で他社1社と並行中であることを確認。次回は具体求人を紹介する予定。",
+    },
+    {
+      title: "小林+西村: 山田喬之様（京阪電鉄不動産・開発職）",
+      text: "山田喬之様との面談。西村が初期ヒアリング、小林が市場分析と戦略を提供。候補者は京阪電鉄不動産で戸建て住宅の造成・開発業務。年収650万。積水ハウスから転職して現職。パートナーあり。転職動機は「経済状況を見て早めに動きたい」「取り扱う物件の価格帯を上げたい」。小林は物件価格帯の違いが企業ブランドやビジネスモデルにどう影響するかを具体的に説明。「同じ造成地でもブランド力の差で1000万近い価格差がつく。現職の4000万帯と高額帯では客層も需要構造も変わってくる」と業界知識を展開。戸建てデベロッパーとマンションデベロッパーの両方の選択肢を提示。「野村不動産さんのリノベーション部門は一つの選択肢。東京なら東西さん、関西なら阪急阪神不動産さんのプロジェクトも検討できる」と具体企業名を提案。他社エージェント2社とリクルートの状況を確認。現職でのマンション開発への社内異動という選択肢も含めて議論。来週までに職務経歴書を整備し、求人を3件以上送付する約束。",
+    },
+    {
+      title: "小林+村上: 外山明様（酒田建設・施工管理→設計希望）",
+      text: "外山明様との面談。村上が初期ヒアリング、小林がキャリア戦略を提供。候補者は酒田建設で施工管理、2級建築士保有。年収550万、27歳、練馬在住。パートナーあり（脚本家）。転職動機は施工管理から設計へのキャリアチェンジ。小林は同じ大学出身であることを共有し個人的なつながりで信頼構築。キャリアvsプライベートの優先順位を深掘りし、候補者の本音を引き出した。設計とデベロッパーの違いを具体的に説明し「図面を書く」作業と「コンセプトを決める」役割を分離して候補者の本当にやりたいことを特定。「設計で図面を書きたいのか、それとも企画段階のコンセプト決定に携わりたいのか？ここで行くべき会社が全く変わってきます」と方向性の明確化を促進。ポートフォリオの準備を提案し、次回面談を月曜朝8時に設定。LINE交換済み。",
+    },
+    {
+      title: "小林+安藤: 山田果歩様（三井デザインテック・内装施工管理）",
+      text: "山田果歩様との面談。安藤が初期ヒアリング、小林がキャリア戦略と業界知識を提供。候補者は三井デザインテックで内装施工管理。休職中で福岡への転居を希望。年収400万、広島大学卒。小林はまず現職残留の可能性を確認。「三井デザインテックさんの福岡支店やホテル事業部への異動は検討されましたか？」と社内の選択肢を先に探る。内装と建築の違いを専門的に説明。「内装は仕上げの1-2mmのズレが問題になる精密な世界。建築は10mm許容の世界。収まり検討の重要性が全く違う」と業界知識で信頼構築。PMポジションという代替キャリアパスを提示し、不動産管理会社という選択肢も紹介。体調不良での休職について面接での伝え方を具体的にアドバイス。「体調不良の説明は正直に、ただしポジティブなフレーミングで。回復して新しい環境で貢献したいという意欲を前面に」と実践的な面接対策。福岡優先→東京バックアップの二段階戦略を設定。LINE交換済み、来週中にフォローアップ予定。",
+    },
+    {
+      title: "小林+安藤: 岩本崇様（戸田建設→日商エステム・生産設計）",
+      text: "岩本崇様との面談。安藤が初期ヒアリング、小林がキャリア分析と戦略を提供。候補者は戸田建設から日商エステムに転職し発注者側で生産設計を担当。年収740万、大阪在住。1級施工管理技士と宅建を保有。転職動機はより上流の業務に携わりたいという希望。小林は候補者の不満が「会社特有の問題なのか、それとも発注者ポジション全般に共通する構造的な問題なのか」を切り分けて深掘り。「日商エステムさんの品質基準と、例えば阪急さんや野村プラウドさんの品質基準は全く違います。品質に対するこだわりが不満の原因なら、企業を変えるだけで解決する可能性もあります」とデベロッパー品質基準の比較を提示。設計事務所のサラカン（設計管理者）という代替ポジションを提案し「設計事務所側で発注者との折衝を担当するポジションであれば、上流の経験と技術力の両方を活かせる」と具体的なキャリアパスを示す。転勤許容度を家族状況（子供の年齢）に紐付けて確認し、現実的なラインを設定。来週中に求人をLINEで共有する約束。",
+    },
+    {
+      title: "小林+西村: 小川ゆう様（組織設計事務所・一級建築士）",
+      text: "小川ゆう様との面談。西村が初期ヒアリング、小林がキャリアの方向性整理と業界知識を提供。候補者は43歳、一級建築士、組織設計事務所A&に在籍4年目（復帰）。高松建設6年→アトリエ系事務所1年→A&7年→NTTファシリティーズ2年→A&復帰。共同住宅設計のスペシャリスト。転職動機は社長交代で方針がホテル・オフィスビルに転換し共同住宅の案件が減少、年収も500万中盤まで下落。希望年収は基本給700＋残業込みで800万、大手で安定的にベースアップできる環境。他社エージェント10名と面談済み、5社に応募中（通過3社、結果待ち2社）。小林は住宅へのこだわりの「なぜ」を深掘り。「推薦文に使いたいので、住宅設計で何を叶えていきたいか、指向性をもっと聞かせてください」と企業への推薦を見据えた質問。分譲vs賃貸の違いを企業配置の観点から説明。「分譲は万人受けする設計、賃貸はコンセプトやデザインの自由度が高い。候補者のクリエイティブ志向なら賃貸マンション特化が合う」と候補者の指向性と市場ニーズをマッチング。年収700超えが前提条件として分譲もセーフティゾーンとして並行検討を提案。次回月曜18:30にオンライン面談を設定、求人をゴールデンウィーク前までに紹介予定。",
+    },
+    {
+      title: "小林+西村: 中道康介様（タマホーム・リフォーム営業兼施工管理）",
+      text: "中道康介様との面談。西村が初期ヒアリング、小林がキャリア戦略と業界知識を提供。候補者は大阪産業大学経営学部卒、タマホームでリフォーム営業兼施工管理。前職は大和ハウスで営業。年収690万だが歩合比率が8割と高く基本給が低い。施工管理経験は約2年、資格は施工管理技士未取得。希望はベース500万＋トータル700万、大企業の福利厚生。本音は経営に関わる仕事がしたい。小林は大和ハウスへの出戻りをエージェントとして正直に最善ルートとして提案。「社内のつながりを活用してリファラルで戻るのが一番確度が高い。エージェント経由よりも資格のハードルを超えやすい」と率直にアドバイス。施工管理経験2年では大手は難しく、入り口は営業になる現実を正直に伝達。「施工管理の経験年数で見ると新卒2-3年目と同等。大手が求める技術評価は得にくい。営業の実績で入るルートの方が現実的」と市場の現実を説明。1級施工管理技士補の資格取得を並行で進めるキャリア戦略を提案。経営コンサルという全く別の選択肢も示唆。ゴールデンウィーク前に求人共有、GW明け7-8日に意向回答のスケジュールを設定。LINE交換済み。",
+    },
+    {
+      title: "小林+安藤: 東浦隆介様（東畑建築事務所・設計職・一級建築士）",
+      text: "東浦隆介様との面談。安藤が初期ヒアリング、小林が業界構造とキャリア戦略を提供。候補者は東畑建築事務所で設計職、一級建築士、30歳、大阪在住、年収600万。転職動機は残業の多さと働き方改善。小林は業界構造から残業の原因を説明。「設計事務所の残業は構造的な問題で、クライアントありきの業務→工期リミット→設計にしわ寄せという構造。上流（デベロッパーやコンサル）に行くと残業が構造的に減る理由がある」と根本原因を分析。コンサル会社の実態をリアルに説明し「プロジェクト次第でテレワークの柔軟性もある」とメリット・デメリットを正直に提示。具体企業としてリノベル都市創造事業部の詳細を紹介し、総合デベの非住宅領域入口として阪急阪神不動産の実例も提示。ポートフォリオ準備の必要性についてもアドバイス。他社エージェントの利用状況を確認。次回は具体求人を紹介する予定として面談日程を設定。LINE交換済み。",
+    },
+    {
+      title: "小林+西村: 佐藤亮太郎様（コクヨ・内装施工管理）",
+      text: "佐藤亮太郎様との面談。西村が初期ヒアリング、小林がキャリア戦略を提供。候補者はコクヨで内装施工管理、前職は旭化成ホームズ。年収650万、希望年収700万超。転職動機はキャリアアップ。小林は候補者のこれまでのキャリアを業界水準と照合し、現職の価値を客観的に評価。「正直に言うと、今のコクヨさんのバランスはトップクラスに良い。年収・働き方・経験のバランスを考えると、今すぐ動く必要がないかもしれない」と率直にアドバイス。その上で、社内異動の可能性を提案。「コクヨの不動産再生事業部への異動は検討されましたか？PMスキルを蓄積してデベロッパーへの出口戦略を描く方が、外部転職より確度が高い」と社内キャリアパスを具体的に提示。さらに「1級建築士を取得した後の方が市場での選択肢が格段に広がる。今は資格取得に集中して、取得後に転職活動を本格化する方がコスパが良い」と正直にタイミングのアドバイス。他社エージェントの利用状況を確認し、転職活動を一旦ペンディングにする選択肢も含めて整理。次回は資格取得の進捗に合わせて相談する形で設定。",
+    },
+    {
+      title: "小林+西村: 日野様（ゼネコン設計・CM希望・一級建築士）",
+      text: "日野様との面談。西村が初期ヒアリング、小林が業界構造とキャリア戦略を提供。候補者はゼネコンの設計職、一級建築士、福山市立大学の都市経営学卒。名古屋希望（パートナーが福井在住で名古屋なら通勤1時間）。年収570万、希望600万超。CM（コンストラクションマネジメント）会社への転職を希望。クイック経由で3社に書類提出中。小林はデベロッパーの業務フローを構造的に説明。「土地仕入れ→ボリューム検討→法規チェック→企画設計→設計事務所に委託→ゼネコン発注。完璧なる施主の立ち位置だと決定権がある」と発注者サイドの実態を提示。CMとデベロッパーの違いを明確化し、「CMは調整業務が中心で設計的要素が薄くなる。デベは自社で決定権を持つが物件種別が限定される」と両者のトレードオフを整理。「セーフティーゾーンとして元請けで今より良い会社、挑戦枠として発注者側」という二軸の求人戦略を提案。経歴のブランク（大学入学の2年遅れ）も確認し面接対策に備える。次回はGW明け5月7日18時に面談設定。LINE交換済み。",
+    },
+    {
+      title: "小林+安藤: 伊藤優貴様（三井ホーム・住宅設計）",
+      text: "伊藤優貴様との面談。安藤が初期ヒアリング、小林がキャリア戦略と業界知識を提供。候補者は三井ホームで住宅設計、近畿大学卒、愛知在住。年収500万。転職動機は注文住宅体制変更で外注管理主体に変わり設計から離れること。空間デザインや商業空間に興味あり。大学院時代に商業施設の基本設計やリノベーションの経験あり。小林は前職ミサワホームの経験を共有し親近感を構築。外注設計の実態を掘り下げ「体制変更前は自分で提案できていたのが、縦割りの部署に変わって横断的な対応ができなくなった」という問題の本質を特定。内装設計のハードルを正直に説明。「野村工芸社や乃村工芸社は美大出身がマスト要件。商業空間のデザイナーポジションは住宅経験からの参入ハードルが高い」と現実を提示。一方で「オフィスの空間デザインならデザイナーと実施設計者が分かれないポジションがあり、伊藤さんやコクヨさんのような企業で裁量を持てる可能性がある」と具体的な代替ルートを提案。住宅系（積水ハウス・住友林業等）の設計ポジションも選択肢として幅を広げる。ポートフォリオの準備と協力を提案。来週水曜15時に次回面談設定。LINE交換済み。",
+    },
+    {
+      title: "小林+安藤: 石原敬正様（アーネストワン・施工管理・建売住宅）",
+      text: "石原敬正様との面談。安藤が初期ヒアリング、小林がキャリア戦略と転職プランニングを提供。候補者はアーネストワンで建売住宅の施工管理、経済学部卒、28歳、資格なし、山口在住。年収650万（主任）。転勤4回（1.5年周期）、子供が生まれるため大阪に戻りたいのが第一優先。30歳までに大阪で家を建てる計画。所長不在の営業所で所長業務を兼任しているが、4月の人事で昇進なし。月5棟・年間60棟の施工管理。小林は現職への交渉を先に提案。「ぶっちゃけ現職が大阪に戻してくれると確約してくれたら残りますか？」と確認し「半年後に行ければ転職しません、行けないなら転職します」と会社に伝えるようアドバイス。転職活動と現職交渉の並行戦略を設計。退職交渉のタイミングを逆算し「6月までに内定先を決めて、9月末まで在籍、有給消化後10月入社が現実的なライン」とタイムスケジュールを提示。住宅の将来性について業界視点で議論し「人口減少でリフォーム需要がシフトする」という候補者の見立てに同意しつつ、施工管理の経験を活かせる方向性を整理。行事参加の重要性と平日休み許容度も確認。次回はGW明けに求人紹介面談を設定。LINE交換済み。",
+    },
+    {
+      title: "小林+西村: 河原克昭様（フジタ・ゼネコン施工管理9年・1級建築施工管理技士）",
+      text: "河原克昭様との面談。西村が初期ヒアリング、小林がキャリア戦略と業界構造の多選択肢提示を実施。候補者はフジタでゼネコン施工管理9年目、1級建築施工管理技士保有。年収約800万（残業代月10万含む、45時間上限）、希望年収600万以上。大阪・高槻在住、出身福岡、結婚・子供あり（8ヶ月）、持ち家。転職動機は残業の多さ（終電が当たり前）、所長になる自信がない（40-50代との世代間ギャップで知識差を実感）、大型物件で一部分しか担当できない閉塞感、精神的に辛く現在休職中。他社エージェント3-4名と話済み（ウィッグ等）。検討ジャンルはデベ＞CM＞ハウスメーカー（積水シャーメゾン・旭化成集合住宅）。小林はまず現職残留の可能性を確認。「内勤の分野、例えば施工図作成や技術部門への異動は検討されましたか？」と社内選択肢を先に探る。候補者が内勤は現場から冷たい目で見られるため残りたくないと回答し、完全に転職方向と確認。住宅メーカー施工管理の実態を元ミサワホーム経験者として具体説明。「複数物件を6-8ヶ月工期で10物件管理。指定業者制度で業者手配・工程管理の負担は減るが、4大管理のうち原価管理はほぼ丸投げになる。一般顧客からのクレーム対応はある」と現実を提示。積水ハウスの特建事業部を新提案。「店舗併用住宅や中規模ビル・クリニックを元請けで請負い、その下にゼネコンが一次請負で入る構造。サラカン的ポジションで発注者に近い立場で働ける。ゼネコン経験者がよく行く」と具体的なキャリアパスを説明。デベロッパー・CM・事業会社・不動産管理会社の4つの選択肢を体系的に説明。CMの実態を具体解説。「事業会社が自社建物を建てたい→建築技術者がいない→コンサルに委託→第三者支援・発注者支援の立ち位置」と構造を分解。物流倉庫系のCM会社が候補者の経験を活かしやすいと提案。事業会社（松竹＝歌舞伎座の修繕管理・再開発）や不動産管理会社という新選択肢も提示。「自社保有建物の営繕管理、テナント入替時のバリューアップ提案、中長期修繕計画の策定が主業務。工事に追われる立場ではない」と具体的な業務内容を説明。休職中の面接対策として「有給消化として伝える。診断書はもらわない方がいい」と西村と連携してアドバイス。「2段階説法」を展開。「①働く環境下をどう整えるか→②その上で業界を選ぶ」という順序で検討するよう提案。来週旭化成との商談を活用し候補者の疑問を直接人事に確認すると提案。次回は月曜午前に求人紹介面談を設定。グループLINE交換済み。",
+    },
+  ];
+
+  for (const lm of leaderMeetings) {
+    const id = nextId();
+    const now = new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString();
+    const score = scoreFromText(lm.text);
+    score.meeting_id = id;
+    score.scores.needs = Math.min(10, score.scores.needs + 2);
+    score.scores.proposal = Math.min(10, score.scores.proposal + 1);
+    score.scores.trust = Math.min(10, score.scores.trust + 1);
+    score.scores.closing = Math.min(10, score.scores.closing + 2);
+    score.scores.intel = Math.min(10, score.scores.intel + 1);
+    score.total = Object.values(score.scores).reduce((a, b) => a + b, 0);
+    score.grade = score.total >= 40 ? "S" : score.total >= 35 ? "A" : "B";
+
+    meetings.push({
+      id,
+      deal_id: null,
+      candidate_id: null,
+      consultant_name: "小林",
+      is_leader: true,
+      score_data: score,
+      title: lm.title,
+      transcript_text: lm.text,
+      summary: null,
+      action_items: [],
+      key_points: [],
+      next_steps: null,
+      attendees: [],
+      duration_minutes: null,
+      source: "manual",
+      recorded_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  const sampleConsultants = [
+    {
+      name: "西村",
+      title: "西村: 角様（設計事務所・一級建築士）初期ヒアリング",
+      text: "角様との初期面談。ビズリーチ経由でコンタクト。現職はプランテック、一級建築士・宅建保有。転職理由は一気通貫で設計に携わりたい。アデコ経由で他社1社と並行中。年収620万、希望は550万以上。東京または福岡で検討中。9月入社を想定、退職告知後3ヶ月の退職日設定あり。資格として建築設備士の取得も検討中。",
+    },
+    {
+      name: "西村",
+      title: "西村: 山田様（京阪電鉄不動産・開発職）初期ヒアリング",
+      text: "山田様との初期面談。ビズリーチ経由。積水ハウスから京阪電鉄不動産へ転職済み。戸建て住宅の造成・開発を担当。年収650万。転職理由は経済状況を見て早めに動きたい、物件価格帯を上げたい。他社エージェント2社と並行。リクルートエージェントで野村不動産に応募中だが面談未実施で停滞。9月入社希望（ボーナス後）。パートナーあり。関西圏では取引先が多く気が引けるため東京も視野に。",
+    },
+    {
+      name: "辻内",
+      title: "辻内: 吉田様（プラント設備・メンテナンス8年）",
+      text: "吉田様との面談。プラント設備のメンテナンスで8年の経験。危険物取扱者の資格保有。転職理由は年収アップと出張を減らしたいこと。他社エージェントの利用はなく、情報収集段階。年収は現在480万で600万以上を希望。プラント系の設備管理で転勤なしのポジションを希望。来週木曜までに求人情報を共有する約束。",
+    },
+    {
+      name: "辻内",
+      title: "辻内: 山本様（土木現場管理6年・環境コンサル志望）",
+      text: "山本様との面談。土木の現場管理で6年の経験。1級土木施工管理技士の資格保有。転職理由は現場から離れたいという本音。環境アセスメントや調査系に興味あり。年収は現在450万で500万台を希望。他社はまだ利用していない。転勤は可能だが、できれば関東希望。来週中に環境コンサル系の求人をリストアップして送付する約束。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 渡辺様（建築設計3年・ディベロッパー志望）",
+      text: "渡辺様との面談。建築設計で3年の経験。二級建築士。転職理由は給与の低さと残業。デベロッパー側に行きたいという希望。年収は現在380万で450万以上を目指したい。温度感は高く、来月中には決めたい意向。他社エージェント1社と並行中。来週月曜に求人を3件提案する約束。",
+    },
+    {
+      name: "村上",
+      title: "村上: 伊藤様（空調設備施工管理10年・管理職希望）",
+      text: "伊藤様との面談。空調設備の施工管理で10年の経験。管工事施工管理技士の資格保有。転職理由はマネジメントポジションへのステップアップ希望。年収は現在520万で600万以上を希望。他社は1社選考中で一次面接通過済み。温度感は高い。来週水曜までに管理職ポジションの案件を5件送付する約束。LINE交換済み。",
+    },
+    {
+      name: "村上",
+      title: "村上: 外山様（施工管理→設計希望）初期ヒアリング",
+      text: "外山様との初期面談。酒田建設で施工管理を担当。2級建築士保有。施工管理から設計へのキャリアチェンジを希望。年収550万、27歳、練馬在住。パートナーあり。設計とデベロッパーの違いがわからず方向性に悩んでいる。来週月曜朝8時に再面談を設定。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 山田果歩様（三井デザインテック・内装施工管理）初期ヒアリング",
+      text: "山田果歩様との初期面談。三井デザインテックで内装施工管理。休職中で福岡への転居を希望。年収400万、広島大学卒。転職理由は体調不良による休職と環境変化の希望。福岡のポジションを中心に探しているが選択肢が限られる。来週中にフォローアップ予定。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 岩本様（日商エステム・生産設計）初期ヒアリング",
+      text: "岩本様との初期面談。戸田建設から日商エステムに転職し発注者側で生産設計。年収740万、大阪在住。1級施工管理技士と宅建保有。上流の業務に携わりたいが品質基準への不満あり。転勤は子供の年齢次第で検討可能。来週中に求人を共有する約束。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 東浦様（東畑建築事務所・設計職）初期ヒアリング",
+      text: "東浦様との初期面談。東畑建築事務所で設計職、一級建築士、30歳、大阪在住。年収600万。転職動機は残業の多さと働き方改善。設計事務所の構造的な忙しさに疑問を感じている。上流やコンサルに興味あり。来週中にポートフォリオの準備状況を確認し求人紹介予定。",
+    },
+    {
+      name: "西村",
+      title: "西村: 佐藤様（コクヨ・内装施工管理）初期ヒアリング",
+      text: "佐藤亮太郎様との初期面談。コクヨで内装施工管理、前職は旭化成ホームズ。年収650万、希望年収700万超。キャリアアップを希望しているが、現職のバランスは良いとの自覚もあり。1級建築士は未取得。他社エージェントの利用はなし。次回は資格取得の進捗に合わせて相談予定。",
+    },
+    {
+      name: "西村",
+      title: "西村: 日野様（ゼネコン設計・CM希望）初期ヒアリング",
+      text: "日野様との初期面談。ビズリーチ経由。ゼネコンの設計職で一級建築士。名古屋希望でCM会社への転職を希望。クイック経由で3社に書類提出中。年収570万。評価制度への不満と社内のサポート体制への不満あり。パートナーが福井在住。GW明け5月7日に次回面談設定。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 伊藤様（三井ホーム・住宅設計）初期ヒアリング",
+      text: "伊藤優貴様との初期面談。三井ホームで住宅設計、近畿大学卒、愛知在住。年収500万。注文住宅の体制変更で外注管理主体になり設計から離れることが転職動機。空間デザインや商業空間に興味。エージェント利用は初めて。来週水曜に次回面談設定。ポートフォリオを準備中。",
+    },
+    {
+      name: "安藤",
+      title: "安藤: 石原様（アーネストワン・施工管理）初期ヒアリング",
+      text: "石原敬正様との初期面談。アーネストワンで建売住宅の施工管理、28歳、経済学部卒、資格なし。山口在住で大阪に戻りたい。年収650万、主任だが所長不在で所長業務を兼任。転勤4回で1.5年周期。子供が生まれるため30歳までに大阪で家を建てたい。来週中に求人紹介予定。",
+    },
+    {
+      name: "西村",
+      title: "西村: 河原様（フジタ・ゼネコン施工管理9年）初期ヒアリング",
+      text: "河原克昭様との初期面談。ビズリーチ経由でコンタクト。フジタでゼネコン施工管理9年目、1級建築施工管理技士保有。年収約800万（残業代月10万含む）、希望年収600万以上。大阪・高槻在住、福岡出身、結婚・子供あり（8ヶ月）、持ち家。転職動機は残業の多さ、所長への不安、大型物件で一部分しか担当できない閉塞感、精神的に辛く現在休職中。他社エージェント3-4名と話済み。検討ジャンルはデベ・CM・ハウスメーカー。積水シャーメゾンと旭化成集合住宅の名前が出ている。次回月曜午前に求人紹介面談を設定。グループLINE交換済み。",
+    },
+  ];
+
+  for (const sc of sampleConsultants) {
+    const id = nextId();
+    const now = new Date(Date.now() - Math.random() * 5 * 24 * 60 * 60 * 1000).toISOString();
+    const score = scoreFromText(sc.text);
+    score.meeting_id = id;
+
+    meetings.push({
+      id,
+      deal_id: null,
+      candidate_id: null,
+      consultant_name: sc.name,
+      is_leader: false,
+      score_data: score,
+      title: sc.title,
+      transcript_text: sc.text,
+      summary: null,
+      action_items: [],
+      key_points: [],
+      next_steps: null,
+      attendees: [],
+      duration_minutes: null,
+      source: "manual",
+      recorded_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  saveToStorage();
+}

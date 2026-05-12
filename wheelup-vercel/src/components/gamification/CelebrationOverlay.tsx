@@ -34,8 +34,14 @@ export default function CelebrationOverlay() {
         setMessage({ title: `Level ${c.split("_")[2]}`, sub: "レベルアップ！" });
       } else if (c.startsWith("quest_")) {
         setMessage({ title: "クエスト達成", sub: "XP ボーナス獲得！" });
+      } else if (c === "achievement_score_40") {
+        setMessage({ title: "👑 Sランク到達！", sub: "面談スコア40点以上を達成" });
+      } else if (c === "achievement_score_35") {
+        setMessage({ title: "🌟 Aランク到達！", sub: "面談スコア35点以上を達成" });
+      } else if (c === "achievement_beat_leader_1") {
+        setMessage({ title: "💪 リーダー超え！", sub: "1軸でリーダー平均を上回った" });
       } else if (c.startsWith("achievement_")) {
-        setMessage({ title: "バッジ解放", sub: "新しいアチーブメントを獲得！" });
+        setMessage({ title: "🎯 バッジ解放！", sub: "新しいアチーブメントを獲得" });
       }
       setTimeout(() => setMessage(null), 2800);
     }, 500);
