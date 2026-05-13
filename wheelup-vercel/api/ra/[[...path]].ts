@@ -1,15 +1,22 @@
 /**
  * Consolidated RA prospecting API (Hobby plan: 1 function).
  *
- *   POST /api/ra/import     seed CSV/JSON → ra_companies + ra_candidates
- *   POST /api/ra/crawl      ra_companies → fetchPage → Gemini extract → ra_jobs upsert
- *   POST /api/ra/match      open ra_jobs × ra_candidates → Gemini score → ra_matches
- *   POST /api/ra/discover   Gemini suggest new companies → ra_discovery_queue
- *   POST /api/ra/activity   activity log → ra_activities
- *   POST /api/ra/cron       crawl + match in one call (Vercel Cron)
- *   GET  /api/ra/cron       (same — Vercel Cron sends GET)
+ *   POST /api/ra/import             seed CSV/JSON → ra_companies + ra_candidates
+ *   POST /api/ra/crawl              ra_companies → fetchPage → Gemini extract → ra_jobs upsert
+ *   POST /api/ra/match              open ra_jobs × ra_candidates → Gemini score → ra_matches
+ *   POST /api/ra/discover           Gemini suggest new companies → ra_discovery_queue
+ *   POST /api/ra/activity           activity log → ra_activities
+ *   POST /api/ra/find-recruit-url   Gemini guesses recruit-page URL for a company name
+ *   POST /api/ra/approve-discovery  promote a queued discovery row into ra_companies
+ *   POST /api/ra/draft              Gemini drafts an outreach email for a match_id
+ *   POST /api/ra/update-company     PATCH name / contact_paths / notes / recruit_page_url
+ *   POST /api/ra/update-candidate   PATCH candidate profile
+ *   GET  /api/ra/pipedrive-match    cross-match an ra_company against the existing companies table
+ *   POST /api/ra/cron               crawl + match + optional Lark notify (Vercel Cron)
+ *   GET  /api/ra/cron               same — Vercel Cron sends GET
  *
- * All endpoints require `?secret=$CRON_SECRET` OR `Authorization: Bearer $CRON_SECRET`.
+ * Auth: either `?secret=$CRON_SECRET` / `Authorization: Bearer $CRON_SECRET`
+ *       OR a valid Supabase user session token (Authorization: Bearer <jwt>).
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { readFile } from "node:fs/promises";
@@ -22,19 +29,29 @@ import { fetchPage, sha256 } from "../_lib/ra-scrape.js";
 
 type DB = ReturnType<typeof getSupabaseAdmin>;
 
-function authorize(req: VercelRequest): { ok: true } | { ok: false; status: number; body: object } {
-  const expected = process.env.CRON_SECRET;
-  if (!expected) return { ok: false, status: 500, body: { error: "CRON_SECRET not configured" } };
-  const provided =
-    (typeof req.query.secret === "string" && req.query.secret) ||
-    (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "") ||
-    "";
-  if (provided !== expected) return { ok: false, status: 401, body: { error: "unauthorized" } };
-  return { ok: true };
+async function authorize(req: VercelRequest, db: DB): Promise<{ ok: true } | { ok: false; status: number; body: object }> {
+  const secret = process.env.CRON_SECRET;
+  const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const querySecret = typeof req.query.secret === "string" ? req.query.secret : "";
+
+  // 1) Shared-secret path (cron / curl).
+  if (secret && (querySecret === secret || bearer === secret)) return { ok: true };
+
+  // 2) Supabase user session path (browser).
+  if (bearer) {
+    try {
+      const { data, error } = await db.auth.getUser(bearer);
+      if (!error && data?.user) return { ok: true };
+    } catch {
+      // fall through to 401
+    }
+  }
+  return { ok: false, status: 401, body: { error: "unauthorized" } };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const auth = authorize(req);
+  const db = getSupabaseAdmin();
+  const auth = await authorize(req, db);
   if (!auth.ok) return res.status(auth.status).json(auth.body);
 
   const segments: string[] = Array.isArray(req.query.path)
@@ -44,16 +61,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       : [];
   const sub = segments[0] ?? "";
 
-  const db = getSupabaseAdmin();
   try {
     switch (sub) {
-      case "import":   return await importSeed(db, req, res);
-      case "crawl":    return await crawl(db, req, res);
-      case "match":    return await match(db, req, res);
-      case "discover": return await discover(db, req, res);
-      case "activity": return await activity(db, req, res);
-      case "cron":     return await cron(db, req, res);
-      default:         return res.status(404).json({ error: "unknown RA endpoint" });
+      case "import":            return await importSeed(db, req, res);
+      case "crawl":             return await crawl(db, req, res);
+      case "match":             return await match(db, req, res);
+      case "discover":          return await discover(db, req, res);
+      case "activity":          return await activity(db, req, res);
+      case "find-recruit-url":  return await findRecruitUrl(db, req, res);
+      case "approve-discovery": return await approveDiscovery(db, req, res);
+      case "draft":             return await draftEmail(db, req, res);
+      case "update-company":    return await updateCompany(db, req, res);
+      case "update-candidate":  return await updateCandidate(db, req, res);
+      case "pipedrive-match":   return await pipedriveMatch(db, req, res);
+      case "cron":              return await cron(db, req, res);
+      default:                  return res.status(404).json({ error: "unknown RA endpoint" });
     }
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message });
@@ -343,7 +365,189 @@ async function cron(db: DB, req: VercelRequest, res: VercelResponse) {
     kind: "cron", started_at, finished_at: new Date().toISOString(),
     ok, stats: { crawl: c.body, match: m.body }, error: ok ? null : `${c.error ?? ""} | ${m.error ?? ""}`,
   });
+  // Lark / Slack notification — fire-and-forget, never block the cron response.
+  notifyAfterCron(db).catch(() => undefined);
   return res.json({ ok, crawl: c.body, match: m.body });
+}
+
+async function notifyAfterCron(db: DB) {
+  const webhook = process.env.LARK_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL;
+  if (!webhook) return;
+  const { data: rows } = await db.from("ra_ready_to_execute").select("grade,company_name,candidate_name").limit(500);
+  const list = rows ?? [];
+  const dbl = list.filter((r) => r.grade === "◎").length;
+  const cir = list.filter((r) => r.grade === "○").length;
+  const top = list.slice(0, 5).map((r) => `• ${r.grade} ${r.company_name} → ${r.candidate_name}`).join("\n");
+  const text = `🌅 *RA 新規開拓 / 朝の実行待ち*\n◎ ${dbl}件 / ○ ${cir}件\n\n${top}\n\n全件: /ra/ready`;
+  // Lark webhook supports {msg_type:"text", content:{text}}; Slack supports {text}.
+  const body = webhook.includes("larksuite") || webhook.includes("feishu")
+    ? { msg_type: "text", content: { text } }
+    : { text };
+  await fetch(webhook, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => undefined);
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/find-recruit-url  — Gemini guesses the careers-page URL for a name
+// ---------------------------------------------------------------------------
+async function findRecruitUrl(db: DB, req: VercelRequest, res: VercelResponse) {
+  if (!hasGemini) return res.status(412).json({ error: "GEMINI_API_KEY not configured" });
+  const body = (req.body ?? {}) as { company_id?: string; name?: string };
+  let name = body.name;
+  if (!name && body.company_id) {
+    const { data } = await db.from("ra_companies").select("name").eq("id", body.company_id).maybeSingle();
+    name = data?.name as string | undefined;
+  }
+  if (!name) return res.status(400).json({ error: "name or company_id required" });
+
+  const prompt = `日本企業「${name}」の **採用ページ** (新卒/中途どちらでも可) の URL を 1 つだけ推定してください。
+コーポレートサイト内の /recruit/ や /careers/ 等が一般的です。
+**確証が無い場合は null を返す** こと。事実に基づき、推測で URL をでっち上げないこと。
+
+JSON のみ:
+{ "url": "https://...  | null", "corporate_url": "https://... | null", "confidence": 0-1, "note": "..." }`;
+  const parsed = await generateJson<{ url: string | null; corporate_url: string | null; confidence: number; note?: string }>(prompt, { temperature: 0.1 });
+
+  if (body.company_id && parsed.url) {
+    await db.from("ra_companies").update({
+      recruit_page_url: parsed.url,
+      corporate_url: parsed.corporate_url ?? undefined,
+    }).eq("id", body.company_id);
+  }
+  return res.json({ ok: true, ...parsed });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/approve-discovery  — promote queue row → ra_companies
+// ---------------------------------------------------------------------------
+async function approveDiscovery(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as { id?: string; reject?: boolean; priority?: string };
+  if (!body.id) return res.status(400).json({ error: "id required" });
+
+  const { data: row, error } = await db.from("ra_discovery_queue").select("*").eq("id", body.id).maybeSingle();
+  if (error || !row) return res.status(404).json({ error: "discovery row not found" });
+
+  if (body.reject) {
+    await db.from("ra_discovery_queue").update({ status: "rejected", reviewed_at: new Date().toISOString() }).eq("id", body.id);
+    return res.json({ ok: true, status: "rejected" });
+  }
+
+  const { data: ins, error: e2 } = await db.from("ra_companies").insert({
+    name: row.name,
+    category: row.category,
+    priority: body.priority ?? "B",
+    recruit_page_url: null,
+    corporate_url: row.hint_url,
+    source: "discovery",
+    notes: row.reason,
+  }).select("id").single();
+  if (e2) return res.status(500).json({ error: e2.message });
+
+  await db.from("ra_discovery_queue").update({
+    status: "promoted",
+    reviewed_at: new Date().toISOString(),
+    promoted_company_id: ins.id,
+  }).eq("id", body.id);
+
+  return res.json({ ok: true, status: "promoted", company_id: ins.id });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/draft  — Gemini writes an outreach email for a match
+// ---------------------------------------------------------------------------
+async function draftEmail(db: DB, req: VercelRequest, res: VercelResponse) {
+  if (!hasGemini) return res.status(412).json({ error: "GEMINI_API_KEY not configured" });
+  const body = (req.body ?? {}) as { match_id?: string };
+  if (!body.match_id) return res.status(400).json({ error: "match_id required" });
+
+  const { data: row } = await db.from("ra_ready_to_execute").select("*").eq("match_id", body.match_id).maybeSingle();
+  if (!row) return res.status(404).json({ error: "match not found in ready_to_execute" });
+  const { data: candidate } = await db.from("ra_candidates").select("*").eq("id", row.candidate_id).maybeSingle();
+
+  const prompt = `あなたは日本のRA(リクルーティング・アドバイザー)です。下記の求人に対し、候補者を打診する**初回メールの下書き** (件名 + 本文) を 200〜350 字程度で書いてください。
+過度な煽りは避け、求人の魅力ポイントと候補者の合致点を 2〜3 行で明示。
+署名は "—— Wheels Up RA" 固定。
+
+# 企業 / 求人
+企業: ${row.company_name}
+求人: ${row.job_title}
+理由: ${(row.reasons ?? []).join(" / ")}
+懸念: ${(row.concerns ?? []).join(" / ")}
+
+# 候補者
+名前: ${candidate?.name}
+ヘッドライン: ${candidate?.headline ?? ""}
+specialties: ${(candidate?.profile?.specialties ?? []).join(", ")}
+in_progress: ${(candidate?.profile?.in_progress ?? []).join(", ")}
+
+JSON のみ:
+{ "subject": "...", "body": "..." }`;
+
+  const parsed = await generateJson<{ subject: string; body: string }>(prompt, { temperature: 0.4 });
+  return res.json({ ok: true, ...parsed });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/update-company  — PATCH metadata
+// ---------------------------------------------------------------------------
+async function updateCompany(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    id?: string;
+    name?: string;
+    category?: string | null;
+    priority?: string;
+    recruit_page_url?: string | null;
+    corporate_url?: string | null;
+    contact_paths?: unknown;
+    notes?: string | null;
+  };
+  if (!body.id) return res.status(400).json({ error: "id required" });
+
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  for (const k of ["name", "category", "priority", "recruit_page_url", "corporate_url", "contact_paths", "notes"] as const) {
+    if (body[k] !== undefined) patch[k] = body[k];
+  }
+  const { data, error } = await db.from("ra_companies").update(patch).eq("id", body.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, company: data });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/update-candidate  — PATCH profile / headline / is_active
+// ---------------------------------------------------------------------------
+async function updateCandidate(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    id?: string;
+    headline?: string | null;
+    profile?: Record<string, unknown>;
+    is_active?: boolean;
+  };
+  if (!body.id) return res.status(400).json({ error: "id required" });
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (body.headline !== undefined) patch.headline = body.headline;
+  if (body.profile  !== undefined) patch.profile = body.profile;
+  if (body.is_active !== undefined) patch.is_active = body.is_active;
+  const { data, error } = await db.from("ra_candidates").update(patch).eq("id", body.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, candidate: data });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/pipedrive-match  — cross-match ra_companies.name against companies
+// ---------------------------------------------------------------------------
+async function pipedriveMatch(db: DB, req: VercelRequest, res: VercelResponse) {
+  const id = typeof req.query.company_id === "string" ? req.query.company_id : null;
+  if (!id) return res.status(400).json({ error: "company_id required" });
+  const { data: ra } = await db.from("ra_companies").select("name").eq("id", id).maybeSingle();
+  if (!ra) return res.status(404).json({ error: "ra_company not found" });
+
+  // Loose match — ILIKE %name% both ways. The existing companies table is small
+  // enough (a few hundred rows) that filtering in-memory is cheap.
+  const { data: existing } = await db.from("companies").select("id,name,pipedrive_org_id,won_deals_count,open_deals_count,people_count").ilike("name", `%${ra.name}%`).limit(10);
+  return res.json({ ok: true, ra_name: ra.name, matches: existing ?? [] });
 }
 
 async function tryRun(fn: () => Promise<unknown>) {
