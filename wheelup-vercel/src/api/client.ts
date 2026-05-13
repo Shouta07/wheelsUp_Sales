@@ -941,6 +941,10 @@ export async function addLeaderFeedback(
   });
 }
 
+export async function seedMeetingData(): Promise<{ message: string; skipped?: boolean }> {
+  return request("/seed", { method: "POST" });
+}
+
 /* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
 
 export interface LearningResource {

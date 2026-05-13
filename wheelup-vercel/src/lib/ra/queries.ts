@@ -245,6 +245,27 @@ export const api = {
   addCandidate: (input: { code: string; name: string; headline?: string; profile?: Record<string, unknown>; is_active?: boolean }) =>
     call<{ ok: true; candidate: Candidate }>("add-candidate", { body: input }),
 
+  addJob: (input: {
+    company_id: string;
+    title: string;
+    description?: string | null;
+    requirements?: string | null;
+    employment_type?: string | null;
+    location?: string | null;
+    salary_range?: string | null;
+    url?: string | null;
+    run_match?: boolean;
+  }) => call<{ ok: true; job: Job; match: unknown }>("add-job", { body: input }),
+
+  updateJob: (patch: { id: string } & Partial<{
+    title: string; description: string | null; requirements: string | null;
+    employment_type: string | null; location: string | null; salary_range: string | null;
+    url: string | null; is_open: boolean;
+  }>) => call<{ ok: true; job: Job }>("update-job", { body: patch }),
+
+  closeJob: (id: string) =>
+    call<{ ok: true; job: Job }>("close-job", { body: { id } }),
+
   pipedriveMatch: (company_id: string) =>
     call<{
       ok: true; ra_name: string;

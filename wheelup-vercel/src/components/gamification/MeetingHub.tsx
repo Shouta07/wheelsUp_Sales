@@ -8,6 +8,7 @@ import {
   transcribeAudio,
   summarizeMeeting,
   addLeaderFeedback,
+  seedMeetingData,
   type MeetingTranscript,
   type MeetingScore,
   type KeyMoment,
@@ -22,6 +23,8 @@ export default function MeetingHub() {
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [seedMsg, setSeedMsg] = useState<string | null>(null);
 
   const isLeaderUser = currentUser === "小林";
 
@@ -119,6 +122,22 @@ export default function MeetingHub() {
     qc.invalidateQueries({ queryKey: ["meetings"] });
   };
 
+  const handleSeed = async () => {
+    if (!confirm("小林リーダー面談16件 + メンバー面談15件をSupabaseに投入します。既に投入済みの場合はスキップされます。よろしいですか？")) return;
+    setSeeding(true); setSeedMsg(null);
+    try {
+      const r = await seedMeetingData();
+      setSeedMsg(r.message);
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+    } catch (err) {
+      setSeedMsg(`失敗: ${(err as Error).message}`);
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const needsSeed = (leaderMeetings?.total ?? 0) === 0;
+
   // Calculate leader average scores
   const leaderScores = (leaderMeetings?.transcripts || [])
     .filter((m: MeetingTranscript) => m.score_data?.scores)
@@ -142,13 +161,30 @@ export default function MeetingHub() {
           </div>
           <span className="text-base font-extrabold text-[#4b4b4b]">面談ライブラリ</span>
         </div>
-        <button
-          onClick={() => setShowUpload(!showUpload)}
-          className="btn-duo btn-duo-green !px-3 !py-1.5 !text-[10px]"
-        >
-          + 面談を追加
-        </button>
+        <div className="flex items-center gap-1.5">
+          {needsSeed && (
+            <button
+              onClick={handleSeed}
+              disabled={seeding}
+              title="小林リーダー面談16件 + メンバー面談15件を投入"
+              className="px-2.5 py-1 rounded-xl text-[10px] font-black bg-[#CE82FF] text-white hover:bg-purple-500 disabled:opacity-50"
+            >
+              {seeding ? "投入中…" : "📥 初期データ投入"}
+            </button>
+          )}
+          <button
+            onClick={() => setShowUpload(!showUpload)}
+            className="btn-duo btn-duo-green !px-3 !py-1.5 !text-[10px]"
+          >
+            + 面談を追加
+          </button>
+        </div>
       </div>
+      {seedMsg && (
+        <div className="mb-3 rounded-xl bg-purple-50 border border-purple-200 text-[10px] font-bold text-purple-800 px-3 py-1.5">
+          {seedMsg}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4">
