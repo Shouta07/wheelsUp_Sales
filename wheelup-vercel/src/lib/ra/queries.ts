@@ -125,17 +125,78 @@ export async function listCandidates(): Promise<Candidate[]> {
 }
 
 // ---------- Mutation ----------
+//
+// Every browser → /api/ra/* call attaches the Supabase session JWT in the
+// Authorization header. The server-side handler accepts EITHER that JWT OR
+// `?secret=$CRON_SECRET` (for cron / curl), so secrets stay on the server.
 
-export async function postActivity(secret: string, payload: {
-  company_id?: string | null; job_id?: string | null; candidate_id?: string | null;
-  kind: string; channel?: string; body?: string;
-}) {
-  const res = await fetch(`/api/ra/activity?secret=${encodeURIComponent(secret)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+async function authHeader(): Promise<Record<string, string>> {
+  if (!isLive) return {};
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function call<T>(path: string, init: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
+  const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+  const res = await fetch(`/api/ra/${path}`, {
+    method: init.method ?? "POST",
+    headers,
+    body: init.body == null ? undefined : JSON.stringify(init.body),
   });
-  const json = await res.json().catch(() => ({}));
+  const json = (await res.json().catch(() => ({}))) as { error?: string } & T;
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return json;
+}
+
+export const api = {
+  // Mutations
+  activity: (payload: {
+    company_id?: string | null; job_id?: string | null; candidate_id?: string | null;
+    kind: string; channel?: string; body?: string;
+  }) => call<{ ok: true }>("activity", { body: payload }),
+
+  addCompanies: (rows: Array<Record<string, unknown>>) =>
+    call<{ ok: true; added: number; names: string[] }>("add-companies", { body: { rows } }),
+
+  findContactInfo: (input: { company_id?: string; name?: string }) =>
+    call<{
+      ok: true;
+      corporate_url: string | null;
+      recruit_page_url: string | null;
+      contact_form_url: string | null;
+      contact_email: string | null;
+      linkedin_url: string | null;
+      confidence: number;
+      note?: string;
+    }>("find-contact-info", { body: input }),
+
+  approveDiscovery: (id: string, opts: { reject?: boolean; priority?: string } = {}) =>
+    call<{ ok: true; status: string; company_id?: string }>("approve-discovery", { body: { id, ...opts } }),
+
+  draftEmail: (match_id: string) =>
+    call<{ ok: true; subject: string; body: string }>("draft", { body: { match_id } }),
+
+  updateCompany: (patch: { id: string } & Record<string, unknown>) =>
+    call<{ ok: true; company: Company }>("update-company", { body: patch }),
+
+  updateCandidate: (patch: { id: string } & Record<string, unknown>) =>
+    call<{ ok: true; candidate: Candidate }>("update-candidate", { body: patch }),
+
+  pipedriveMatch: (company_id: string) =>
+    call<{
+      ok: true; ra_name: string;
+      matches: Array<{ id: string; name: string; pipedrive_org_id?: number; won_deals_count?: number; open_deals_count?: number; people_count?: number }>;
+    }>(`pipedrive-match?company_id=${encodeURIComponent(company_id)}`, { method: "GET" }),
+
+  // Triggers
+  run: (kind: "crawl" | "match" | "discover" | "import", params: Record<string, string | number> = {}) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return call<Record<string, unknown>>(`${kind}${qs ? `?${qs}` : ""}`);
+  },
+};
+
+// Backwards-compat for existing call sites (ProspectingReady etc.).
+export async function postActivity(_secret: string, payload: Parameters<typeof api.activity>[0]) {
+  return api.activity(payload);
 }

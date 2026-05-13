@@ -69,6 +69,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case "discover":          return await discover(db, req, res);
       case "activity":          return await activity(db, req, res);
       case "find-recruit-url":  return await findRecruitUrl(db, req, res);
+      case "find-contact-info": return await findContactInfo(db, req, res);
+      case "add-companies":     return await addCompanies(db, req, res);
       case "approve-discovery": return await approveDiscovery(db, req, res);
       case "draft":             return await draftEmail(db, req, res);
       case "update-company":    return await updateCompany(db, req, res);
@@ -418,6 +420,103 @@ JSON のみ:
     }).eq("id", body.company_id);
   }
   return res.json({ ok: true, ...parsed });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/find-contact-info — corporate + recruit + contact form + email + linkedin
+// ---------------------------------------------------------------------------
+async function findContactInfo(db: DB, req: VercelRequest, res: VercelResponse) {
+  if (!hasGemini) return res.status(412).json({ error: "GEMINI_API_KEY not configured" });
+  const body = (req.body ?? {}) as { company_id?: string; name?: string };
+  let name = body.name;
+  if (!name && body.company_id) {
+    const { data } = await db.from("ra_companies").select("name").eq("id", body.company_id).maybeSingle();
+    name = data?.name as string | undefined;
+  }
+  if (!name) return res.status(400).json({ error: "name or company_id required" });
+
+  const prompt = `日本企業「${name}」について、以下 5 種類の URL / 情報を可能な限り推定。
+**確証が無いものは null** にする。推測で URL をでっち上げないこと。
+
+JSON のみ:
+{
+  "corporate_url":    "https://...  | null",
+  "recruit_page_url": "https://...  | null",
+  "contact_form_url": "https://...  | null",
+  "contact_email":    "info@... | null",
+  "linkedin_url":     "https://www.linkedin.com/company/... | null",
+  "confidence": 0-1,
+  "note": "判断根拠を 1 文で"
+}`;
+  const parsed = await generateJson<{
+    corporate_url: string | null;
+    recruit_page_url: string | null;
+    contact_form_url: string | null;
+    contact_email: string | null;
+    linkedin_url: string | null;
+    confidence: number;
+    note?: string;
+  }>(prompt, { temperature: 0.1 });
+
+  if (body.company_id) {
+    // Merge into contact_paths jsonb and set top-level URLs.
+    const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", body.company_id).maybeSingle();
+    const existing = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
+    const next = [...existing];
+    const upsertPath = (kind: string, url: string | null) => {
+      if (!url) return;
+      if (next.find((p: { kind?: string; url?: string }) => p.kind === kind && p.url === url)) return;
+      next.push({ kind, url });
+    };
+    upsertPath("form",     parsed.contact_form_url);
+    upsertPath("email",    parsed.contact_email);
+    upsertPath("linkedin", parsed.linkedin_url);
+
+    const patch: Record<string, unknown> = { contact_paths: next, updated_at: new Date().toISOString() };
+    if (parsed.recruit_page_url) patch.recruit_page_url = parsed.recruit_page_url;
+    if (parsed.corporate_url)    patch.corporate_url    = parsed.corporate_url;
+    await db.from("ra_companies").update(patch).eq("id", body.company_id);
+  }
+  return res.json({ ok: true, ...parsed });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/add-companies — bulk add via inline JSON (CSV-paste-friendly)
+// ---------------------------------------------------------------------------
+async function addCompanies(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    rows?: Array<{
+      name: string;
+      category?: string | null;
+      priority?: string;
+      recruit_page_url?: string | null;
+      corporate_url?: string | null;
+      location?: string | null;
+      employee_size?: string | null;
+      notes?: string | null;
+    }>;
+  };
+  const rows = Array.isArray(body.rows) ? body.rows.filter((r) => r?.name) : [];
+  if (rows.length === 0) return res.status(400).json({ error: "rows required (must include name)" });
+
+  const payload = rows.map((r) => ({
+    name: r.name.trim(),
+    category: r.category ?? null,
+    priority: (r.priority ?? "B").toUpperCase(),
+    recruit_page_url: r.recruit_page_url ?? null,
+    corporate_url: r.corporate_url ?? null,
+    location: r.location ?? null,
+    employee_size: r.employee_size ?? null,
+    notes: r.notes ?? null,
+    source: "manual",
+  }));
+
+  const { data, error } = await db
+    .from("ra_companies")
+    .upsert(payload, { onConflict: "name", ignoreDuplicates: false })
+    .select("id,name");
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, added: data?.length ?? 0, names: (data ?? []).map((d) => d.name) });
 }
 
 // ---------------------------------------------------------------------------

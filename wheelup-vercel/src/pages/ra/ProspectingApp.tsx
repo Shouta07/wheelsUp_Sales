@@ -4,6 +4,8 @@ import ProspectingReady from "./ProspectingReady";
 import ProspectingCompanies from "./ProspectingCompanies";
 import ProspectingCompanyDetail from "./ProspectingCompanyDetail";
 import ProspectingDiscovery from "./ProspectingDiscovery";
+import ProspectingCandidates from "./ProspectingCandidates";
+import RunToolbar from "./RunToolbar";
 import { isLive } from "../../lib/ra/queries";
 
 type View =
@@ -11,18 +13,22 @@ type View =
   | { name: "ready" }
   | { name: "companies" }
   | { name: "company"; id: string }
+  | { name: "candidates" }
   | { name: "discovery" };
 
 const TABS: { key: View["name"]; label: string }[] = [
-  { key: "home",      label: "ダッシュボード" },
-  { key: "ready",     label: "実行待ち" },
-  { key: "companies", label: "企業一覧" },
-  { key: "discovery", label: "新規発掘" },
+  { key: "home",       label: "ダッシュボード" },
+  { key: "ready",      label: "実行待ち" },
+  { key: "companies",  label: "企業一覧" },
+  { key: "candidates", label: "候補者" },
+  { key: "discovery",  label: "新規発掘" },
 ];
 
 export default function ProspectingApp() {
   const [view, setView] = useState<View>({ name: "home" });
+  const [reloadKey, setReloadKey] = useState(0);
   const openCompany = (id: string) => setView({ name: "company", id });
+  const reload = () => setReloadKey((k) => k + 1);
 
   return (
     <div className="min-h-screen bg-[#f7f7f7]">
@@ -43,7 +49,7 @@ export default function ProspectingApp() {
           </span>
         </header>
 
-        <nav className="mb-5 flex flex-wrap gap-1.5">
+        <nav className="mb-3 flex flex-wrap gap-1.5">
           {TABS.map((t) => {
             const active = view.name === t.key || (t.key === "companies" && view.name === "company");
             return (
@@ -62,13 +68,18 @@ export default function ProspectingApp() {
           })}
         </nav>
 
-        {view.name === "home"      && <ProspectingHome onOpenCompany={openCompany} />}
-        {view.name === "ready"     && <ProspectingReady onOpenCompany={openCompany} />}
-        {view.name === "companies" && <ProspectingCompanies onOpenCompany={openCompany} />}
-        {view.name === "company"   && (
-          <ProspectingCompanyDetail id={view.id} onBack={() => setView({ name: "companies" })} />
-        )}
-        {view.name === "discovery" && <ProspectingDiscovery />}
+        <RunToolbar onDone={reload} />
+
+        <div key={reloadKey}>
+          {view.name === "home"       && <ProspectingHome onOpenCompany={openCompany} />}
+          {view.name === "ready"      && <ProspectingReady onOpenCompany={openCompany} />}
+          {view.name === "companies"  && <ProspectingCompanies onOpenCompany={openCompany} />}
+          {view.name === "company"    && (
+            <ProspectingCompanyDetail id={view.id} onBack={() => setView({ name: "companies" })} />
+          )}
+          {view.name === "candidates" && <ProspectingCandidates />}
+          {view.name === "discovery"  && <ProspectingDiscovery />}
+        </div>
       </div>
     </div>
   );
