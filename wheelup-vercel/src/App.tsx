@@ -6,6 +6,15 @@ import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
 import StreakFlame from "./components/gamification/StreakFlame";
 import UserSelectPage from "./pages/UserSelectPage";
 import Home from "./pages/Home";
+import ProspectingApp from "./pages/ra/ProspectingApp";
+
+type Mode = "meeting" | "ra";
+const MODE_KEY = "wheelsup_active_mode";
+function loadMode(): Mode {
+  if (typeof window === "undefined") return "meeting";
+  const v = window.localStorage.getItem(MODE_KEY);
+  return v === "ra" ? "ra" : "meeting";
+}
 
 function LoginPage() {
   const [email, setEmail] = useState("");
@@ -79,7 +88,14 @@ function LoginPage() {
   );
 }
 
-function NavBar({ currentUser, onSwitchUser }: { currentUser: string; onSwitchUser: () => void }) {
+function NavBar({
+  currentUser, onSwitchUser, mode, onChangeMode,
+}: {
+  currentUser: string;
+  onSwitchUser: () => void;
+  mode: Mode;
+  onChangeMode: (m: Mode) => void;
+}) {
   return (
     <header className="bg-white border-b-2 border-[#e5e5e5] sticky top-0 z-50">
       <div className="mx-auto max-w-5xl flex items-center justify-between h-12 px-4">
@@ -88,11 +104,30 @@ function NavBar({ currentUser, onSwitchUser }: { currentUser: string; onSwitchUs
             <span className="text-white text-[10px] font-black">W</span>
           </div>
           <span className="text-sm font-black text-[#4b4b4b]">wheelsUp</span>
-          <span className="text-[10px] font-bold text-[#afafaf] hidden sm:inline">面談フィードバック</span>
+
+          {/* Mode switcher: 面談フィードバック / RA 開拓 */}
+          <div className="ml-2 flex rounded-xl border border-[#e5e5e5] overflow-hidden text-[10px] font-black">
+            <button
+              onClick={() => onChangeMode("meeting")}
+              className={`px-2 py-1 transition-colors ${
+                mode === "meeting" ? "bg-duo-green text-white" : "text-[#4b4b4b] hover:bg-gray-50"
+              }`}
+            >
+              面談FB
+            </button>
+            <button
+              onClick={() => onChangeMode("ra")}
+              className={`px-2 py-1 transition-colors ${
+                mode === "ra" ? "bg-duo-blue text-white" : "text-[#4b4b4b] hover:bg-gray-50"
+              }`}
+            >
+              RA開拓
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <StreakFlame />
+          {mode === "meeting" && <StreakFlame />}
           <button
             onClick={onSwitchUser}
             className="flex items-center gap-1.5 px-2 py-1 rounded-xl hover:bg-gray-50 transition-colors"
@@ -113,6 +148,12 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeUser, setActiveUser] = useState<string | null>(getSavedUser);
+  const [mode, setMode] = useState<Mode>(loadMode);
+
+  const changeMode = (m: Mode) => {
+    setMode(m);
+    if (typeof window !== "undefined") window.localStorage.setItem(MODE_KEY, m);
+  };
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -167,8 +208,10 @@ export default function App() {
             clearSavedUser();
             setActiveUser(null);
           }}
+          mode={mode}
+          onChangeMode={changeMode}
         />
-        <Home />
+        {mode === "meeting" ? <Home /> : <ProspectingApp />}
       </div>
     </GamificationProvider>
   );
