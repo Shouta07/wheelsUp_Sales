@@ -945,6 +945,27 @@ export async function seedMeetingData(): Promise<{ message: string; skipped?: bo
   return request("/seed", { method: "POST" });
 }
 
+export interface SetupStatus {
+  ready: boolean;
+  env: Record<string, boolean>;
+  tables: Record<string, { ok: boolean; count: number | null; error: string | null }> | null;
+  seed: {
+    meetings_total: number;
+    leader_meetings: number;
+    ra_companies: number;
+    ra_candidates: number;
+    industry_categories: number;
+    qualifications: number;
+  } | null;
+  schemaMissing?: string[];
+  seedMissing?: string[];
+  message: string;
+}
+
+export async function fetchSetupStatus(): Promise<SetupStatus> {
+  return request<SetupStatus>("/setup-status");
+}
+
 /* ---------- Sales Enablement: Scoring / Playbook / Coaching ---------- */
 
 export interface LearningResource {

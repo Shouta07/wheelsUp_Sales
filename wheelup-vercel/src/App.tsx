@@ -7,6 +7,7 @@ import StreakFlame from "./components/gamification/StreakFlame";
 import UserSelectPage from "./pages/UserSelectPage";
 import Home from "./pages/Home";
 import ProspectingApp from "./pages/ra/ProspectingApp";
+import SetupStatusBar from "./components/SetupStatusBar";
 
 type Mode = "meeting" | "ra";
 const MODE_KEY = "wheelsup_active_mode";
@@ -213,6 +214,7 @@ export default function App() {
           mode={mode}
           onChangeMode={changeMode}
         />
+        <SetupStatusBar />
         {mode === "meeting" ? <Home /> : <ProspectingApp />}
       </div>
     </GamificationProvider>
