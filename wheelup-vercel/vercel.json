@@ -7,6 +7,7 @@
     { "source": "/api/pipedrive/:path*", "destination": "/api/pipedrive" },
     { "source": "/api/lark/:path*", "destination": "/api/lark" },
     { "source": "/api/meetings/:path*", "destination": "/api/meetings" },
+    { "source": "/api/ra/:path*", "destination": "/api/ra" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "headers": [
@@ -16,5 +17,8 @@
         { "key": "Cache-Control", "value": "no-store" }
       ]
     }
+  ],
+  "crons": [
+    { "path": "/api/ra/cron?secret=__REPLACE_WITH_CRON_SECRET__", "schedule": "0 22 * * *" }
   ]
 }
