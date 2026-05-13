@@ -1,23 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
-import { listCompanyOverview } from "../../lib/ra/queries";
-import type { CompanyOverview, Priority } from "../../lib/ra/types";
+import { api, listCompaniesEnriched } from "../../lib/ra/queries";
+import type { ContactPath, CompanyOverview, Priority } from "../../lib/ra/types";
+import Modal from "./Modal";
+import { parseCsv } from "../../lib/ra/csv";
 
 export default function ProspectingCompanies({
   onOpenCompany,
 }: {
   onOpenCompany: (id: string) => void;
 }) {
-  const [all, setAll] = useState<CompanyOverview[]>([]);
+  type Row = CompanyOverview & { contact_paths: ContactPath[] };
+  const [all, setAll] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [priority, setPriority] = useState<"" | Priority>("");
   const [category, setCategory] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
-    listCompanyOverview().then((d) => { if (alive) setAll(d); }).finally(() => alive && setLoading(false));
+    setLoading(true);
+    listCompaniesEnriched().then((d) => { if (alive) setAll(d); }).finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
 
   const categories = useMemo(
     () => Array.from(new Set(all.map((c) => c.category).filter(Boolean))) as string[],
@@ -68,8 +74,23 @@ export default function ProspectingCompanies({
             {categories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </label>
-        <div className="ml-auto text-[10px] font-bold text-[#afafaf]">{filtered.length} / {all.length} 件</div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-[10px] font-bold text-[#afafaf]">{filtered.length} / {all.length} 件</span>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="px-2.5 py-1 rounded-xl text-[10px] font-black bg-[#58CC02] text-white hover:bg-[#46a302]"
+          >
+            ＋ 追加
+          </button>
+        </div>
       </div>
+
+      {showAdd && (
+        <AddCompanyModal
+          onClose={() => setShowAdd(false)}
+          onAdded={() => { setShowAdd(false); setReloadKey((k) => k + 1); }}
+        />
+      )}
 
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
         <table className="w-full text-xs">
@@ -81,32 +102,182 @@ export default function ProspectingCompanies({
               <th className="px-3 py-2 text-right">公開求人</th>
               <th className="px-3 py-2 text-right">◎○</th>
               <th className="px-3 py-2">採用ページ</th>
+              <th className="px-3 py-2">問い合わせ</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((c) => (
-              <tr key={c.id} className="border-t border-gray-100">
-                <td className="px-3 py-2 font-bold">{c.priority}</td>
-                <td className="px-3 py-2 text-gray-500">{c.category ?? "-"}</td>
-                <td className="px-3 py-2">
-                  <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
-                    {c.name}
-                  </button>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">{c.open_jobs}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{c.strong_matches}</td>
-                <td className="max-w-xs px-3 py-2 truncate text-[10px] text-gray-500">
-                  {c.recruit_page_url ? (
-                    <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="hover:underline">
-                      {c.recruit_page_url}
-                    </a>
-                  ) : "-"}
-                </td>
-              </tr>
-            ))}
+            {filtered.map((c) => {
+              const form = c.contact_paths.find((p) => p.kind === "form");
+              const email = c.contact_paths.find((p) => p.kind === "email");
+              const linkedin = c.contact_paths.find((p) => p.kind === "linkedin");
+              return (
+                <tr key={c.id} className="border-t border-gray-100">
+                  <td className="px-3 py-2 font-bold">{c.priority}</td>
+                  <td className="px-3 py-2 text-gray-500">{c.category ?? "-"}</td>
+                  <td className="px-3 py-2">
+                    <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
+                      {c.name}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">{c.open_jobs}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{c.strong_matches}</td>
+                  <td className="max-w-[160px] truncate px-3 py-2 text-[10px] text-gray-500">
+                    {c.recruit_page_url ? (
+                      <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="hover:underline">
+                        {c.recruit_page_url}
+                      </a>
+                    ) : <span className="text-gray-300">未取得</span>}
+                  </td>
+                  <td className="px-3 py-2 text-[10px]">
+                    <div className="flex gap-1 flex-wrap">
+                      {form && (
+                        <a href={form.url} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-[#1CB0F6] text-white font-bold hover:bg-[#1899D6]">
+                          📝 form
+                        </a>
+                      )}
+                      {email && (
+                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-[#58CC02] text-white font-bold hover:bg-[#46a302]">
+                          ✉️ email
+                        </a>
+                      )}
+                      {linkedin && (
+                        <a href={linkedin.url} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-gray-700 text-white font-bold hover:bg-gray-800">
+                          in
+                        </a>
+                      )}
+                      {!form && !email && !linkedin && (
+                        <button onClick={() => onOpenCompany(c.id)} className="text-gray-400 hover:underline">
+                          (未登録 — 補完)
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// + 追加 モーダル — 単体追加 + CSV ペースト
+// ---------------------------------------------------------------------------
+
+function AddCompanyModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [mode, setMode] = useState<"single" | "csv">("single");
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // single
+  const [name, setName] = useState("");
+  const [cat, setCat] = useState("");
+  const [pri, setPri] = useState<Priority>("B");
+  const [url, setUrl] = useState("");
+
+  // csv
+  const [csvText, setCsvText] = useState(
+    "name,category,priority,recruit_page_url\n例: 〇〇ファシリティ,FM,B,https://example.co.jp/recruit/",
+  );
+
+  async function submit() {
+    setPending(true); setErr(null); setResult(null);
+    try {
+      const rows: Array<Record<string, unknown>> = mode === "single"
+        ? [{ name: name.trim(), category: cat || null, priority: pri, recruit_page_url: url || null }]
+        : parseCsv(csvText).map((r) => ({
+            name: r.name,
+            category: r.category || null,
+            priority: (r.priority || "B").toUpperCase(),
+            recruit_page_url: r.recruit_page_url || null,
+            corporate_url: r.corporate_url || null,
+            location: r.location || null,
+            employee_size: r.employee_size || null,
+            notes: r.notes || null,
+          })).filter((r) => r.name);
+      if (rows.length === 0) { setErr("入力が空です"); return; }
+      const r = await api.addCompanies(rows);
+      setResult(`${r.added} 件追加: ${r.names.slice(0, 5).join(", ")}${r.names.length > 5 ? ", …" : ""}`);
+      setTimeout(onAdded, 800);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Modal title="企業を追加" onClose={onClose} wide={mode === "csv"}>
+      <div className="mb-3 flex gap-1">
+        {(["single", "csv"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-2 py-1 rounded-lg text-[10px] font-black ${
+              mode === m ? "bg-[#1CB0F6] text-white" : "bg-gray-100 text-[#4b4b4b]"
+            }`}
+          >
+            {m === "single" ? "1 社追加" : "CSV ペースト"}
+          </button>
+        ))}
+      </div>
+
+      {mode === "single" ? (
+        <div className="space-y-2 text-xs">
+          <Labeled label="企業名 (必須)"><input value={name} onChange={(e) => setName(e.target.value)} className="rounded border border-gray-200 px-2 py-1 w-full" /></Labeled>
+          <Labeled label="カテゴリ">
+            <select value={cat} onChange={(e) => setCat(e.target.value)} className="rounded border border-gray-200 px-2 py-1 w-full">
+              <option value="">未設定</option>
+              {["建築設備", "FM", "PM", "施設管理", "ゼネコン", "サブコン", "その他"].map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="優先度">
+            <select value={pri} onChange={(e) => setPri(e.target.value as Priority)} className="rounded border border-gray-200 px-2 py-1 w-full">
+              {(["S", "A", "B", "C"] as Priority[]).map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="採用ページ URL (任意 — 後で自動補完可)">
+            <input value={url} onChange={(e) => setUrl(e.target.value)} className="rounded border border-gray-200 px-2 py-1 w-full" placeholder="https://..." />
+          </Labeled>
+        </div>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <p className="text-[10px] text-[#afafaf]">
+            ヘッダ行: name, category, priority, recruit_page_url, corporate_url, location, employee_size, notes
+            (name 列だけ必須)
+          </p>
+          <textarea
+            value={csvText}
+            onChange={(e) => setCsvText(e.target.value)}
+            className="rounded border border-gray-200 px-2 py-2 w-full h-48 font-mono text-[11px]"
+          />
+        </div>
+      )}
+
+      {err && <div className="mt-2 text-[10px] text-red-600">{err}</div>}
+      {result && <div className="mt-2 text-[10px] text-green-700">{result}</div>}
+
+      <div className="mt-3 flex justify-end gap-2">
+        <button onClick={onClose} className="px-3 py-1 rounded-lg text-[10px] font-bold border border-gray-200">キャンセル</button>
+        <button onClick={submit} disabled={pending} className="px-3 py-1 rounded-lg text-[10px] font-black bg-[#58CC02] text-white disabled:opacity-50">
+          {pending ? "追加中…" : "追加する"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="text-[10px] font-bold text-[#afafaf] uppercase mb-0.5">{label}</div>
+      {children}
+    </label>
   );
 }

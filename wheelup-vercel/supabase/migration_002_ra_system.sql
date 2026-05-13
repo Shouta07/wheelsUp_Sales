@@ -174,3 +174,40 @@ order by
   case m.grade when '◎' then 0 else 1 end,
   m.score desc,
   case co.priority when 'S' then 0 when 'A' then 1 when 'B' then 2 else 3 end;
+
+-- =============================================================================
+-- RLS — existing schema uses "for all using (auth.role() = 'authenticated')".
+-- Match that pattern so the browser (anon key + magic-link session) can read
+-- ra_* once the user is signed in. The service_role used by /api/ra/* bypasses
+-- RLS automatically.
+-- =============================================================================
+
+alter table ra_companies        enable row level security;
+alter table ra_jobs             enable row level security;
+alter table ra_candidates       enable row level security;
+alter table ra_matches          enable row level security;
+alter table ra_activities       enable row level security;
+alter table ra_discovery_queue  enable row level security;
+alter table ra_crawl_runs       enable row level security;
+alter table ra_app_state        enable row level security;
+
+create policy "Authenticated users full access" on ra_companies
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_jobs
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_candidates
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_matches
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_activities
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_discovery_queue
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_crawl_runs
+  for all using (auth.role() = 'authenticated');
+create policy "Authenticated users full access" on ra_app_state
+  for all using (auth.role() = 'authenticated');
+
+-- Views run with caller privileges so the policies above apply through them.
+alter view ra_company_overview set (security_invoker = true);
+alter view ra_ready_to_execute set (security_invoker = true);
