@@ -11,6 +11,14 @@ __pycache__/
 node_modules/
 dist/
 
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Local env
+.env*.local
+
 # IDE
 .vscode/
 .idea/

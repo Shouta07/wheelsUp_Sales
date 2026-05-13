@@ -7,8 +7,10 @@ import {
   createMeeting,
   transcribeAudio,
   summarizeMeeting,
+  addLeaderFeedback,
   type MeetingTranscript,
   type MeetingScore,
+  type KeyMoment,
 } from "../../api/client";
 
 export default function MeetingHub() {
@@ -234,6 +236,8 @@ export default function MeetingHub() {
             meeting={m}
             leaderAvg={leaderAvg}
             onSummarize={handleSummarize}
+            isLeaderUser={isLeaderUser}
+            onFeedbackSaved={() => qc.invalidateQueries({ queryKey: ["meetings"] })}
           />
         ))}
       </div>
@@ -245,13 +249,30 @@ function MeetingEntry({
   meeting: m,
   leaderAvg,
   onSummarize,
+  isLeaderUser,
+  onFeedbackSaved,
 }: {
   meeting: MeetingTranscript;
   leaderAvg: Record<string, number> | null;
   onSummarize: (id: string) => void;
+  isLeaderUser: boolean;
+  onFeedbackSaved: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [fbText, setFbText] = useState("");
+  const [fbSaving, setFbSaving] = useState(false);
   const score = m.score_data;
+
+  const handleFeedbackSave = async () => {
+    if (!fbText.trim()) return;
+    setFbSaving(true);
+    try {
+      await addLeaderFeedback(m.id, fbText.trim());
+      setFbText("");
+      onFeedbackSaved();
+    } catch { /* ignore */ }
+    setFbSaving(false);
+  };
 
   return (
     <div className="rounded-2xl border-2 border-[#e5e5e5] overflow-hidden">
@@ -326,7 +347,7 @@ function MeetingEntry({
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
           )}
 
-          {/* Evidence — the "事実っぽさ" that builds trust */}
+          {/* Evidence */}
           {score?.evidence && (
             <div className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3 space-y-1.5">
               <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">採点根拠（面談からの引用）</div>
@@ -350,6 +371,94 @@ function MeetingEntry({
               <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{score.leader_would}</p>
             </div>
           )}
+
+          {/* Key Moments Timeline (ダイジェストプレイバック) */}
+          {score?.key_moments && score.key_moments.length > 0 && (
+            <DigestTimeline moments={score.key_moments} />
+          )}
+
+          {/* Learning Resources (学習リソース) */}
+          {score?.learning_resources && score.learning_resources.length > 0 && (
+            <div className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1">弱点強化トレーニング</div>
+              {score.learning_resources.map((lr, idx) => {
+                const dim = DIMS.find(d => d.key === lr.axis);
+                const typeIcon = lr.source_type === "video" ? "▶" : lr.source_type === "article" ? "📄" : "📖";
+                const typeColor = lr.source_type === "video" ? "#FF4B4B" : lr.source_type === "article" ? "#1CB0F6" : "#CE82FF";
+                return (
+                  <div key={idx} className="rounded-lg bg-white border border-[#e5e5e5] overflow-hidden">
+                    <div className="p-2.5">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                          style={{
+                            backgroundColor: (dim?.color || "#777") + "20",
+                            color: dim?.color || "#777",
+                          }}
+                        >
+                          {dim?.label || lr.axis}
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: typeColor + "15", color: typeColor }}>
+                          {typeIcon} {lr.source_name || (lr.source_type === "video" ? "動画" : lr.source_type === "article" ? "記事" : "プレイブック")}
+                        </span>
+                      </div>
+                      <p className="text-xs font-extrabold text-[#4b4b4b] mb-0.5">{lr.title}</p>
+                      <p className="text-[10px] font-bold text-[#777] leading-relaxed">{lr.description}</p>
+                    </div>
+                    {lr.url ? (
+                      <a
+                        href={lr.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-between px-2.5 py-1.5 bg-[#f7f7f7] border-t border-[#e5e5e5] hover:bg-duo-blue/10 transition-colors group"
+                      >
+                        <span className="text-[10px] font-extrabold text-duo-blue group-hover:underline">
+                          教材を見る →
+                        </span>
+                        <span className="text-[9px] font-bold text-[#aaa] truncate ml-2 max-w-[180px]">
+                          {lr.source_name}
+                        </span>
+                      </a>
+                    ) : lr.playbook_situation ? (
+                      <div className="px-2.5 py-1.5 bg-duo-purple/5 border-t border-duo-purple/10">
+                        <span className="text-[10px] font-bold text-duo-purple">📖 {lr.playbook_situation}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Leader Feedback (小林フィードバック) */}
+          {m.leader_feedback && (
+            <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">小林リーダーのコメント</div>
+              <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
+            </div>
+          )}
+
+          {isLeaderUser && !m.is_leader && score && (
+            <div className="rounded-xl border-2 border-dashed border-[#fbbf24] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
+                {m.leader_feedback ? "コメントを更新" : "リーダーコメントを追加"}
+              </div>
+              <textarea
+                value={fbText}
+                onChange={(e) => setFbText(e.target.value)}
+                placeholder="この面談へのアドバイスやフィードバックを入力..."
+                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-16 focus:border-[#fbbf24] focus:outline-none resize-none"
+              />
+              <button
+                onClick={handleFeedbackSave}
+                disabled={!fbText.trim() || fbSaving}
+                className="btn-duo !px-4 !py-1.5 !text-[10px] text-white disabled:opacity-40"
+                style={{ backgroundColor: "#f59e0b", borderBottomColor: "#d97706" }}
+              >
+                {fbSaving ? "保存中..." : "コメント保存"}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -363,6 +472,114 @@ const DIMS = [
   { key: "closing", label: "成約", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
+
+function DigestTimeline({ moments }: { moments: KeyMoment[] }) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const hasTimestamps = moments.some((m) => m.seconds != null);
+  const maxSec = hasTimestamps ? Math.max(...moments.filter((m) => m.seconds != null).map((m) => m.seconds!), 1) : 0;
+
+  const handleDotClick = (idx: number) => {
+    setSelectedIdx(idx === selectedIdx ? null : idx);
+    const el = listRef.current?.querySelector(`[data-moment="${idx}"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  return (
+    <div className="rounded-xl bg-[#fffbeb] border border-[#fde68a] p-3 space-y-2">
+      <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
+        面談ダイジェスト・プレイバック
+      </div>
+
+      {/* Timeline bar */}
+      {hasTimestamps && (
+        <div className="relative">
+          <div className="flex items-center justify-between text-[9px] font-bold text-[#aaa] mb-1">
+            <span>0:00</span>
+            <span>{Math.floor(maxSec / 60)}:{String(maxSec % 60).padStart(2, "0")}</span>
+          </div>
+          <div className="relative h-6 bg-[#fef3c7] rounded-full border border-[#fde68a]">
+            {moments.filter((m) => m.seconds != null).map((m, idx) => {
+              const origIdx = moments.indexOf(m);
+              const left = (m.seconds! / maxSec) * 100;
+              const dim = DIMS.find((d) => d.key === m.axis);
+              const isActive = selectedIdx === origIdx;
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handleDotClick(origIdx)}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-200"
+                  style={{ left: `${Math.min(Math.max(left, 3), 97)}%` }}
+                  title={`${m.timestamp || ""} ${m.axis_label}`}
+                >
+                  <div
+                    className="rounded-full border-2 border-white transition-all"
+                    style={{
+                      width: isActive ? 14 : 10,
+                      height: isActive ? 14 : 10,
+                      backgroundColor: dim?.color || "#999",
+                      boxShadow: isActive ? `0 0 0 3px ${dim?.color}40` : "0 1px 2px rgba(0,0,0,0.2)",
+                    }}
+                  />
+                </button>
+              );
+            })}
+          </div>
+          {/* Axis legend */}
+          <div className="flex gap-2 mt-1.5 justify-center flex-wrap">
+            {DIMS.map(({ key, label, color }) => {
+              const count = moments.filter((m) => m.axis === key).length;
+              if (count === 0) return null;
+              return (
+                <span key={key} className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="text-[9px] font-bold text-[#777]">{label}({count})</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Moment list */}
+      <div ref={listRef} className="space-y-1.5 max-h-48 overflow-y-auto">
+        {moments.map((km, idx) => {
+          const dim = DIMS.find((d) => d.key === km.axis);
+          const isActive = selectedIdx === idx;
+          return (
+            <div
+              key={idx}
+              data-moment={idx}
+              onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
+              className={`flex items-start gap-2 p-1.5 rounded-lg cursor-pointer transition-all ${
+                isActive ? "bg-white border border-[#fbbf24] shadow-sm" : "hover:bg-[#fef9e7]"
+              }`}
+            >
+              {km.timestamp && (
+                <span className="text-[10px] font-black text-[#92400e] shrink-0 w-11 tabular-nums">
+                  {km.timestamp}
+                </span>
+              )}
+              <span
+                className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded"
+                style={{ backgroundColor: (dim?.color || "#777") + "20", color: dim?.color || "#777" }}
+              >
+                {km.axis_label}
+              </span>
+              <div className="flex-1 min-w-0">
+                {km.speaker && (
+                  <span className="text-[10px] font-extrabold text-[#4b4b4b] mr-1">{km.speaker}:</span>
+                )}
+                <span className="text-[10px] font-bold text-[#555] leading-relaxed">「{km.text}」</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function ScoreComparison({
   score,

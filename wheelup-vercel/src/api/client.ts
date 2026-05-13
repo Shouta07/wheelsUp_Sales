@@ -872,9 +872,9 @@ export interface MeetingTranscript {
 
 import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
 
-seedDemoData();
-
 const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
+
+if (DEMO_MODE) seedDemoData();
 
 export async function fetchMeetings(
   dealId?: string,
@@ -948,6 +948,9 @@ export interface LearningResource {
   title: string;
   description: string;
   playbook_situation?: string;
+  url?: string;
+  source_type?: "video" | "article" | "playbook";
+  source_name?: string;
 }
 
 export interface KeyMoment {
@@ -955,6 +958,9 @@ export interface KeyMoment {
   axis: string;
   axis_label: string;
   relevance: number;
+  timestamp?: string;
+  seconds?: number;
+  speaker?: string;
 }
 
 export interface MeetingScore {
