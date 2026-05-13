@@ -5,12 +5,14 @@ import ProspectingCompanies from "./ProspectingCompanies";
 import ProspectingCompanyDetail from "./ProspectingCompanyDetail";
 import ProspectingDiscovery from "./ProspectingDiscovery";
 import ProspectingCandidates from "./ProspectingCandidates";
+import ProspectingJobs from "./ProspectingJobs";
 import RunToolbar from "./RunToolbar";
 import { isLive } from "../../lib/ra/queries";
 
 type View =
   | { name: "home" }
   | { name: "ready" }
+  | { name: "jobs" }
   | { name: "companies" }
   | { name: "company"; id: string }
   | { name: "candidates" }
@@ -19,6 +21,7 @@ type View =
 const TABS: { key: View["name"]; label: string }[] = [
   { key: "home",       label: "ダッシュボード" },
   { key: "ready",      label: "実行待ち" },
+  { key: "jobs",       label: "募集ポジション" },
   { key: "companies",  label: "企業一覧" },
   { key: "candidates", label: "候補者" },
   { key: "discovery",  label: "新規発掘" },
@@ -73,6 +76,7 @@ export default function ProspectingApp() {
         <div key={reloadKey}>
           {view.name === "home"       && <ProspectingHome onOpenCompany={openCompany} />}
           {view.name === "ready"      && <ProspectingReady onOpenCompany={openCompany} />}
+          {view.name === "jobs"       && <ProspectingJobs onOpenCompany={openCompany} />}
           {view.name === "companies"  && <ProspectingCompanies onOpenCompany={openCompany} />}
           {view.name === "company"    && (
             <ProspectingCompanyDetail id={view.id} onBack={() => setView({ name: "companies" })} />

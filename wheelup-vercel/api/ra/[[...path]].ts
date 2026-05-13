@@ -71,6 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case "find-recruit-url":  return await findRecruitUrl(db, req, res);
       case "find-contact-info": return await findContactInfo(db, req, res);
       case "add-companies":     return await addCompanies(db, req, res);
+      case "add-candidate":     return await addCandidate(db, req, res);
       case "approve-discovery": return await approveDiscovery(db, req, res);
       case "draft":             return await draftEmail(db, req, res);
       case "update-company":    return await updateCompany(db, req, res);
@@ -517,6 +518,31 @@ async function addCompanies(db: DB, req: VercelRequest, res: VercelResponse) {
     .select("id,name");
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ ok: true, added: data?.length ?? 0, names: (data ?? []).map((d) => d.name) });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/add-candidate — create a new candidate row
+// ---------------------------------------------------------------------------
+async function addCandidate(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    code?: string;
+    name?: string;
+    headline?: string | null;
+    profile?: Record<string, unknown>;
+    is_active?: boolean;
+  };
+  if (!body.code || !body.name) {
+    return res.status(400).json({ error: "code and name required" });
+  }
+  const { data, error } = await db.from("ra_candidates").insert({
+    code: body.code.trim(),
+    name: body.name.trim(),
+    headline: body.headline ?? null,
+    profile: body.profile ?? {},
+    is_active: body.is_active ?? true,
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, candidate: data });
 }
 
 // ---------------------------------------------------------------------------

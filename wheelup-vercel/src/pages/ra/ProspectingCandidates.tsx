@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, listCandidates } from "../../lib/ra/queries";
 import type { Candidate, CandidateProfile } from "../../lib/ra/types";
+import Modal from "./Modal";
 
 const ARRAY_FIELDS: Array<{ key: keyof CandidateProfile; label: string; placeholder: string }> = [
   { key: "specialties",        label: "specialties",        placeholder: "例: ファシリティマネジメント" },
@@ -15,6 +16,7 @@ export default function ProspectingCandidates() {
   const [list, setList] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+  const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -27,13 +29,89 @@ export default function ProspectingCandidates() {
 
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold text-[#afafaf]">{list.length} 名</span>
+        <button
+          onClick={() => setShowAdd(true)}
+          className="px-2.5 py-1 rounded-xl text-[10px] font-black bg-[#58CC02] text-white hover:bg-[#46a302]"
+        >
+          ＋ 候補者追加
+        </button>
+      </div>
+
       {list.map((c) => (
         <CandidateCard key={c.id} candidate={c} onSaved={() => setReloadKey((k) => k + 1)} />
       ))}
       <p className="text-[10px] text-[#afafaf]">
         in_progress (進行中案件) を最新化しておくと、deal_breakers と合わせて Gemini が重複アプローチを避けます
       </p>
+
+      {showAdd && (
+        <AddCandidateModal
+          onClose={() => setShowAdd(false)}
+          onAdded={() => { setShowAdd(false); setReloadKey((k) => k + 1); }}
+        />
+      )}
     </div>
+  );
+}
+
+function AddCandidateModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [headline, setHeadline] = useState("");
+  const [specialties, setSpecialties] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    if (!code.trim() || !name.trim()) { setErr("code と name は必須"); return; }
+    setBusy(true); setErr(null);
+    try {
+      await api.addCandidate({
+        code: code.trim(),
+        name: name.trim(),
+        headline: headline.trim() || undefined,
+        profile: specialties.trim()
+          ? { specialties: specialties.split(",").map((s) => s.trim()).filter(Boolean) }
+          : {},
+        is_active: true,
+      });
+      onAdded();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="候補者を追加" onClose={onClose}>
+      <div className="space-y-3 text-xs">
+        <label className="block">
+          <div className="text-[10px] font-bold text-[#afafaf] uppercase mb-0.5">code (必須・英数小文字)</div>
+          <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例: tanaka" className="rounded border border-gray-200 px-2 py-1 w-full" />
+        </label>
+        <label className="block">
+          <div className="text-[10px] font-bold text-[#afafaf] uppercase mb-0.5">氏名 (必須)</div>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例: 田中" className="rounded border border-gray-200 px-2 py-1 w-full" />
+        </label>
+        <label className="block">
+          <div className="text-[10px] font-bold text-[#afafaf] uppercase mb-0.5">ヘッドライン (任意)</div>
+          <input value={headline} onChange={(e) => setHeadline(e.target.value)} placeholder="例: ゼネコン施工管理 12年" className="rounded border border-gray-200 px-2 py-1 w-full" />
+        </label>
+        <label className="block">
+          <div className="text-[10px] font-bold text-[#afafaf] uppercase mb-0.5">specialties (カンマ区切り・任意)</div>
+          <input value={specialties} onChange={(e) => setSpecialties(e.target.value)} placeholder="例: 建築施工管理, データセンター, 物流施設" className="rounded border border-gray-200 px-2 py-1 w-full" />
+        </label>
+        <p className="text-[10px] text-[#afafaf]">作成後、カードの「✎ 編集」で deal_breakers / in_progress / industries_ok などを追加できます</p>
+
+        {err && <div className="text-[10px] text-red-600">{err}</div>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1 rounded-lg text-[10px] font-bold border border-gray-200">キャンセル</button>
+          <button onClick={save} disabled={busy} className="px-3 py-1 rounded-lg text-[10px] font-black bg-[#58CC02] text-white disabled:opacity-50">
+            {busy ? "追加中…" : "追加"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

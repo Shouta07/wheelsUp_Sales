@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, listCompanyOverview } from "../../lib/ra/queries";
-import type { CompanyOverview, Priority } from "../../lib/ra/types";
+import { api, listCompaniesEnriched } from "../../lib/ra/queries";
+import type { ContactPath, CompanyOverview, Priority } from "../../lib/ra/types";
 import Modal from "./Modal";
 import { parseCsv } from "../../lib/ra/csv";
 
@@ -9,7 +9,8 @@ export default function ProspectingCompanies({
 }: {
   onOpenCompany: (id: string) => void;
 }) {
-  const [all, setAll] = useState<CompanyOverview[]>([]);
+  type Row = CompanyOverview & { contact_paths: ContactPath[] };
+  const [all, setAll] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [priority, setPriority] = useState<"" | Priority>("");
@@ -20,7 +21,7 @@ export default function ProspectingCompanies({
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    listCompanyOverview().then((d) => { if (alive) setAll(d); }).finally(() => alive && setLoading(false));
+    listCompaniesEnriched().then((d) => { if (alive) setAll(d); }).finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [reloadKey]);
 
@@ -101,29 +102,62 @@ export default function ProspectingCompanies({
               <th className="px-3 py-2 text-right">公開求人</th>
               <th className="px-3 py-2 text-right">◎○</th>
               <th className="px-3 py-2">採用ページ</th>
+              <th className="px-3 py-2">問い合わせ</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((c) => (
-              <tr key={c.id} className="border-t border-gray-100">
-                <td className="px-3 py-2 font-bold">{c.priority}</td>
-                <td className="px-3 py-2 text-gray-500">{c.category ?? "-"}</td>
-                <td className="px-3 py-2">
-                  <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
-                    {c.name}
-                  </button>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">{c.open_jobs}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{c.strong_matches}</td>
-                <td className="max-w-xs px-3 py-2 truncate text-[10px] text-gray-500">
-                  {c.recruit_page_url ? (
-                    <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="hover:underline">
-                      {c.recruit_page_url}
-                    </a>
-                  ) : "-"}
-                </td>
-              </tr>
-            ))}
+            {filtered.map((c) => {
+              const form = c.contact_paths.find((p) => p.kind === "form");
+              const email = c.contact_paths.find((p) => p.kind === "email");
+              const linkedin = c.contact_paths.find((p) => p.kind === "linkedin");
+              return (
+                <tr key={c.id} className="border-t border-gray-100">
+                  <td className="px-3 py-2 font-bold">{c.priority}</td>
+                  <td className="px-3 py-2 text-gray-500">{c.category ?? "-"}</td>
+                  <td className="px-3 py-2">
+                    <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
+                      {c.name}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">{c.open_jobs}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{c.strong_matches}</td>
+                  <td className="max-w-[160px] truncate px-3 py-2 text-[10px] text-gray-500">
+                    {c.recruit_page_url ? (
+                      <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="hover:underline">
+                        {c.recruit_page_url}
+                      </a>
+                    ) : <span className="text-gray-300">未取得</span>}
+                  </td>
+                  <td className="px-3 py-2 text-[10px]">
+                    <div className="flex gap-1 flex-wrap">
+                      {form && (
+                        <a href={form.url} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-[#1CB0F6] text-white font-bold hover:bg-[#1899D6]">
+                          📝 form
+                        </a>
+                      )}
+                      {email && (
+                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-[#58CC02] text-white font-bold hover:bg-[#46a302]">
+                          ✉️ email
+                        </a>
+                      )}
+                      {linkedin && (
+                        <a href={linkedin.url} target="_blank" rel="noreferrer"
+                          className="px-1.5 py-0.5 rounded-full bg-gray-700 text-white font-bold hover:bg-gray-800">
+                          in
+                        </a>
+                      )}
+                      {!form && !email && !linkedin && (
+                        <button onClick={() => onOpenCompany(c.id)} className="text-gray-400 hover:underline">
+                          (未登録 — 補完)
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
