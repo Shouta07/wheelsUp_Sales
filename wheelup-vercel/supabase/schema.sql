@@ -162,9 +162,9 @@ create table if not exists chunks (
 
 create index idx_chunks_deal on chunks(pipedrive_deal_id);
 
--- ベクトル検索用のインデックス (IVFFlat)
-create index idx_chunks_embedding on chunks
-  using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+-- ベクトル検索用のインデックス (HNSW — 空テーブルでも作成可能)
+create index if not exists idx_chunks_embedding on chunks
+  using hnsw (embedding vector_cosine_ops);
 
 -- =====================================================
 -- チャンネル↔案件マッピング
