@@ -13,7 +13,11 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
     });
   }
 
-  const db = createClient(url, key);
+  let fixedUrl = url.trim().replace(/^["']+|["']+$/g, "");
+  if (!fixedUrl.startsWith("http")) fixedUrl = `https://${fixedUrl}`;
+  fixedUrl = fixedUrl.replace(/\/+$/, "");
+
+  const db = createClient(fixedUrl, key.trim());
 
   const { data: existing } = await db
     .from("meeting_transcripts")
