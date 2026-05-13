@@ -11,7 +11,9 @@ Next.js 15 App Router + Supabase REST + Gemini 2.5 Flash Lite で動く社内ツ
 - Supabase（REST のみ、SDK 不要）
 - Gemini 2.5 Flash Lite（`GEMINI_API_KEY`、`GEMINI_MODEL` で上書き可）
 - Jina Reader（`JINA_API_KEY` があれば優先、なければ素のfetchにフォールバック）
-- 認証: `CRON_SECRET` をクエリパラメータで渡す（後で Supabase Auth へ拡張予定）
+- 認証: `Authorization: Bearer <CRON_SECRET>`（fallback として `?secret=`）。Supabase Auth 統合は今後。
+- レート制限: IP + ルート単位のインメモリ token bucket。LLM 系は 4 req/min、書込系は 20 req/min。
+- 監査ログ: 全 API レスポンスに `X-Request-Id` を付与。サーバ側は JSON Lines で出力。
 
 ## 初期セットアップ
 
@@ -36,7 +38,12 @@ cp .env.example .env.local   # 必要な値を埋める
 
 ## DB セットアップ（本番）
 
-`supabase/migrations/001_schema.sql` を Supabase SQL Editor に貼って実行。
+Supabase SQL Editor で以下を順に実行:
+
+1. `supabase/migrations/001_schema.sql` — テーブル + ビュー
+2. `supabase/migrations/002_rls.sql` — RLS（anon/authenticated を全テーブルから完全に締め出し、service_role 経由のみ許可）
+
+> RLS 002 を流さないと、もし anon キーが露出した場合に DB 全件が読まれます。本番では **必ず両方** 流してください。
 
 テーブル:
 
@@ -64,17 +71,25 @@ cp .env.example .env.local   # 必要な値を埋める
 | POST | `/api/activity` | 送信/商談/採用などの活動ログを記録 |
 | GET  | `/api/cron` | crawl + match を一括実行（Vercel Cron 22:00 UTC = 07:00 JST） |
 
-例:
+例（Bearer 推奨）:
 
 ```bash
-curl -X POST "https://<host>/api/import?secret=$CRON_SECRET"
-curl -X POST "https://<host>/api/crawl?secret=$CRON_SECRET&limit=20"
-curl -X POST "https://<host>/api/match?secret=$CRON_SECRET&limit=50"
-curl -X POST "https://<host>/api/discover?secret=$CRON_SECRET&count=20"
-curl -X POST "https://<host>/api/activity?secret=$CRON_SECRET" \
-  -H 'content-type: application/json' \
-  -d '{"company_id":"...","match_id":"...","kind":"proposal_sent","channel":"email","body":"初回提案メール送信"}'
+H="Authorization: Bearer $CRON_SECRET"
+curl -X POST -H "$H" "https://<host>/api/import"
+curl -X POST -H "$H" "https://<host>/api/crawl?limit=20"
+curl -X POST -H "$H" "https://<host>/api/match?limit=50"
+curl -X POST -H "$H" "https://<host>/api/discover?count=20"
+curl -X POST -H "$H" -H 'content-type: application/json' \
+  -d '{"company_id":"...","match_id":"...","kind":"proposal_sent","channel":"email","body":"初回提案メール送信"}' \
+  "https://<host>/api/activity"
 ```
+
+`?secret=...` も互換性のため受け付けますが、URL に出るため Bearer を推奨。
+
+### `CRON_SECRET` 要件（実行時に検証）
+- `change-me` / `secret` / `password` などの既定値は **拒否**
+- 24 文字以上が必須
+- 生成例: `openssl rand -base64 36`
 
 ## ダッシュボード
 
@@ -114,6 +129,25 @@ curl -X POST "https://<host>/api/activity?secret=$CRON_SECRET" \
 
 `profile` には `specialties / industries_ok / license / salary_min_jpy / salary_max_jpy / in_progress / summary` を入れている。
 プロフィールは差し替え自由で、match プロンプトに JSON のまま渡る。
+
+## テストと CI
+
+```bash
+npm test          # node:test ベースの単体テスト（pg / auth / ratelimit / csv）
+npm run typecheck # tsc --noEmit
+npm run build     # 本番ビルド（mock モードで通る）
+```
+
+`.github/workflows/ci.yml` で push/PR ごとに上記 3 つを実行します。
+
+## 本番チェックリスト
+
+- [ ] `001_schema.sql` と `002_rls.sql` を Supabase で適用
+- [ ] `CRON_SECRET` を `openssl rand -base64 36` で生成、Vercel 環境変数に登録
+- [ ] `SUPABASE_SERVICE_ROLE_KEY` がクライアントに漏れていないか確認（`NEXT_PUBLIC_*` には絶対に置かない）
+- [ ] `/api/import` を 1 度だけ手動実行（シード投入）
+- [ ] Vercel Cron が `/api/cron` を 22:00 UTC に叩く設定を確認
+- [ ] 監視: Vercel Logs で `X-Request-Id` ベースに調査できることを確認
 
 ## noindex
 

@@ -1,4 +1,9 @@
 // Thin Supabase REST client. No SDK — just fetch + PostgREST conventions.
+//
+// All filter values **must** go through lib/pg helpers; never interpolate
+// raw user input into `query` strings.
+
+import { log, publicError } from "./logger";
 
 const SB_URL = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -16,6 +21,19 @@ function headers(extra: Record<string, string> = {}): HeadersInit {
   };
 }
 
+async function sbFail(action: string, table: string, res: Response): Promise<never> {
+  // Read body but only log the first 500 chars; do not propagate to the
+  // public response.
+  const body = await res.text().catch(() => "");
+  log.error("supabase_error", {
+    action,
+    table,
+    status: res.status,
+    body: body.slice(0, 500),
+  });
+  throw new Error(`${action} ${table} failed: ${res.status}`);
+}
+
 export async function sbSelect<T = unknown>(
   table: string,
   query: string = "select=*"
@@ -26,7 +44,7 @@ export async function sbSelect<T = unknown>(
     headers: headers(),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`sbSelect ${table}: ${res.status} ${await res.text()}`);
+  if (!res.ok) return sbFail("sbSelect", table, res);
   return res.json();
 }
 
@@ -45,7 +63,7 @@ export async function sbInsert<T = unknown>(
     headers: headers({ Prefer: preferParts.filter(Boolean).join(",") }),
     body: JSON.stringify(rows),
   });
-  if (!res.ok) throw new Error(`sbInsert ${table}: ${res.status} ${await res.text()}`);
+  if (!res.ok) return sbFail("sbInsert", table, res);
   if (opts.returning === false) return [];
   return res.json();
 }
@@ -61,18 +79,10 @@ export async function sbUpdate<T = unknown>(
     headers: headers({ Prefer: "return=representation" }),
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`sbUpdate ${table}: ${res.status} ${await res.text()}`);
+  if (!res.ok) return sbFail("sbUpdate", table, res);
   return res.json();
 }
 
-export function requireSecret(req: Request): Response | null {
-  const want = process.env.CRON_SECRET;
-  if (!want) {
-    return new Response(JSON.stringify({ error: "CRON_SECRET not set" }), { status: 500 });
-  }
-  const got = new URL(req.url).searchParams.get("secret");
-  if (got !== want) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
-  }
-  return null;
-}
+// Re-export so existing route imports keep working.
+export { requireSecret } from "./auth";
+export { publicError };

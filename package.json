@@ -2,12 +2,16 @@
   "name": "wheelsup-sales",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types --no-warnings --test-reporter=spec 'tests/**/*.test.ts'"
   },
   "dependencies": {
     "next": "15.5.18",

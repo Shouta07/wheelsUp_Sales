@@ -1,41 +1,45 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseCSV, coerce } from "@/lib/csv";
-import { requireSecret, sbInsert, supabaseConfigured } from "@/lib/supabase";
+import { sbInsert, supabaseConfigured } from "@/lib/supabase";
+import { guardRequest, jsonWithId } from "@/lib/apiGuard";
+import { WRITE_LIMIT } from "@/lib/ratelimit";
+import { log, publicError } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const unauth = requireSecret(req);
-  if (unauth) return unauth;
+  const guard = guardRequest(req, { route: "import", limit: WRITE_LIMIT });
+  if (guard.deny) return guard.deny;
+  const { requestId } = guard;
+
   if (!supabaseConfigured) {
-    return Response.json({ error: "Supabase not configured" }, { status: 400 });
+    return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
   }
 
-  const dir = path.join(process.cwd(), "data");
-  const csvText = fs.readFileSync(path.join(dir, "companies_seed.csv"), "utf-8");
-  const candText = fs.readFileSync(path.join(dir, "candidates_seed.json"), "utf-8");
+  try {
+    const dir = path.join(process.cwd(), "data");
+    const csvText = fs.readFileSync(path.join(dir, "companies_seed.csv"), "utf-8");
+    const candText = fs.readFileSync(path.join(dir, "candidates_seed.json"), "utf-8");
 
-  const companies = parseCSV(csvText).map(coerce);
-  const candidates = JSON.parse(candText) as Record<string, unknown>[];
+    const companies = parseCSV(csvText).map(coerce);
+    const candidates = JSON.parse(candText) as Record<string, unknown>[];
 
-  const stats = { companies: 0, candidates: 0 };
+    const stats = { companies: 0, candidates: 0 };
 
-  // companies: upsert on name
-  if (companies.length) {
-    const inserted = await sbInsert("companies", companies, {
-      onConflict: "name",
-    });
-    stats.companies = (inserted as unknown[]).length;
+    if (companies.length) {
+      const inserted = await sbInsert("companies", companies, { onConflict: "name" });
+      stats.companies = (inserted as unknown[]).length;
+    }
+
+    if (candidates.length) {
+      const inserted = await sbInsert("candidates", candidates, { onConflict: "code" });
+      stats.candidates = (inserted as unknown[]).length;
+    }
+
+    return jsonWithId({ ok: true, stats }, requestId);
+  } catch (e) {
+    log.error("import_failed", { requestId, err: publicError(e) });
+    return jsonWithId({ error: "import_failed" }, requestId, { status: 500 });
   }
-
-  // candidates: upsert on code
-  if (candidates.length) {
-    const inserted = await sbInsert("candidates", candidates, {
-      onConflict: "code",
-    });
-    stats.candidates = (inserted as unknown[]).length;
-  }
-
-  return Response.json({ ok: true, stats });
 }

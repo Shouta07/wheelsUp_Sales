@@ -1,6 +1,10 @@
-import { requireSecret, sbInsert, sbSelect, sbUpdate, supabaseConfigured } from "@/lib/supabase";
+import { sbInsert, sbSelect, sbUpdate, supabaseConfigured } from "@/lib/supabase";
 import { fetchPageText, sha256Hex } from "@/lib/scrape";
 import { geminiJSON, geminiConfigured } from "@/lib/gemini";
+import { assertUuid, clampInt, pgEq } from "@/lib/pg";
+import { guardRequest, jsonWithId } from "@/lib/apiGuard";
+import { LLM_LIMIT } from "@/lib/ratelimit";
+import { log, publicError } from "@/lib/logger";
 import type { Company, Job } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -30,20 +34,31 @@ salary は数値（円, 年収）。不明な値は null。配列以外は出力
 ${snippet}`;
 }
 
-async function crawlOne(company: Company): Promise<{ jobs: number; new: number; updated: number; closed: number; error?: string }> {
-  if (!company.recruit_page_url) return { jobs: 0, new: 0, updated: 0, closed: 0, error: "no recruit_page_url" };
+async function crawlOne(
+  company: Company,
+  requestId: string,
+): Promise<{ jobs: number; new: number; updated: number; closed: number; error?: string }> {
+  if (!company.recruit_page_url) {
+    return { jobs: 0, new: 0, updated: 0, closed: 0, error: "no recruit_page_url" };
+  }
   const text = await fetchPageText(company.recruit_page_url);
-  if (!text || text.length < 100) return { jobs: 0, new: 0, updated: 0, closed: 0, error: "empty page" };
+  if (!text || text.length < 100) {
+    return { jobs: 0, new: 0, updated: 0, closed: 0, error: "empty page" };
+  }
 
   let extracted: ExtractedJob[] = [];
   try {
     const result = await geminiJSON<ExtractedJob[] | { jobs: ExtractedJob[] }>(buildPrompt(company.name, text));
     extracted = Array.isArray(result) ? result : result.jobs ?? [];
   } catch (e) {
-    return { jobs: 0, new: 0, updated: 0, closed: 0, error: (e as Error).message };
+    log.error("crawl_extract_failed", { requestId, company_id: company.id, err: publicError(e) });
+    return { jobs: 0, new: 0, updated: 0, closed: 0, error: "extract_failed" };
   }
 
-  const existing = await sbSelect<Job>("jobs", `select=id,content_hash,is_open&company_id=eq.${company.id}`);
+  const existing = await sbSelect<Job>(
+    "jobs",
+    `select=id,content_hash,is_open&${pgEq("company_id", company.id)}`,
+  );
   const existingByHash = new Map(existing.map((j) => [j.content_hash, j]));
 
   const rows: Record<string, unknown>[] = [];
@@ -77,11 +92,10 @@ async function crawlOne(company: Company): Promise<{ jobs: number; new: number; 
     for (const h of seenHashes) (existingByHash.has(h) ? updated++ : isNew++);
   }
 
-  // Close anything not seen this run.
   let closed = 0;
   for (const e of existing) {
     if (!seenHashes.has(e.content_hash) && e.is_open) {
-      await sbUpdate("jobs", { is_open: false }, `id=eq.${e.id}`);
+      await sbUpdate("jobs", { is_open: false }, pgEq("id", e.id));
       closed++;
     }
   }
@@ -90,18 +104,28 @@ async function crawlOne(company: Company): Promise<{ jobs: number; new: number; 
 }
 
 export async function POST(req: Request) {
-  const unauth = requireSecret(req);
-  if (unauth) return unauth;
-  if (!supabaseConfigured) return Response.json({ error: "Supabase not configured" }, { status: 400 });
-  if (!geminiConfigured) return Response.json({ error: "GEMINI_API_KEY not set" }, { status: 400 });
+  const guard = guardRequest(req, { route: "crawl", limit: LLM_LIMIT });
+  if (guard.deny) return guard.deny;
+  const { requestId } = guard;
+
+  if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
+  if (!geminiConfigured) return jsonWithId({ error: "gemini_not_configured" }, requestId, { status: 400 });
 
   const url = new URL(req.url);
-  const limit = Number(url.searchParams.get("limit") ?? "20");
-  const companyId = url.searchParams.get("company_id");
+  const limit = clampInt(url.searchParams.get("limit"), 20, 50);
+  const companyIdRaw = url.searchParams.get("company_id");
 
-  const filter = companyId
-    ? `select=*&id=eq.${companyId}`
-    : `select=*&status=eq.active&recruit_page_url=not.is.null&order=priority.desc&limit=${limit}`;
+  let filter: string;
+  if (companyIdRaw) {
+    try {
+      assertUuid(companyIdRaw, "company_id");
+    } catch {
+      return jsonWithId({ error: "invalid_company_id" }, requestId, { status: 400 });
+    }
+    filter = `select=*&${pgEq("id", companyIdRaw)}`;
+  } else {
+    filter = `select=*&${pgEq("status", "active")}&recruit_page_url=not.is.null&order=priority.desc&limit=${limit}`;
+  }
   const companies = await sbSelect<Company>("companies", filter);
 
   const runStart = new Date().toISOString();
@@ -112,7 +136,7 @@ export async function POST(req: Request) {
   let errors = 0;
   for (const c of companies) {
     try {
-      const r = await crawlOne(c);
+      const r = await crawlOne(c, requestId);
       if (r.error) errors++;
       totalNew += r.new;
       totalUpdated += r.updated;
@@ -120,7 +144,8 @@ export async function POST(req: Request) {
       results.push({ company: c.name, ...r });
     } catch (e) {
       errors++;
-      results.push({ company: c.name, error: (e as Error).message });
+      log.error("crawl_failed", { requestId, company_id: c.id, err: publicError(e) });
+      results.push({ company: c.name, error: "crawl_failed" });
     }
   }
 
@@ -132,5 +157,9 @@ export async function POST(req: Request) {
     finished_at: new Date().toISOString(),
   }], { returning: false });
 
-  return Response.json({ ok: true, stats: { companies: companies.length, new: totalNew, updated: totalUpdated, closed: totalClosed, errors }, results });
+  return jsonWithId({
+    ok: true,
+    stats: { companies: companies.length, new: totalNew, updated: totalUpdated, closed: totalClosed, errors },
+    results,
+  }, requestId);
 }

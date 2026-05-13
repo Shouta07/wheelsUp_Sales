@@ -18,9 +18,14 @@ export function MarkSentButton(props: {
     setState("sending");
     setErr(null);
     try {
-      const res = await fetch(`/api/activity?secret=${encodeURIComponent(secret)}`, {
+      const res = await fetch(`/api/activity`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // Send the secret via Authorization header so it does not end up
+          // in browser history or server access logs.
+          Authorization: `Bearer ${secret}`,
+        },
         body: JSON.stringify({
           match_id: props.matchId,
           company_id: props.companyId,
@@ -31,7 +36,10 @@ export function MarkSentButton(props: {
           body: "ボタンから記録",
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
       setState("done");
     } catch (e) {
       setErr((e as Error).message);

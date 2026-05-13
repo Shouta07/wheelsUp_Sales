@@ -1,4 +1,8 @@
-import { requireSecret, sbInsert, supabaseConfigured } from "@/lib/supabase";
+import { sbInsert, supabaseConfigured } from "@/lib/supabase";
+import { isUuid } from "@/lib/pg";
+import { guardRequest, jsonWithId } from "@/lib/apiGuard";
+import { WRITE_LIMIT } from "@/lib/ratelimit";
+import { log, publicError } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -15,31 +19,75 @@ interface ActivityInput {
   created_by?: string | null;
 }
 
+const ALLOWED_KINDS = new Set([
+  "proposal_sent",
+  "reply",
+  "meeting",
+  "pass",
+  "hire",
+  "note",
+]);
+
+const ALLOWED_CHANNELS = new Set(["email", "form", "phone", "linkedin", "other"]);
+
+function clampText(v: unknown, max: number): string | null {
+  if (typeof v !== "string") return null;
+  return v.slice(0, max);
+}
+
+function optUuid(v: unknown): string | null {
+  if (v == null) return null;
+  if (!isUuid(v)) throw new Error("invalid_uuid");
+  return v;
+}
+
 export async function POST(req: Request) {
-  const unauth = requireSecret(req);
-  if (unauth) return unauth;
-  if (!supabaseConfigured) return Response.json({ error: "Supabase not configured" }, { status: 400 });
+  const guard = guardRequest(req, { route: "activity", limit: WRITE_LIMIT });
+  if (guard.deny) return guard.deny;
+  const { requestId } = guard;
+
+  if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
 
   let payload: ActivityInput;
   try {
     payload = (await req.json()) as ActivityInput;
   } catch {
-    return Response.json({ error: "invalid json" }, { status: 400 });
+    return jsonWithId({ error: "invalid_json" }, requestId, { status: 400 });
   }
-  if (!payload.kind) return Response.json({ error: "kind required" }, { status: 400 });
 
-  const row = {
-    company_id: payload.company_id ?? null,
-    job_id: payload.job_id ?? null,
-    candidate_id: payload.candidate_id ?? null,
-    match_id: payload.match_id ?? null,
-    kind: payload.kind,
-    channel: payload.channel ?? null,
-    body: payload.body ?? null,
-    outcome: payload.outcome ?? null,
-    occurred_at: payload.occurred_at ?? new Date().toISOString(),
-    created_by: payload.created_by ?? null,
-  };
-  const [inserted] = await sbInsert("activities", [row]);
-  return Response.json({ ok: true, activity: inserted });
+  if (!payload.kind || !ALLOWED_KINDS.has(payload.kind)) {
+    return jsonWithId({ error: "invalid_kind" }, requestId, { status: 400 });
+  }
+  if (payload.channel && !ALLOWED_CHANNELS.has(payload.channel)) {
+    return jsonWithId({ error: "invalid_channel" }, requestId, { status: 400 });
+  }
+  if (payload.occurred_at && Number.isNaN(Date.parse(payload.occurred_at))) {
+    return jsonWithId({ error: "invalid_occurred_at" }, requestId, { status: 400 });
+  }
+
+  let row: Record<string, unknown>;
+  try {
+    row = {
+      company_id: optUuid(payload.company_id),
+      job_id: optUuid(payload.job_id),
+      candidate_id: optUuid(payload.candidate_id),
+      match_id: optUuid(payload.match_id),
+      kind: payload.kind,
+      channel: payload.channel ?? null,
+      body: clampText(payload.body, 4000),
+      outcome: clampText(payload.outcome, 500),
+      occurred_at: payload.occurred_at ?? new Date().toISOString(),
+      created_by: clampText(payload.created_by, 120),
+    };
+  } catch {
+    return jsonWithId({ error: "invalid_uuid" }, requestId, { status: 400 });
+  }
+
+  try {
+    const [inserted] = await sbInsert("activities", [row]);
+    return jsonWithId({ ok: true, activity: inserted }, requestId);
+  } catch (e) {
+    log.error("activity_insert_failed", { requestId, err: publicError(e) });
+    return jsonWithId({ error: "insert_failed" }, requestId, { status: 500 });
+  }
 }

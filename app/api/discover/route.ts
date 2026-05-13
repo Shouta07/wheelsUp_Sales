@@ -1,5 +1,8 @@
-import { requireSecret, sbInsert, sbSelect, supabaseConfigured } from "@/lib/supabase";
+import { sbInsert, sbSelect, supabaseConfigured } from "@/lib/supabase";
 import { geminiConfigured, geminiJSON } from "@/lib/gemini";
+import { clampInt } from "@/lib/pg";
+import { guardRequest, jsonWithId } from "@/lib/apiGuard";
+import { LLM_LIMIT } from "@/lib/ratelimit";
 import type { Company } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,17 +16,19 @@ interface Suggestion {
 }
 
 export async function POST(req: Request) {
-  const unauth = requireSecret(req);
-  if (unauth) return unauth;
-  if (!supabaseConfigured) return Response.json({ error: "Supabase not configured" }, { status: 400 });
-  if (!geminiConfigured) return Response.json({ error: "GEMINI_API_KEY not set" }, { status: 400 });
+  const guard = guardRequest(req, { route: "discover", limit: LLM_LIMIT });
+  if (guard.deny) return guard.deny;
+  const { requestId } = guard;
+
+  if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
+  if (!geminiConfigured) return jsonWithId({ error: "gemini_not_configured" }, requestId, { status: 400 });
 
   const url = new URL(req.url);
-  const want = Number(url.searchParams.get("count") ?? "20");
+  const want = clampInt(url.searchParams.get("count"), 20, 50);
 
   const sample = await sbSelect<Company>(
     "companies",
-    "select=name,category&priority=gte.4&limit=40"
+    "select=name,category&priority=gte.4&limit=40",
   );
   const knownNames = new Set(sample.map((c) => c.name));
   const knownList = sample.map((c) => `- ${c.name}（${c.category ?? ""}）`).join("\n");
@@ -69,5 +74,5 @@ JSON 配列のみ。各要素: {"name":"…","homepage_url":"https://…","categ
     finished_at: new Date().toISOString(),
   }], { returning: false });
 
-  return Response.json({ ok: true, stats: { suggested: items.length, queued: fresh.length } });
+  return jsonWithId({ ok: true, stats: { suggested: items.length, queued: fresh.length } }, requestId);
 }
