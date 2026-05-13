@@ -17,12 +17,12 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
  * POST   /api/meetings/coach          → 案件文脈付きフェーズ別コーチング
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const db = getSupabaseAdmin();
   const segments: string[] = Array.isArray(req.query.path)
     ? req.query.path
     : req.query.path ? [req.query.path] : [];
 
   try {
+    const db = getSupabaseAdmin();
     // --- /api/meetings (root) ---
     if (segments.length === 0) {
       if (req.method === "GET") return await listTranscripts(db, req, res);
