@@ -142,9 +142,8 @@ export default function App() {
     );
   }
 
-  if (isSupabaseConfigured && !session) {
-    return <LoginPage />;
-  }
+  // 5人チーム運用: サーバーAPI(service_role)経由でDB操作するため、ブラウザ認証は不要
+  // ユーザー選択画面で担当者を選ぶだけでOK
 
   if (!activeUser) {
     return (

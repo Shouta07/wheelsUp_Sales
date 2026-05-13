@@ -872,9 +872,9 @@ export interface MeetingTranscript {
 
 import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
 
-seedDemoData();
-
 const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
+
+if (DEMO_MODE) seedDemoData();
 
 export async function fetchMeetings(
   dealId?: string,
