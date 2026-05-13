@@ -18,16 +18,13 @@
 3. 「Run」をクリック → 全テーブルが作成される
 
 ### 既存プロジェクトの場合（migration適用）
-すでにテーブルがある場合は、以下のみ実行:
-```sql
--- supabase/migration_001_leader_feedback.sql の内容
-alter table meeting_transcripts
-  add column if not exists leader_feedback text;
-create index if not exists idx_transcripts_consultant
-  on meeting_transcripts(consultant_name);
-create index if not exists idx_transcripts_leader
-  on meeting_transcripts(is_leader);
-```
+順番通りに SQL Editor で実行:
+
+1. `supabase/migration_001_leader_feedback.sql` — リーダーFB列
+2. `supabase/migration_002_ra_system.sql` — RA / Prospecting テーブル群
+3. `supabase/migration_003_score_status.sql` — 採点ステータス + audit 列
+
+> migration_003 を流さないと UI の「採点中…」/「再採点」バッジが動きません。本番運用には必須です。
 
 ## 3. 認証設定（チーム5人用・5分）
 
@@ -64,7 +61,15 @@ create index if not exists idx_transcripts_leader
 | `VITE_SUPABASE_URL` | `https://xxxxx.supabase.co` | Production, Preview |
 | `VITE_SUPABASE_ANON_KEY` | anon public key | Production, Preview |
 | `SUPABASE_URL` | `https://xxxxx.supabase.co` | Production, Preview |
+| `SUPABASE_ANON_KEY` | anon public key (JWT検証用) | Production, Preview |
 | `SUPABASE_SERVICE_ROLE_KEY` | service_role key | Production, Preview |
+| `ALLOWED_EMAILS` | `kobayashi@...,nishimura@...,...` 5名 | Production, Preview |
+| `GEMINI_API_KEY` | Gemini API キー | Production, Preview |
+| `CRON_SECRET` | `openssl rand -base64 36` で 24 文字以上 | Production, Preview |
+| `KILL_LLM` | 緊急時のみ `true` | Production |
+| `LLM_DAILY_RUN_LIMIT` | 日次キャップ（デフォルト 200） | Production (任意) |
+
+詳細な運用手順（killswitch、シークレットローテーション、採点失敗の調査、監視）は **[docs/MEETING_FB_RUNBOOK.md](../docs/MEETING_FB_RUNBOOK.md)** を参照。
 
 3. 「Save」→ 「Redeploy」（最新デプロイを再デプロイ）
 

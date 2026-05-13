@@ -1,38 +1,43 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { llmKilled } from "./_lib/costGuard.ts";
 
+// Public uptime probe. No auth. Never leaks env values.
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
-  const raw = process.env.SUPABASE_URL ?? "";
-  let url = raw.trim().replace(/^["']+|["']+$/g, "");
-  if (url && !url.startsWith("http")) url = `https://${url}`;
-  url = url.replace(/\/+$/, "");
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supaConfigured = Boolean(url && key);
+  const allowList = Boolean(process.env.ALLOWED_EMAILS);
+  const cronSet = Boolean(process.env.CRON_SECRET);
+  const gemini = Boolean(process.env.GEMINI_API_KEY);
 
-  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
-
-  const checks: Record<string, string> = {
-    SUPABASE_URL_full: url,
-    SUPABASE_SERVICE_ROLE_KEY: key ? `set (len=${key.length})` : "MISSING",
-  };
-
-  // Test 1: raw fetch to Supabase REST API
-  try {
-    const r = await fetch(`${url}/rest/v1/`, {
-      headers: { apikey: key, Authorization: `Bearer ${key}` },
-    });
-    checks.raw_fetch = `status=${r.status}`;
-  } catch (e: any) {
-    checks.raw_fetch = `FAIL: ${e.message}`;
-    if (e.cause) checks.raw_fetch_cause = String(e.cause);
+  // Cheap connectivity check: try to count meeting_transcripts. Bail at 1s.
+  let dbReachable: "ok" | "fail" | "skipped" = "skipped";
+  if (supaConfigured) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1000);
+      const r = await fetch(`${url}/rest/v1/meeting_transcripts?select=id&limit=1`, {
+        headers: { apikey: key!, Authorization: `Bearer ${key!}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      dbReachable = r.ok ? "ok" : "fail";
+    } catch {
+      dbReachable = "fail";
+    }
   }
 
-  // Test 2: supabase-js client
-  try {
-    const { createClient } = await import("@supabase/supabase-js");
-    const db = createClient(url, key);
-    const { data, error } = await db.from("meeting_transcripts").select("id").limit(1);
-    checks.supabase_client = error ? `error: ${error.message}` : `ok (${data?.length ?? 0} rows)`;
-  } catch (e: any) {
-    checks.supabase_client = `FAIL: ${e.message}`;
-  }
-
-  return res.json({ ok: true, checks });
+  return res.json({
+    ok: true,
+    service: "wheelup-vercel",
+    time: new Date().toISOString(),
+    config: {
+      supabase: supaConfigured ? "set" : "missing",
+      gemini: gemini ? "set" : "missing",
+      cron_secret: cronSet ? "set" : "missing",
+      allowed_emails: allowList ? "set" : "missing",
+    },
+    db: dbReachable,
+    llm: llmKilled() ? "disabled" : "enabled",
+  });
 }

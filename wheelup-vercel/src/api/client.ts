@@ -18,9 +18,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
     ...init,
   });
+  const requestId = res.headers.get("X-Request-Id");
   if (!res.ok) {
-    const text = await res.text().catch(() => "Unknown error");
-    throw new Error(`API Error ${res.status}: ${text}`);
+    let detail = "";
+    try {
+      const j = (await res.clone().json()) as { error?: string };
+      if (j?.error) detail = j.error;
+    } catch {
+      detail = await res.text().catch(() => "");
+    }
+    const suffix = requestId ? ` [req=${requestId}]` : "";
+    throw new Error(`API ${res.status}: ${detail || "unknown_error"}${suffix}`);
   }
   return res.json() as Promise<T>;
 }
@@ -853,6 +861,10 @@ export interface MeetingTranscript {
   consultant_name: string | null;
   is_leader: boolean;
   score_data: MeetingScore | null;
+  score_status?: "pending" | "scoring" | "scored" | "failed" | null;
+  score_attempts?: number;
+  score_error?: string | null;
+  created_by?: string | null;
   title: string;
   transcript_text: string;
   summary: string | null;
@@ -994,6 +1006,11 @@ export interface ContextualCoachingResponse {
 export async function scoreMeeting(id: string): Promise<MeetingScore> {
   if (DEMO_MODE) return demoScoreMeeting(id);
   return request(`/meetings/${id}/score`, { method: "POST" });
+}
+
+export async function rescoreMeeting(id: string): Promise<MeetingScore> {
+  if (DEMO_MODE) return demoScoreMeeting(id);
+  return request(`/meetings/${id}/rescore`, { method: "POST" });
 }
 
 export async function extractPlaybook(

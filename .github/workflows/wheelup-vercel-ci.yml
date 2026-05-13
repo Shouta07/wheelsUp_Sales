@@ -1,0 +1,42 @@
+name: wheelup-vercel ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wheelup-vercel/**"
+      - ".github/workflows/wheelup-vercel-ci.yml"
+  pull_request:
+    paths:
+      - "wheelup-vercel/**"
+      - ".github/workflows/wheelup-vercel-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wheelup-vercel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: wheelup-vercel/package-lock.json
+      - run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build
+        env:
+          # Frontend build needs a placeholder Supabase URL so import.meta.env
+          # is populated; the actual value at runtime comes from Vercel.
+          VITE_SUPABASE_URL: https://placeholder.supabase.co
+          VITE_SUPABASE_ANON_KEY: placeholder

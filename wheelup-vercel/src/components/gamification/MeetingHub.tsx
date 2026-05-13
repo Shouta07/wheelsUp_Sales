@@ -8,6 +8,7 @@ import {
   transcribeAudio,
   summarizeMeeting,
   addLeaderFeedback,
+  rescoreMeeting,
   type MeetingTranscript,
   type MeetingScore,
   type KeyMoment,
@@ -29,11 +30,14 @@ export default function MeetingHub() {
     queryKey: ["meetings", "mine", currentUser],
     queryFn: () => fetchMeetings(undefined, undefined, currentUser),
     enabled: !!currentUser,
+    // Poll only while at least one meeting is actively being scored.
+    // `failed` is terminal — the user gets a "再採点" button instead.
     refetchInterval: (query) => {
-      const hasUnscored = query.state.data?.transcripts?.some(
-        (m: MeetingTranscript) => m.transcript_text && !m.score_data
+      const inProgress = query.state.data?.transcripts?.some(
+        (m: MeetingTranscript) =>
+          m.score_status === "pending" || m.score_status === "scoring",
       );
-      return hasUnscored ? 5000 : false;
+      return inProgress ? 4000 : false;
     },
   });
 
@@ -84,9 +88,7 @@ export default function MeetingHub() {
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
+      // The list query polls on score_status; no setTimeout needed.
     } catch (err) { console.error(err); }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
@@ -107,9 +109,6 @@ export default function MeetingHub() {
       setTextInput("");
       setTitleInput("");
       setShowUpload(false);
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
     } catch (err) { console.error(err); }
     setUploading(false);
   };
@@ -245,6 +244,64 @@ export default function MeetingHub() {
   );
 }
 
+function ScoreStatusBadge({
+  meeting: m,
+  onRetry,
+}: {
+  meeting: MeetingTranscript;
+  onRetry: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // No transcript yet → nothing to score.
+  if (!m.transcript_text) return null;
+
+  // Already scored → silent.
+  if (m.score_status === "scored" || (m.score_status == null && m.score_data)) return null;
+
+  const handleRetry = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await rescoreMeeting(m.id);
+      onRetry();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setBusy(false);
+  };
+
+  if (m.score_status === "failed") {
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-duo-red px-3 py-1.5 rounded-xl bg-duo-red/10">
+          <span className="inline-block w-2 h-2 rounded-full bg-duo-red" />
+          採点失敗
+          {m.score_error ? ` (${m.score_error.slice(0, 40)})` : ""}
+        </span>
+        <button
+          onClick={handleRetry}
+          disabled={busy}
+          className="btn-duo !px-3 !py-1.5 !text-[10px] !rounded-xl text-white disabled:opacity-50"
+          style={{ backgroundColor: "#FF9600", borderBottomColor: "#cc7800" }}
+        >
+          {busy ? "再採点中..." : "再採点"}
+        </button>
+        {err && <span className="text-[10px] font-bold text-duo-red">{err}</span>}
+      </div>
+    );
+  }
+
+  // pending | scoring | (legacy: no status but transcript present)
+  return (
+    <span className="flex items-center gap-1.5 text-[10px] font-bold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
+      <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
+      {m.score_status === "scoring" ? "採点中..." : "自動採点待ち..."}
+    </span>
+  );
+}
+
 function MeetingEntry({
   meeting: m,
   leaderAvg,
@@ -317,7 +374,7 @@ function MeetingEntry({
       {expanded && (
         <div className="px-4 pb-4 space-y-3">
           {/* Actions */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {!m.summary && (
               <button
                 onClick={() => onSummarize(m.id)}
@@ -327,12 +384,7 @@ function MeetingEntry({
                 AI要約
               </button>
             )}
-            {!score && m.transcript_text && (
-              <span className="flex items-center gap-1.5 text-[10px] font-bold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
-                <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
-                自動採点中...
-              </span>
-            )}
+            <ScoreStatusBadge meeting={m} onRetry={onFeedbackSaved} />
           </div>
 
           {/* Summary */}
