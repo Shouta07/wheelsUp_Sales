@@ -10,6 +10,7 @@ import {
   addLeaderFeedback,
   type MeetingTranscript,
   type MeetingScore,
+  type KeyMoment,
 } from "../../api/client";
 
 export default function MeetingHub() {
@@ -371,25 +372,9 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* Key Moments (ダイジェスト) */}
+          {/* Key Moments Timeline (ダイジェストプレイバック) */}
           {score?.key_moments && score.key_moments.length > 0 && (
-            <div className="rounded-xl bg-[#fffbeb] border border-[#fde68a] p-3 space-y-2">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">重要発言ダイジェスト</div>
-              {score.key_moments.map((km, idx) => (
-                <div key={idx} className="flex items-start gap-2">
-                  <span
-                    className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded"
-                    style={{
-                      backgroundColor: DIMS.find(d => d.key === km.axis)?.color + "20",
-                      color: DIMS.find(d => d.key === km.axis)?.color || "#777",
-                    }}
-                  >
-                    {km.axis_label}
-                  </span>
-                  <p className="text-[10px] font-bold text-[#555] leading-relaxed flex-1">「{km.text}」</p>
-                </div>
-              ))}
-            </div>
+            <DigestTimeline moments={score.key_moments} />
           )}
 
           {/* Learning Resources (学習リソース) */}
@@ -461,6 +446,114 @@ const DIMS = [
   { key: "closing", label: "成約", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
+
+function DigestTimeline({ moments }: { moments: KeyMoment[] }) {
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const hasTimestamps = moments.some((m) => m.seconds != null);
+  const maxSec = hasTimestamps ? Math.max(...moments.filter((m) => m.seconds != null).map((m) => m.seconds!), 1) : 0;
+
+  const handleDotClick = (idx: number) => {
+    setSelectedIdx(idx === selectedIdx ? null : idx);
+    const el = listRef.current?.querySelector(`[data-moment="${idx}"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  return (
+    <div className="rounded-xl bg-[#fffbeb] border border-[#fde68a] p-3 space-y-2">
+      <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
+        面談ダイジェスト・プレイバック
+      </div>
+
+      {/* Timeline bar */}
+      {hasTimestamps && (
+        <div className="relative">
+          <div className="flex items-center justify-between text-[9px] font-bold text-[#aaa] mb-1">
+            <span>0:00</span>
+            <span>{Math.floor(maxSec / 60)}:{String(maxSec % 60).padStart(2, "0")}</span>
+          </div>
+          <div className="relative h-6 bg-[#fef3c7] rounded-full border border-[#fde68a]">
+            {moments.filter((m) => m.seconds != null).map((m, idx) => {
+              const origIdx = moments.indexOf(m);
+              const left = (m.seconds! / maxSec) * 100;
+              const dim = DIMS.find((d) => d.key === m.axis);
+              const isActive = selectedIdx === origIdx;
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handleDotClick(origIdx)}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-200"
+                  style={{ left: `${Math.min(Math.max(left, 3), 97)}%` }}
+                  title={`${m.timestamp || ""} ${m.axis_label}`}
+                >
+                  <div
+                    className="rounded-full border-2 border-white transition-all"
+                    style={{
+                      width: isActive ? 14 : 10,
+                      height: isActive ? 14 : 10,
+                      backgroundColor: dim?.color || "#999",
+                      boxShadow: isActive ? `0 0 0 3px ${dim?.color}40` : "0 1px 2px rgba(0,0,0,0.2)",
+                    }}
+                  />
+                </button>
+              );
+            })}
+          </div>
+          {/* Axis legend */}
+          <div className="flex gap-2 mt-1.5 justify-center flex-wrap">
+            {DIMS.map(({ key, label, color }) => {
+              const count = moments.filter((m) => m.axis === key).length;
+              if (count === 0) return null;
+              return (
+                <span key={key} className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="text-[9px] font-bold text-[#777]">{label}({count})</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Moment list */}
+      <div ref={listRef} className="space-y-1.5 max-h-48 overflow-y-auto">
+        {moments.map((km, idx) => {
+          const dim = DIMS.find((d) => d.key === km.axis);
+          const isActive = selectedIdx === idx;
+          return (
+            <div
+              key={idx}
+              data-moment={idx}
+              onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
+              className={`flex items-start gap-2 p-1.5 rounded-lg cursor-pointer transition-all ${
+                isActive ? "bg-white border border-[#fbbf24] shadow-sm" : "hover:bg-[#fef9e7]"
+              }`}
+            >
+              {km.timestamp && (
+                <span className="text-[10px] font-black text-[#92400e] shrink-0 w-11 tabular-nums">
+                  {km.timestamp}
+                </span>
+              )}
+              <span
+                className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded"
+                style={{ backgroundColor: (dim?.color || "#777") + "20", color: dim?.color || "#777" }}
+              >
+                {km.axis_label}
+              </span>
+              <div className="flex-1 min-w-0">
+                {km.speaker && (
+                  <span className="text-[10px] font-extrabold text-[#4b4b4b] mr-1">{km.speaker}:</span>
+                )}
+                <span className="text-[10px] font-bold text-[#555] leading-relaxed">「{km.text}」</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function ScoreComparison({
   score,

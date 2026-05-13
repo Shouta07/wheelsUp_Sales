@@ -694,9 +694,41 @@ function generateLearningResources(scores: Record<string, number>): import("./cl
 }
 
 // --- ダイジェスト抽出（面談の重要ポイントハイライト） ---
+function parseTimestamp(ts: string): number {
+  const parts = ts.split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+}
+
 function extractKeyMoments(text: string): import("./client").KeyMoment[] {
-  const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 20);
-  const moments: import("./client").KeyMoment[] = [];
+  const tsLineRe = /(?:\(?\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\)?\s*)?(?:【?([^】\n:：]{1,10})】?[：:])\s*(.+)/;
+  const lines = text.split(/\n/).filter((l) => l.trim().length > 0);
+
+  interface Segment { timestamp?: string; seconds?: number; speaker?: string; text: string; }
+  const segments: Segment[] = [];
+  let lastTs: string | undefined;
+  let lastSec: number | undefined;
+  let lastSpeaker: string | undefined;
+
+  for (const line of lines) {
+    const m = tsLineRe.exec(line.trim());
+    if (m) {
+      if (m[1]) { lastTs = m[1]; lastSec = parseTimestamp(m[1]); }
+      if (m[2]) lastSpeaker = m[2].trim();
+      segments.push({ timestamp: lastTs, seconds: lastSec, speaker: lastSpeaker, text: m[3] });
+    } else {
+      const plain = line.trim();
+      if (plain.length > 15) {
+        segments.push({ timestamp: lastTs, seconds: lastSec, speaker: lastSpeaker, text: plain });
+      }
+    }
+  }
+
+  if (segments.length === 0) {
+    const sentences = text.split(/[。！？\n]/).filter((s) => s.trim().length > 20);
+    for (const s of sentences) segments.push({ text: s.trim() });
+  }
 
   const axisChecks: { axis: string; label: string; phrases: string[]; strong: string[] }[] = [
     { axis: "needs", label: "ニーズ把握", phrases: NEEDS_PHRASES, strong: NEEDS_KEYWORDS_STRONG },
@@ -706,15 +738,17 @@ function extractKeyMoments(text: string): import("./client").KeyMoment[] {
     { axis: "intel", label: "情報収集", phrases: INTEL_PHRASES, strong: INTEL_KEYWORDS_STRONG },
   ];
 
-  for (const sent of sentences) {
+  const moments: import("./client").KeyMoment[] = [];
+
+  for (const seg of segments) {
     let bestAxis = "";
     let bestLabel = "";
     let bestRelevance = 0;
 
     for (const { axis, label, phrases, strong } of axisChecks) {
       let rel = 0;
-      for (const p of phrases) if (sent.includes(p)) rel += 3;
-      for (const kw of strong) if (sent.includes(kw)) rel += 1;
+      for (const p of phrases) if (seg.text.includes(p)) rel += 3;
+      for (const kw of strong) if (seg.text.includes(kw)) rel += 1;
       if (rel > bestRelevance) {
         bestRelevance = rel;
         bestAxis = axis;
@@ -722,19 +756,22 @@ function extractKeyMoments(text: string): import("./client").KeyMoment[] {
       }
     }
 
-    if (bestRelevance >= 3) {
+    if (bestRelevance >= 2) {
       moments.push({
-        text: sent.trim().slice(0, 100),
+        text: seg.text.slice(0, 120),
         axis: bestAxis,
         axis_label: bestLabel,
         relevance: bestRelevance,
+        timestamp: seg.timestamp,
+        seconds: seg.seconds,
+        speaker: seg.speaker,
       });
     }
   }
 
   return moments
-    .sort((a, b) => b.relevance - a.relevance)
-    .slice(0, 10);
+    .sort((a, b) => (a.seconds ?? 0) - (b.seconds ?? 0) || b.relevance - a.relevance)
+    .slice(0, 15);
 }
 
 // --- 実面談から抽出したプレイブック ---

@@ -955,6 +955,9 @@ export interface KeyMoment {
   axis: string;
   axis_label: string;
   relevance: number;
+  timestamp?: string;
+  seconds?: number;
+  speaker?: string;
 }
 
 export interface MeetingScore {
