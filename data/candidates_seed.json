@@ -1,0 +1,90 @@
+[
+  {
+    "code": "shimura",
+    "name": "志村",
+    "age": 48,
+    "current_status": "在職中",
+    "base_location": "東京都",
+    "desired_locations": ["東京都", "神奈川県", "千葉県", "埼玉県"],
+    "desired_industries": ["FM", "PM", "施設管理", "設備工事"],
+    "must_have": "建築設備（電気・空調・衛生）の実務経験。FM/PM領域の所長・現場責任者ポジション。年収550万以上。",
+    "nice_to_have": "大規模オフィスビル・商業施設・空港・物流施設の運用経験。BCP/省エネ提案。",
+    "deal_breakers": "夜勤メイン、警備中心、土日休み無し、年収500万未満。",
+    "profile": {
+      "specialties": ["建築設備（電気・空調・衛生）", "FM運用統括", "省エネ・BEMS", "業者マネジメント"],
+      "industries_ok": ["FM", "PM", "施設管理", "設備工事"],
+      "license": ["第二種電気主任技術者", "ビル管", "電気工事士", "防火管理者"],
+      "salary_min_jpy": 5500000,
+      "salary_max_jpy": 8500000,
+      "in_progress": [],
+      "summary": "大規模オフィスビルのFM統括経験18年。マネジメント志向。土日休み必須。"
+    },
+    "is_active": true
+  },
+  {
+    "code": "miyamoto",
+    "name": "宮本",
+    "age": 42,
+    "current_status": "在職中",
+    "base_location": "神奈川県",
+    "desired_locations": ["東京都", "神奈川県"],
+    "desired_industries": ["設備工事", "メーカー", "FM"],
+    "must_have": "設備工事の施工管理経験。1級管工事施工管理技士。",
+    "nice_to_have": "公共工事・大規模リニューアル経験。海外案件経験。",
+    "deal_breakers": "完全現場常駐の地方単身赴任、未経験職種。",
+    "profile": {
+      "specialties": ["空調・衛生設備施工管理", "リニューアル", "原価管理"],
+      "industries_ok": ["設備工事", "メーカー", "FM"],
+      "license": ["1級管工事施工管理技士", "1級建築設備士"],
+      "salary_min_jpy": 6000000,
+      "salary_max_jpy": 9000000,
+      "in_progress": [],
+      "summary": "サブコン現場代理人。リニューアル案件多数。家庭都合で関東圏内希望。"
+    },
+    "is_active": true
+  },
+  {
+    "code": "nagashima",
+    "name": "長島",
+    "age": 36,
+    "current_status": "離職中",
+    "base_location": "東京都",
+    "desired_locations": ["東京都", "千葉県", "埼玉県", "神奈川県"],
+    "desired_industries": ["PM", "FM", "施設管理"],
+    "must_have": "PM/BMの実務経験。テナント対応・契約周りの経験。",
+    "nice_to_have": "宿泊・商業施設の運営経験。英語コミュニケーション。",
+    "deal_breakers": "完全夜勤・警備のみ・年収400万未満。",
+    "profile": {
+      "specialties": ["プロパティマネジメント", "テナントリレーション", "ビル運営"],
+      "industries_ok": ["PM", "FM", "施設管理"],
+      "license": ["宅地建物取引士", "ビル管"],
+      "salary_min_jpy": 4500000,
+      "salary_max_jpy": 6500000,
+      "in_progress": [],
+      "summary": "PMアシスタントマネージャー7年。即就業可。コミュニケーション強み。"
+    },
+    "is_active": true
+  },
+  {
+    "code": "kato",
+    "name": "加藤",
+    "age": 53,
+    "current_status": "在職中（来月退職予定）",
+    "base_location": "埼玉県",
+    "desired_locations": ["東京都", "埼玉県"],
+    "desired_industries": ["施設管理", "FM"],
+    "must_have": "建物管理（電気・空調・衛生）統括経験。年収500万以上。",
+    "nice_to_have": "病院・公共施設の管理経験。シフトリーダー経験。",
+    "deal_breakers": "夜勤連勤、長時間残業、関東圏外。",
+    "profile": {
+      "specialties": ["建物設備管理", "シフト統括", "省エネ改修"],
+      "industries_ok": ["施設管理", "FM"],
+      "license": ["第三種電気主任技術者", "ビル管", "ボイラー技士2級"],
+      "salary_min_jpy": 5000000,
+      "salary_max_jpy": 7000000,
+      "in_progress": [],
+      "summary": "ビル管理25年。所長クラス。来月退職予定で就業緊急度高。"
+    },
+    "is_active": true
+  }
+]

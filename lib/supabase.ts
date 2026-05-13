@@ -1,0 +1,78 @@
+// Thin Supabase REST client. No SDK — just fetch + PostgREST conventions.
+
+const SB_URL = process.env.SUPABASE_URL;
+const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+export const supabaseConfigured = Boolean(SB_URL && KEY);
+
+function headers(extra: Record<string, string> = {}): HeadersInit {
+  if (!SB_URL || !KEY) throw new Error("Supabase not configured");
+  return {
+    apikey: KEY,
+    Authorization: `Bearer ${KEY}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    ...extra,
+  };
+}
+
+export async function sbSelect<T = unknown>(
+  table: string,
+  query: string = "select=*"
+): Promise<T[]> {
+  if (!SB_URL) throw new Error("Supabase not configured");
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, {
+    method: "GET",
+    headers: headers(),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`sbSelect ${table}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function sbInsert<T = unknown>(
+  table: string,
+  rows: Record<string, unknown>[],
+  opts: { onConflict?: string; returning?: boolean } = {}
+): Promise<T[]> {
+  if (!SB_URL) throw new Error("Supabase not configured");
+  const params = new URLSearchParams();
+  if (opts.onConflict) params.set("on_conflict", opts.onConflict);
+  const preferParts = [opts.onConflict ? "resolution=merge-duplicates" : ""];
+  preferParts.push(opts.returning === false ? "return=minimal" : "return=representation");
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?${params.toString()}`, {
+    method: "POST",
+    headers: headers({ Prefer: preferParts.filter(Boolean).join(",") }),
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`sbInsert ${table}: ${res.status} ${await res.text()}`);
+  if (opts.returning === false) return [];
+  return res.json();
+}
+
+export async function sbUpdate<T = unknown>(
+  table: string,
+  patch: Record<string, unknown>,
+  filter: string
+): Promise<T[]> {
+  if (!SB_URL) throw new Error("Supabase not configured");
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?${filter}`, {
+    method: "PATCH",
+    headers: headers({ Prefer: "return=representation" }),
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`sbUpdate ${table}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export function requireSecret(req: Request): Response | null {
+  const want = process.env.CRON_SECRET;
+  if (!want) {
+    return new Response(JSON.stringify({ error: "CRON_SECRET not set" }), { status: 500 });
+  }
+  const got = new URL(req.url).searchParams.get("secret");
+  if (got !== want) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  }
+  return null;
+}
