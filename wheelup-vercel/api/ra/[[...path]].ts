@@ -134,11 +134,16 @@ async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
 // /api/ra/crawl
 // ---------------------------------------------------------------------------
 async function crawl(db: DB, req: VercelRequest, res: VercelResponse) {
-  const limit = Number(req.query.limit ?? 10);
-  const companyId = typeof req.query.company_id === "string" ? req.query.company_id : null;
+  const r = await runCrawl(db, {
+    limit: Number(req.query.limit ?? 10),
+    companyId: typeof req.query.company_id === "string" ? req.query.company_id : null,
+  });
+  return res.json(r);
+}
 
-  let q = db.from("ra_companies").select("*").not("recruit_page_url", "is", null).order("last_crawled_at", { ascending: true, nullsFirst: true }).limit(limit);
-  if (companyId) q = q.eq("id", companyId);
+async function runCrawl(db: DB, opts: { limit: number; companyId: string | null }) {
+  let q = db.from("ra_companies").select("*").not("recruit_page_url", "is", null).order("last_crawled_at", { ascending: true, nullsFirst: true }).limit(opts.limit);
+  if (opts.companyId) q = q.eq("id", opts.companyId);
   const { data: companies, error } = await q;
   if (error) throw new Error(error.message);
 
@@ -184,7 +189,7 @@ async function crawl(db: DB, req: VercelRequest, res: VercelResponse) {
     kind: "crawl", finished_at: new Date().toISOString(),
     ok: stats.errors === 0, stats: { ...stats, model: geminiModel }, error: errors.join(" | ") || null,
   });
-  return res.json({ ok: true, ...stats, errors });
+  return { ok: true, ...stats, errors };
 }
 
 type ExtractedJob = {
@@ -223,13 +228,18 @@ ${body.slice(0, 20000)}`;
 // /api/ra/match
 // ---------------------------------------------------------------------------
 async function match(db: DB, req: VercelRequest, res: VercelResponse) {
-  const limit = Number(req.query.limit ?? 20);
-  const jobId = typeof req.query.job_id === "string" ? req.query.job_id : null;
+  const r = await runMatch(db, {
+    limit: Number(req.query.limit ?? 20),
+    jobId: typeof req.query.job_id === "string" ? req.query.job_id : null,
+  });
+  return res.json(r);
+}
 
+async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const { data: candidates } = await db.from("ra_candidates").select("*").eq("is_active", true).limit(20);
-  const jobsQuery = jobId
-    ? db.from("ra_jobs").select("*").eq("id", jobId).limit(1)
-    : db.from("ra_jobs").select("*").eq("is_open", true).order("last_seen_at", { ascending: false }).limit(limit);
+  const jobsQuery = opts.jobId
+    ? db.from("ra_jobs").select("*").eq("id", opts.jobId).limit(1)
+    : db.from("ra_jobs").select("*").eq("is_open", true).order("last_seen_at", { ascending: false }).limit(opts.limit);
   const { data: jobs, error } = await jobsQuery;
   if (error) throw new Error(error.message);
 
@@ -259,7 +269,7 @@ async function match(db: DB, req: VercelRequest, res: VercelResponse) {
     ok: stats.errors === 0, stats: { ...stats, jobs: jobs?.length ?? 0, candidates: candidates?.length ?? 0, model: geminiModel },
     error: errors.join(" | ") || null,
   });
-  return res.json({ ok: true, ...stats, errors });
+  return { ok: true, ...stats, errors };
 }
 
 type Scored = { grade: "◎" | "○" | "△" | "×"; score: number; reasons: string[]; concerns: string[] };
@@ -359,10 +369,10 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 // /api/ra/cron — crawl + match
 // ---------------------------------------------------------------------------
-async function cron(db: DB, req: VercelRequest, res: VercelResponse) {
+async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  const c = await tryRun(() => crawlInternal(db));
-  const m = await tryRun(() => matchInternal(db));
+  const c = await tryRun(() => runCrawl(db, { limit: 20, companyId: null }));
+  const m = await tryRun(() => runMatch(db, { limit: 20, jobId: null }));
   const ok = c.ok && m.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
@@ -678,25 +688,4 @@ async function pipedriveMatch(db: DB, req: VercelRequest, res: VercelResponse) {
 async function tryRun(fn: () => Promise<unknown>) {
   try { return { ok: true, body: await fn(), error: null }; }
   catch (err) { return { ok: false, body: null, error: (err as Error).message }; }
-}
-
-async function crawlInternal(db: DB) {
-  const reqLike = { query: { limit: "20" } } as unknown as VercelRequest;
-  const recorder: { body?: unknown } = {};
-  const resLike = {
-    json(b: unknown) { recorder.body = b; return resLike; },
-    status() { return resLike; },
-  } as unknown as VercelResponse;
-  await crawl(db, reqLike, resLike);
-  return recorder.body;
-}
-async function matchInternal(db: DB) {
-  const reqLike = { query: { limit: "20" } } as unknown as VercelRequest;
-  const recorder: { body?: unknown } = {};
-  const resLike = {
-    json(b: unknown) { recorder.body = b; return resLike; },
-    status() { return resLike; },
-  } as unknown as VercelResponse;
-  await match(db, reqLike, resLike);
-  return recorder.body;
 }
