@@ -160,9 +160,10 @@ function DraftModal({ row, onClose, onSent }: { row: ReadyRow; onClose: () => vo
     } catch (e) { setErr((e as Error).message); }
   }
 
-  // mailto: で Gmail を開く。長文だと URL 長制限があるので軽く制限
+  // mailto: で Gmail を開く。URL 長制限 (Chrome ~2KB) を超えると本文が切れるので警告。
   const contactEmail = row.company_contact_paths.find((p) => p.kind === "email")?.url ?? row.company_contact_paths.find((p) => p.kind === "email")?.value;
   const mailto = `mailto:${contactEmail ?? ""}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const mailtoTooLong = mailto.length > 1900;   // 安全マージン込み
   const formUrl = row.company_contact_paths.find((p) => p.kind === "form")?.url;
 
   return (
@@ -195,8 +196,13 @@ function DraftModal({ row, onClose, onSent }: { row: ReadyRow; onClose: () => vo
                 {copied ? "コピー済✓" : "📋 コピー"}
               </button>
               {contactEmail && (
-                <a href={mailto} target="_blank" rel="noreferrer" className="px-3 py-1 rounded-lg text-[10px] font-black bg-white border border-gray-200 hover:bg-gray-50">
-                  📧 Gmail で開く
+                <a
+                  href={mailtoTooLong ? `mailto:${contactEmail}?subject=${encodeURIComponent(subject)}` : mailto}
+                  target="_blank" rel="noreferrer"
+                  title={mailtoTooLong ? "本文が長すぎるので件名のみで開きます。本文は📋コピーで貼ってください" : ""}
+                  className="px-3 py-1 rounded-lg text-[10px] font-black bg-white border border-gray-200 hover:bg-gray-50"
+                >
+                  📧 Gmail で開く{mailtoTooLong ? " ⚠" : ""}
                 </a>
               )}
               {formUrl && (
