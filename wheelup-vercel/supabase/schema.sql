@@ -368,6 +368,7 @@ create table if not exists meeting_transcripts (
   consultant_name text,
   is_leader boolean default false,
   score_data jsonb,
+  leader_feedback text,
   title text,
   transcript_text text,
   summary text,

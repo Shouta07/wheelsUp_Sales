@@ -12,6 +12,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
  * POST   /api/meetings/:id/score     → 面談品質スコアリング
  * PUT    /api/meetings/:id            → 議事録更新
  * DELETE /api/meetings/:id            → 議事録削除
+ * POST   /api/meetings/:id/leader-feedback → リーダーフィードバック追加
  * POST   /api/meetings/extract-playbook → リーダー面談からプレイブック抽出
  * POST   /api/meetings/coach          → 案件文脈付きフェーズ別コーチング
  */
@@ -59,6 +60,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/:id/score ---
     if (sub === "score" && req.method === "POST") {
       return await scoreMeeting(db, id, res);
+    }
+    // --- /api/meetings/:id/leader-feedback ---
+    if (sub === "leader-feedback" && req.method === "POST") {
+      return await addLeaderFeedback(db, id, req, res);
     }
 
     return res.status(404).json({ error: "Not found" });
@@ -405,6 +410,28 @@ ${text.slice(0, 6000)}
   }
 
   return { meeting_id: id, ...parsed };
+}
+
+/* ========== Leader Feedback ========== */
+
+async function addLeaderFeedback(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { feedback } = req.body || {};
+  if (!feedback || typeof feedback !== "string") {
+    return res.status(400).json({ error: "feedback (string) is required" });
+  }
+  const { data, error } = await db
+    .from("meeting_transcripts")
+    .update({ leader_feedback: feedback.trim() })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
 }
 
 /* ========== Leader Playbook Extraction ========== */
