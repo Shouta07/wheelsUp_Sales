@@ -51,7 +51,7 @@ profile: ${JSON.stringify(candidate.profile).slice(0, 1500)}`;
 }
 
 export async function POST(req: Request) {
-  const guard = guardRequest(req, { route: "match", limit: LLM_LIMIT });
+  const guard = await guardRequest(req, { route: "match", limit: LLM_LIMIT });
   if (guard.deny) return guard.deny;
   const { requestId } = guard;
 

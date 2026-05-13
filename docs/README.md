@@ -11,7 +11,9 @@ Next.js 15 App Router + Supabase REST + Gemini 2.5 Flash Lite で動く社内ツ
 - Supabase（REST のみ、SDK 不要）
 - Gemini 2.5 Flash Lite（`GEMINI_API_KEY`、`GEMINI_MODEL` で上書き可）
 - Jina Reader（`JINA_API_KEY` があれば優先、なければ素のfetchにフォールバック）
-- 認証: `Authorization: Bearer <CRON_SECRET>`（fallback として `?secret=`）。Supabase Auth 統合は今後。
+- 認証:
+  - **ブラウザ**: Supabase Auth マジックリンク。`ALLOWED_EMAILS` の allow-list が有効
+  - **マシン (cron/curl)**: `Authorization: Bearer <CRON_SECRET>`（fallback: `?secret=`）
 - レート制限: IP + ルート単位のインメモリ token bucket。LLM 系は 4 req/min、書込系は 20 req/min。
 - 監査ログ: 全 API レスポンスに `X-Request-Id` を付与。サーバ側は JSON Lines で出力。
 
@@ -42,8 +44,9 @@ Supabase SQL Editor で以下を順に実行:
 
 1. `supabase/migrations/001_schema.sql` — テーブル + ビュー
 2. `supabase/migrations/002_rls.sql` — RLS（anon/authenticated を全テーブルから完全に締め出し、service_role 経由のみ許可）
+3. `supabase/migrations/003_team_access.sql` — チーム運用向けにログイン済みユーザーへ SELECT を再付与、`activities` への INSERT も許可
 
-> RLS 002 を流さないと、もし anon キーが露出した場合に DB 全件が読まれます。本番では **必ず両方** 流してください。
+> 単独運用なら 002 まででよい。**5人チーム運用** で UI からログインさせる場合は 003 まで流す。
 
 テーブル:
 
@@ -140,14 +143,21 @@ npm run build     # 本番ビルド（mock モードで通る）
 
 `.github/workflows/ci.yml` で push/PR ごとに上記 3 つを実行します。
 
-## 本番チェックリスト
+## 本番チェックリスト（5人チーム運用）
 
-- [ ] `001_schema.sql` と `002_rls.sql` を Supabase で適用
+- [ ] `001_schema.sql` → `002_rls.sql` → `003_team_access.sql` を Supabase で順に適用
 - [ ] `CRON_SECRET` を `openssl rand -base64 36` で生成、Vercel 環境変数に登録
 - [ ] `SUPABASE_SERVICE_ROLE_KEY` がクライアントに漏れていないか確認（`NEXT_PUBLIC_*` には絶対に置かない）
-- [ ] `/api/import` を 1 度だけ手動実行（シード投入）
+- [ ] `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` を Vercel に登録（ブラウザ Auth 用）
+- [ ] `ALLOWED_EMAILS=alice@co.jp,bob@co.jp,...` を Vercel に登録（5人分）
+- [ ] Supabase Dashboard → Auth → Providers → Email → **Allow signups = OFF**
+- [ ] Supabase Dashboard → Auth → URL Configuration → Site URL & Redirect URLs に本番URLを登録（`https://<host>/auth/callback`）
+- [ ] `/api/import` を 1 度だけ手動実行（Bearer 認証で）
 - [ ] Vercel Cron が `/api/cron` を 22:00 UTC に叩く設定を確認
-- [ ] 監視: Vercel Logs で `X-Request-Id` ベースに調査できることを確認
+- [ ] 5 人が `/login` でサインインできることを動作確認
+- [ ] バックアップ設定の確認 → `docs/RUNBOOK.md` を参照
+
+詳細な運用手順（メンバー追加・削除、鍵ローテーション、バックアップ、復旧、監視）は **[docs/RUNBOOK.md](./RUNBOOK.md)** を参照。
 
 ## noindex
 

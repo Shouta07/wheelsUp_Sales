@@ -32,7 +32,7 @@ export async function GET(req: Request) {
   // Cron runs sub-calls, so it bumps the LLM bucket but its own bucket is
   // identical. Internal subcalls will also be checked but they come from the
   // same process so the IP is `unknown` — they share a bucket and that's OK.
-  const guard = guardRequest(req, { route: "cron", limit: LLM_LIMIT });
+  const guard = await guardRequest(req, { route: "cron", limit: LLM_LIMIT });
   if (guard.deny) return guard.deny;
   const { requestId } = guard;
 

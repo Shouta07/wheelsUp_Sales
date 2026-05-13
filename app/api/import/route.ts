@@ -9,7 +9,7 @@ import { log, publicError } from "@/lib/logger";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const guard = guardRequest(req, { route: "import", limit: WRITE_LIMIT });
+  const guard = await guardRequest(req, { route: "import", limit: WRITE_LIMIT });
   if (guard.deny) return guard.deny;
   const { requestId } = guard;
 

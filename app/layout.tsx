@@ -2,6 +2,7 @@ import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { authConfigured, getSessionUser } from "@/lib/sessionAuth";
 
 export const metadata: Metadata = {
   title: "Wheels Up Sales — RA prospecting",
@@ -16,7 +17,9 @@ const nav = [
   { href: "/discovery", label: "発掘キュー" },
 ];
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const user = authConfigured() ? await getSessionUser() : null;
+
   return (
     <html lang="ja">
       <body>
@@ -28,7 +31,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 <Link key={n.href} href={n.href} className="hover:text-brand-600">{n.label}</Link>
               ))}
             </nav>
-            <span className="ml-auto text-xs text-gray-400">社内ツール / noindex</span>
+            <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
+              {user ? (
+                <>
+                  <span title={user.id}>{user.email}</span>
+                  <form action="/auth/signout" method="post">
+                    <button type="submit" className="text-gray-600 hover:text-brand-600">
+                      サインアウト
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <span className="text-gray-400">社内ツール / noindex</span>
+              )}
+            </div>
           </div>
         </header>
         <main className="max-w-7xl mx-auto px-6 py-6">{children}</main>

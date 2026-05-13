@@ -42,9 +42,9 @@ function optUuid(v: unknown): string | null {
 }
 
 export async function POST(req: Request) {
-  const guard = guardRequest(req, { route: "activity", limit: WRITE_LIMIT });
+  const guard = await guardRequest(req, { route: "activity", limit: WRITE_LIMIT });
   if (guard.deny) return guard.deny;
-  const { requestId } = guard;
+  const { requestId, user } = guard;
 
   if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
 
@@ -77,7 +77,9 @@ export async function POST(req: Request) {
       body: clampText(payload.body, 4000),
       outcome: clampText(payload.outcome, 500),
       occurred_at: payload.occurred_at ?? new Date().toISOString(),
-      created_by: clampText(payload.created_by, 120),
+      // Session user wins; explicit payload field is only used by machine
+      // callers (Bearer). Length is clamped either way.
+      created_by: user?.email ?? clampText(payload.created_by, 120),
     };
   } catch {
     return jsonWithId({ error: "invalid_uuid" }, requestId, { status: 400 });

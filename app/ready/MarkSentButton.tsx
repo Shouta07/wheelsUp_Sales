@@ -13,19 +13,15 @@ export function MarkSentButton(props: {
   const [err, setErr] = useState<string | null>(null);
 
   async function go() {
-    const secret = typeof window !== "undefined" ? window.prompt("CRON_SECRET") : "";
-    if (!secret) return;
     setState("sending");
     setErr(null);
     try {
+      // Auth is carried by the session cookie set during sign-in. No
+      // prompt, no shared secret in the browser.
       const res = await fetch(`/api/activity`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Send the secret via Authorization header so it does not end up
-          // in browser history or server access logs.
-          Authorization: `Bearer ${secret}`,
-        },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           match_id: props.matchId,
           company_id: props.companyId,

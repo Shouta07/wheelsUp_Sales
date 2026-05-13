@@ -16,7 +16,7 @@ interface Suggestion {
 }
 
 export async function POST(req: Request) {
-  const guard = guardRequest(req, { route: "discover", limit: LLM_LIMIT });
+  const guard = await guardRequest(req, { route: "discover", limit: LLM_LIMIT });
   if (guard.deny) return guard.deny;
   const { requestId } = guard;
 
