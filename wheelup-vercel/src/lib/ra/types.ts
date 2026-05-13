@@ -102,6 +102,31 @@ export type Activity = {
   occurred_at: string;
 };
 
+// Flat row for the "募集ポジション一覧" page — one row per (open) job,
+// pre-joined with its company so the UI can render a single list.
+export type JobWithCompany = {
+  job_id: string;
+  job_title: string;
+  job_url: string | null;
+  description: string | null;
+  requirements: string | null;
+  employment_type: string | null;
+  location: string | null;
+  salary_range: string | null;
+  last_seen_at: string;
+  is_open: boolean;
+  company_id: string;
+  company_name: string;
+  company_priority: Priority;
+  company_category: string | null;
+  recruit_page_url: string | null;
+  contact_form_url: string | null;
+  contact_email: string | null;
+  best_grade: Grade | null;
+  best_score: number | null;
+  best_candidate_name: string | null;
+};
+
 export type DiscoveryRow = {
   id: string;
   name: string;

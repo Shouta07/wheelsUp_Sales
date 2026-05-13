@@ -19,6 +19,6 @@
     }
   ],
   "crons": [
-    { "path": "/api/ra/cron?secret=__REPLACE_WITH_CRON_SECRET__", "schedule": "0 22 * * *" }
+    { "path": "/api/ra/cron", "schedule": "0 22 * * *" }
   ]
 }
