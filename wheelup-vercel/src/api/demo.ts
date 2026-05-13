@@ -8,20 +8,38 @@ function nextId(): string {
 }
 
 // --- localStorage 永続化（リロードしてもデータ保持） ---
-const STORAGE_KEY = "wheelsup_meetings_v1";
+const STORAGE_KEY = "wheelsup_meetings_v2";
 
 function loadFromStorage(): boolean {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      raw = localStorage.getItem("wheelsup_meetings_v1");
+      if (raw) localStorage.removeItem("wheelsup_meetings_v1");
+    }
     if (!raw) return false;
     const data = JSON.parse(raw);
     if (!Array.isArray(data.m) || data.m.length === 0) return false;
     meetings = data.m;
     idCounter = data.c || meetings.length + 1;
+    migrateScores();
     return true;
   } catch {
     return false;
   }
+}
+
+function migrateScores(): void {
+  let changed = false;
+  for (const m of meetings) {
+    if (m.score_data && !m.score_data.learning_resources) {
+      const fresh = scoreFromText(m.transcript_text);
+      fresh.meeting_id = m.score_data.meeting_id;
+      m.score_data = fresh;
+      changed = true;
+    }
+  }
+  if (changed) saveToStorage();
 }
 
 function saveToStorage(): void {

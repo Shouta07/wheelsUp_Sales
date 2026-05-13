@@ -67,7 +67,7 @@ function generateNotifications(
         notifications.push({
           id: `gap-${latest.id}`,
           icon: "📊",
-          text: `${gapLabel}: リーダーとの差 ${biggestGap.gap}点`,
+          text: `${gapLabel}: リーダーとの差 ${Math.round(biggestGap.gap * 10) / 10}点`,
           subtext: "プレイブックを見て改善ポイントを確認しよう",
           color: "#FF9600",
           meetingId: latest.id,
