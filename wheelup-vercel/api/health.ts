@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
+  const url = process.env.SUPABASE_URL ?? "";
   const checks: Record<string, string> = {
-    SUPABASE_URL: process.env.SUPABASE_URL ? "set" : "MISSING",
+    SUPABASE_URL: url ? "set" : "MISSING",
+    SUPABASE_URL_format: `len=${url.length}, starts=${url.substring(0, 12)}..., ends=...${url.slice(-8)}`,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? "set" : "MISSING",
     VITE_SUPABASE_URL: process.env.VITE_SUPABASE_URL ? "set" : "MISSING",
   };
