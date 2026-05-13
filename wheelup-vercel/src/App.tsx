@@ -130,13 +130,16 @@ function NavBar({
           {mode === "meeting" && <StreakFlame />}
           <button
             onClick={onSwitchUser}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-xl hover:bg-gray-50 transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-xl border border-[#e5e5e5] hover:bg-red-50 hover:border-red-200 transition-colors group"
             title="ユーザー切替"
           >
             <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
               <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
             </div>
-            <span className="text-xs font-bold text-[#4b4b4b] hidden sm:inline">{currentUser}</span>
+            <span className="text-xs font-bold text-[#4b4b4b]">{currentUser}</span>
+            <svg className="w-3.5 h-3.5 text-[#afafaf] group-hover:text-red-400 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
           </button>
         </div>
       </div>
