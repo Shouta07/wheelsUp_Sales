@@ -7,6 +7,7 @@ import {
   createMeeting,
   transcribeAudio,
   summarizeMeeting,
+  addLeaderFeedback,
   type MeetingTranscript,
   type MeetingScore,
 } from "../../api/client";
@@ -234,6 +235,8 @@ export default function MeetingHub() {
             meeting={m}
             leaderAvg={leaderAvg}
             onSummarize={handleSummarize}
+            isLeaderUser={isLeaderUser}
+            onFeedbackSaved={() => qc.invalidateQueries({ queryKey: ["meetings"] })}
           />
         ))}
       </div>
@@ -245,13 +248,30 @@ function MeetingEntry({
   meeting: m,
   leaderAvg,
   onSummarize,
+  isLeaderUser,
+  onFeedbackSaved,
 }: {
   meeting: MeetingTranscript;
   leaderAvg: Record<string, number> | null;
   onSummarize: (id: string) => void;
+  isLeaderUser: boolean;
+  onFeedbackSaved: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [fbText, setFbText] = useState("");
+  const [fbSaving, setFbSaving] = useState(false);
   const score = m.score_data;
+
+  const handleFeedbackSave = async () => {
+    if (!fbText.trim()) return;
+    setFbSaving(true);
+    try {
+      await addLeaderFeedback(m.id, fbText.trim());
+      setFbText("");
+      onFeedbackSaved();
+    } catch { /* ignore */ }
+    setFbSaving(false);
+  };
 
   return (
     <div className="rounded-2xl border-2 border-[#e5e5e5] overflow-hidden">
@@ -326,7 +346,7 @@ function MeetingEntry({
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
           )}
 
-          {/* Evidence — the "事実っぽさ" that builds trust */}
+          {/* Evidence */}
           {score?.evidence && (
             <div className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3 space-y-1.5">
               <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">採点根拠（面談からの引用）</div>
@@ -348,6 +368,84 @@ function MeetingEntry({
             <div className="rounded-xl bg-duo-purple/5 border border-duo-purple/20 p-3">
               <div className="text-[10px] font-extrabold text-duo-purple uppercase tracking-wider mb-1">リーダーならこうしてた</div>
               <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{score.leader_would}</p>
+            </div>
+          )}
+
+          {/* Key Moments (ダイジェスト) */}
+          {score?.key_moments && score.key_moments.length > 0 && (
+            <div className="rounded-xl bg-[#fffbeb] border border-[#fde68a] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">重要発言ダイジェスト</div>
+              {score.key_moments.map((km, idx) => (
+                <div key={idx} className="flex items-start gap-2">
+                  <span
+                    className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded"
+                    style={{
+                      backgroundColor: DIMS.find(d => d.key === km.axis)?.color + "20",
+                      color: DIMS.find(d => d.key === km.axis)?.color || "#777",
+                    }}
+                  >
+                    {km.axis_label}
+                  </span>
+                  <p className="text-[10px] font-bold text-[#555] leading-relaxed flex-1">「{km.text}」</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Learning Resources (学習リソース) */}
+          {score?.learning_resources && score.learning_resources.length > 0 && (
+            <div className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider">弱点強化トレーニング</div>
+              {score.learning_resources.map((lr, idx) => (
+                <div key={idx} className="rounded-lg bg-white border border-[#e5e5e5] p-2.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                      style={{
+                        backgroundColor: DIMS.find(d => d.key === lr.axis)?.color + "20",
+                        color: DIMS.find(d => d.key === lr.axis)?.color || "#777",
+                      }}
+                    >
+                      {DIMS.find(d => d.key === lr.axis)?.label || lr.axis}
+                    </span>
+                    <span className="text-xs font-extrabold text-[#4b4b4b]">{lr.title}</span>
+                  </div>
+                  <p className="text-[10px] font-bold text-[#777] leading-relaxed">{lr.description}</p>
+                  {lr.playbook_situation && (
+                    <p className="text-[10px] font-bold text-duo-purple mt-1">📖 プレイブック: {lr.playbook_situation}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Leader Feedback (小林フィードバック) */}
+          {m.leader_feedback && (
+            <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">小林リーダーのコメント</div>
+              <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
+            </div>
+          )}
+
+          {isLeaderUser && !m.is_leader && score && (
+            <div className="rounded-xl border-2 border-dashed border-[#fbbf24] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
+                {m.leader_feedback ? "コメントを更新" : "リーダーコメントを追加"}
+              </div>
+              <textarea
+                value={fbText}
+                onChange={(e) => setFbText(e.target.value)}
+                placeholder="この面談へのアドバイスやフィードバックを入力..."
+                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-16 focus:border-[#fbbf24] focus:outline-none resize-none"
+              />
+              <button
+                onClick={handleFeedbackSave}
+                disabled={!fbText.trim() || fbSaving}
+                className="btn-duo !px-4 !py-1.5 !text-[10px] text-white disabled:opacity-40"
+                style={{ backgroundColor: "#f59e0b", borderBottomColor: "#d97706" }}
+              >
+                {fbSaving ? "保存中..." : "コメント保存"}
+              </button>
             </div>
           )}
         </div>
