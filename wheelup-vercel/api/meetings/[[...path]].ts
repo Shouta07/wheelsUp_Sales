@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
+import { generateLearningResources } from "../_lib/learning-resources.js";
 
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
@@ -405,6 +406,7 @@ ${text.slice(0, 6000)}
   }
 
   if (parsed.scores) {
+    parsed.learning_resources = generateLearningResources(parsed.scores);
     await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
   }
 

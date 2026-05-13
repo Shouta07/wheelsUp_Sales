@@ -72,6 +72,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case "find-contact-info": return await findContactInfo(db, req, res);
       case "add-companies":     return await addCompanies(db, req, res);
       case "add-candidate":     return await addCandidate(db, req, res);
+      case "add-job":           return await addJob(db, req, res);
+      case "update-job":        return await updateJob(db, req, res);
+      case "close-job":         return await closeJob(db, req, res);
       case "approve-discovery": return await approveDiscovery(db, req, res);
       case "draft":             return await draftEmail(db, req, res);
       case "update-company":    return await updateCompany(db, req, res);
@@ -543,6 +546,114 @@ async function addCandidate(db: DB, req: VercelRequest, res: VercelResponse) {
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ ok: true, candidate: data });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/add-job — manually insert one job row into ra_jobs
+// ---------------------------------------------------------------------------
+async function addJob(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    company_id?: string;
+    title?: string;
+    description?: string | null;
+    requirements?: string | null;
+    employment_type?: string | null;
+    location?: string | null;
+    salary_range?: string | null;
+    url?: string | null;
+    run_match?: boolean;
+  };
+  if (!body.company_id) return res.status(400).json({ error: "company_id required" });
+  if (!body.title || !body.title.trim()) return res.status(400).json({ error: "title required" });
+
+  const { data: company } = await db.from("ra_companies").select("id,name").eq("id", body.company_id).maybeSingle();
+  if (!company) return res.status(404).json({ error: "company not found" });
+
+  const title = body.title.trim();
+  const description = body.description?.trim() || null;
+  const requirements = body.requirements?.trim() || null;
+  const hash = sha256(`manual\n${title}\n${description ?? ""}\n${requirements ?? ""}`);
+
+  const { data: existing } = await db
+    .from("ra_jobs")
+    .select("id")
+    .eq("company_id", body.company_id)
+    .eq("content_hash", hash)
+    .maybeSingle();
+  if (existing) return res.status(409).json({ error: "同じ内容の求人が既に登録されています", job_id: existing.id });
+
+  const { data: ins, error } = await db.from("ra_jobs").insert({
+    company_id: body.company_id,
+    title,
+    description,
+    requirements,
+    employment_type: body.employment_type?.trim() || null,
+    location: body.location?.trim() || null,
+    salary_range: body.salary_range?.trim() || null,
+    url: body.url?.trim() || null,
+    content_hash: hash,
+    is_open: true,
+    raw: { source: "manual" },
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  let matchStats: unknown = null;
+  if (body.run_match) {
+    const fakeReq = { query: { job_id: ins.id, limit: "1" } } as unknown as VercelRequest;
+    const rec: { body?: unknown } = {};
+    const fakeRes = {
+      json(b: unknown) { rec.body = b; return fakeRes; },
+      status() { return fakeRes; },
+    } as unknown as VercelResponse;
+    await match(db, fakeReq, fakeRes).catch(() => undefined);
+    matchStats = rec.body;
+  }
+
+  return res.json({ ok: true, job: ins, match: matchStats });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/update-job — PATCH a manually-entered (or crawled) job
+// ---------------------------------------------------------------------------
+async function updateJob(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as {
+    id?: string;
+    title?: string;
+    description?: string | null;
+    requirements?: string | null;
+    employment_type?: string | null;
+    location?: string | null;
+    salary_range?: string | null;
+    url?: string | null;
+    is_open?: boolean;
+  };
+  if (!body.id) return res.status(400).json({ error: "id required" });
+
+  const patch: Record<string, unknown> = {};
+  for (const k of ["title", "description", "requirements", "employment_type", "location", "salary_range", "url", "is_open"] as const) {
+    if (body[k] !== undefined) patch[k] = body[k];
+  }
+  patch.last_seen_at = new Date().toISOString();
+
+  const { data, error } = await db.from("ra_jobs").update(patch).eq("id", body.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, job: data });
+}
+
+// ---------------------------------------------------------------------------
+// /api/ra/close-job — flip is_open=false (求人を閉じる)
+// ---------------------------------------------------------------------------
+async function closeJob(db: DB, req: VercelRequest, res: VercelResponse) {
+  const body = (req.body ?? {}) as { id?: string };
+  if (!body.id) return res.status(400).json({ error: "id required" });
+  const { data, error } = await db
+    .from("ra_jobs")
+    .update({ is_open: false, closed_at: new Date().toISOString() })
+    .eq("id", body.id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, job: data });
 }
 
 // ---------------------------------------------------------------------------
