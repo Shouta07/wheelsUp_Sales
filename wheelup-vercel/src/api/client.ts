@@ -948,6 +948,9 @@ export interface LearningResource {
   title: string;
   description: string;
   playbook_situation?: string;
+  url?: string;
+  source_type?: "video" | "article" | "playbook";
+  source_name?: string;
 }
 
 export interface KeyMoment {

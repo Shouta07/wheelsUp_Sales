@@ -380,27 +380,53 @@ function MeetingEntry({
           {/* Learning Resources (学習リソース) */}
           {score?.learning_resources && score.learning_resources.length > 0 && (
             <div className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
-              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider">弱点強化トレーニング</div>
-              {score.learning_resources.map((lr, idx) => (
-                <div key={idx} className="rounded-lg bg-white border border-[#e5e5e5] p-2.5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                      style={{
-                        backgroundColor: DIMS.find(d => d.key === lr.axis)?.color + "20",
-                        color: DIMS.find(d => d.key === lr.axis)?.color || "#777",
-                      }}
-                    >
-                      {DIMS.find(d => d.key === lr.axis)?.label || lr.axis}
-                    </span>
-                    <span className="text-xs font-extrabold text-[#4b4b4b]">{lr.title}</span>
+              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1">弱点強化トレーニング</div>
+              {score.learning_resources.map((lr, idx) => {
+                const dim = DIMS.find(d => d.key === lr.axis);
+                const typeIcon = lr.source_type === "video" ? "▶" : lr.source_type === "article" ? "📄" : "📖";
+                const typeColor = lr.source_type === "video" ? "#FF4B4B" : lr.source_type === "article" ? "#1CB0F6" : "#CE82FF";
+                return (
+                  <div key={idx} className="rounded-lg bg-white border border-[#e5e5e5] overflow-hidden">
+                    <div className="p-2.5">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                          style={{
+                            backgroundColor: (dim?.color || "#777") + "20",
+                            color: dim?.color || "#777",
+                          }}
+                        >
+                          {dim?.label || lr.axis}
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: typeColor + "15", color: typeColor }}>
+                          {typeIcon} {lr.source_name || (lr.source_type === "video" ? "動画" : lr.source_type === "article" ? "記事" : "プレイブック")}
+                        </span>
+                      </div>
+                      <p className="text-xs font-extrabold text-[#4b4b4b] mb-0.5">{lr.title}</p>
+                      <p className="text-[10px] font-bold text-[#777] leading-relaxed">{lr.description}</p>
+                    </div>
+                    {lr.url ? (
+                      <a
+                        href={lr.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-between px-2.5 py-1.5 bg-[#f7f7f7] border-t border-[#e5e5e5] hover:bg-duo-blue/10 transition-colors group"
+                      >
+                        <span className="text-[10px] font-extrabold text-duo-blue group-hover:underline">
+                          教材を見る →
+                        </span>
+                        <span className="text-[9px] font-bold text-[#aaa] truncate ml-2 max-w-[180px]">
+                          {lr.source_name}
+                        </span>
+                      </a>
+                    ) : lr.playbook_situation ? (
+                      <div className="px-2.5 py-1.5 bg-duo-purple/5 border-t border-duo-purple/10">
+                        <span className="text-[10px] font-bold text-duo-purple">📖 {lr.playbook_situation}</span>
+                      </div>
+                    ) : null}
                   </div>
-                  <p className="text-[10px] font-bold text-[#777] leading-relaxed">{lr.description}</p>
-                  {lr.playbook_situation && (
-                    <p className="text-[10px] font-bold text-duo-purple mt-1">📖 プレイブック: {lr.playbook_situation}</p>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
