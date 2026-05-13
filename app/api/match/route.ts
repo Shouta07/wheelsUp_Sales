@@ -3,6 +3,7 @@ import { geminiConfigured, geminiJSON } from "@/lib/gemini";
 import { assertUuid, clampInt, pgEq, pgInUuids } from "@/lib/pg";
 import { guardRequest, jsonWithId } from "@/lib/apiGuard";
 import { LLM_LIMIT } from "@/lib/ratelimit";
+import { checkLLMAllowed } from "@/lib/costGuard";
 import { log, publicError } from "@/lib/logger";
 import type { Candidate, Job, Match, Rank } from "@/lib/types";
 
@@ -57,6 +58,12 @@ export async function POST(req: Request) {
 
   if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
   if (!geminiConfigured) return jsonWithId({ error: "gemini_not_configured" }, requestId, { status: 400 });
+
+  const cost = await checkLLMAllowed();
+  if (!cost.ok) {
+    log.warn("llm_blocked", { requestId, route: "match", reason: cost.reason });
+    return jsonWithId({ error: cost.message }, requestId, { status: cost.status });
+  }
 
   const url = new URL(req.url);
   const limit = clampInt(url.searchParams.get("limit"), 50, 200);

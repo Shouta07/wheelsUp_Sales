@@ -3,7 +3,7 @@
 // All filter values **must** go through lib/pg helpers; never interpolate
 // raw user input into `query` strings.
 
-import { log, publicError } from "./logger";
+import { log, publicError } from "./logger.ts";
 
 const SB_URL = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -84,5 +84,5 @@ export async function sbUpdate<T = unknown>(
 }
 
 // Re-export so existing route imports keep working.
-export { requireSecret } from "./auth";
+export { requireSecret } from "./auth.ts";
 export { publicError };

@@ -18,6 +18,19 @@
 2. Supabase Auth → Users で該当ユーザーを **Revoke session** または Delete
 3. （任意）`activities` テーブルで `created_by = <email>` の履歴は保全のため残す
 
+## 3a. インシデント時の緊急停止 (Killswitch)
+
+LLM コストの暴走や Gemini key 漏洩を察知したら、**最初に LLM を止める**：
+
+1. Vercel → Project Settings → Environment Variables → `KILL_LLM` を `true` に設定
+2. Vercel → Deployments → 最新を **Redeploy**（30秒〜1分で反映）
+3. 反映後、`/api/health` の `llm` フィールドが `"disabled"` になることを確認
+4. `/api/crawl|match|discover` は HTTP 503 + `llm_disabled_by_killswitch` を返すようになる
+
+副次的な日次キャップ（`LLM_DAILY_RUN_LIMIT`、デフォルト 200 runs/UTC日）は `crawl_runs` の件数で動く。上限到達後は次の 00:00 UTC まで HTTP 429。
+
+復旧後は `KILL_LLM=` を空に戻して redeploy。
+
 ## 3. シークレットのローテーション
 
 ### `CRON_SECRET`
@@ -89,6 +102,8 @@ psql "$STAGING_DB_URL" < backup_YYYYMMDD.sql
 | Supabase 接続数 | Supabase Dashboard | 上限の 70% |
 | Gemini 料金 | Google Cloud Billing | 日次 ¥X 超過 |
 | クロール失敗率 | `crawl_runs.stats.errors` | 全体の 20% |
+| 日次 LLM run 数 | `crawl_runs` の本日件数 | `LLM_DAILY_RUN_LIMIT` の 80% で警告 |
+| ヘルスチェック | `/api/health` の 200 応答 | 連続 3 回失敗で alert |
 
 ## 7. インシデント時の調査
 

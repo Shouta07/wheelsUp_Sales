@@ -3,6 +3,8 @@ import { geminiConfigured, geminiJSON } from "@/lib/gemini";
 import { clampInt } from "@/lib/pg";
 import { guardRequest, jsonWithId } from "@/lib/apiGuard";
 import { LLM_LIMIT } from "@/lib/ratelimit";
+import { checkLLMAllowed } from "@/lib/costGuard";
+import { log } from "@/lib/logger";
 import type { Company } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -22,6 +24,12 @@ export async function POST(req: Request) {
 
   if (!supabaseConfigured) return jsonWithId({ error: "supabase_not_configured" }, requestId, { status: 400 });
   if (!geminiConfigured) return jsonWithId({ error: "gemini_not_configured" }, requestId, { status: 400 });
+
+  const cost = await checkLLMAllowed();
+  if (!cost.ok) {
+    log.warn("llm_blocked", { requestId, route: "discover", reason: cost.reason });
+    return jsonWithId({ error: cost.message }, requestId, { status: cost.status });
+  }
 
   const url = new URL(req.url);
   const want = clampInt(url.searchParams.get("count"), 20, 50);

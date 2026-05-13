@@ -65,14 +65,17 @@ Supabase SQL Editor で以下を順に実行:
 
 ## API（すべて `?secret=CRON_SECRET` 必須）
 
-| Method | Path | 役割 |
-| ------ | ---- | ---- |
-| POST | `/api/import` | `data/*` から companies/candidates を upsert |
-| POST | `/api/crawl` | `companies.recruit_page_url` を Jina Reader→Gemini で求人抽出 |
-| POST | `/api/match` | open な job × 4候補者を Gemini で ◎◯△× + 0..100 |
-| POST | `/api/discover` | Gemini で類似企業を提案 → `discovery_queue` |
-| POST | `/api/activity` | 送信/商談/採用などの活動ログを記録 |
-| GET  | `/api/cron` | crawl + match を一括実行（Vercel Cron 22:00 UTC = 07:00 JST） |
+| Method | Path | 認証 | 役割 |
+| ------ | ---- | ---- | ---- |
+| GET   | `/api/health`   | なし | uptime probe（mode/auth/llm を返す） |
+| POST  | `/api/import`   | 必須 | `data/*` から companies/candidates を upsert |
+| POST  | `/api/crawl`    | 必須 | `companies.recruit_page_url` を Jina Reader→Gemini で求人抽出 |
+| POST  | `/api/match`    | 必須 | open な job × 4候補者を Gemini で ◎◯△× + 0..100 |
+| POST  | `/api/discover` | 必須 | Gemini で類似企業を提案 → `discovery_queue` |
+| POST  | `/api/activity` | 必須 | 送信/商談/採用などの活動ログを記録 |
+| GET   | `/api/cron`     | 必須 | crawl + match を一括実行（Vercel Cron 22:00 UTC = 07:00 JST） |
+
+LLM 系（crawl / match / discover）は **コストガード** 経由。`KILL_LLM=true` で即停止、`LLM_DAILY_RUN_LIMIT`（デフォルト 200 runs/UTC日）で日次キャップ。詳細は `docs/RUNBOOK.md` の §3a。
 
 例（Bearer 推奨）:
 
@@ -156,6 +159,10 @@ npm run build     # 本番ビルド（mock モードで通る）
 - [ ] Vercel Cron が `/api/cron` を 22:00 UTC に叩く設定を確認
 - [ ] 5 人が `/login` でサインインできることを動作確認
 - [ ] バックアップ設定の確認 → `docs/RUNBOOK.md` を参照
+- [ ] `KILL_LLM` を緊急時に切り替えられる権限者を 2 名以上確保
+- [ ] `LLM_DAILY_RUN_LIMIT` を運用予測に合わせて調整（デフォルト 200/日）
+- [ ] Vercel / 外部 uptime monitor から `/api/health` を 5 分間隔で監視
+- [ ] GitHub: Dependabot + CodeQL が動作することを最初の PR で確認
 
 詳細な運用手順（メンバー追加・削除、鍵ローテーション、バックアップ、復旧、監視）は **[docs/RUNBOOK.md](./RUNBOOK.md)** を参照。
 
