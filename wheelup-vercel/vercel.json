@@ -19,6 +19,7 @@
     }
   ],
   "crons": [
-    { "path": "/api/ra/cron", "schedule": "0 22 * * *" }
+    { "path": "/api/ra/cron", "schedule": "0 22 * * *" },
+    { "path": "/api/ra/cron", "schedule": "0 8 * * *" }
   ]
 }
