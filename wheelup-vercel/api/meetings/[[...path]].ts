@@ -1,6 +1,23 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 
+// 1on1 (2026-05-14) で合意: アカウントごとに議事録を保持し、
+// 他メンバーの面談データは見られない運用にする。リーダー (小林) のみ全件閲覧可。
+const LEADER_NAME = "小林";
+const ALLOWED_USERS = new Set(["小林", "西村", "辻内", "安藤", "村上"]);
+
+function getAppUser(req: VercelRequest): string | null {
+  const h = req.headers["x-app-user"];
+  const raw = Array.isArray(h) ? h[0] : h;
+  if (!raw) return null;
+  const name = raw.trim();
+  return ALLOWED_USERS.has(name) ? name : null;
+}
+
+function isLeader(appUser: string | null): boolean {
+  return appUser === LEADER_NAME;
+}
+
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
  *
@@ -47,9 +64,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sub = segments[1] || "";
 
     if (!sub) {
-      if (req.method === "GET") return await getTranscript(db, id, res);
+      if (req.method === "GET") return await getTranscript(db, id, req, res);
       if (req.method === "PUT") return await updateTranscript(db, id, req, res);
-      if (req.method === "DELETE") return await deleteTranscript(db, id, res);
+      if (req.method === "DELETE") return await deleteTranscript(db, id, req, res);
     }
 
     // --- /api/meetings/:id/summarize ---
@@ -74,25 +91,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 /* ========== CRUD ========== */
 
 async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
-  const { deal_id, candidate_id, consultant_name, is_leader } = req.query;
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
+  const { deal_id, candidate_id, consultant_name, is_leader: leaderFilter } = req.query;
   let query = db.from("meeting_transcripts").select("*").order("recorded_at", { ascending: false });
   if (deal_id && typeof deal_id === "string") query = query.eq("deal_id", deal_id);
   if (candidate_id && typeof candidate_id === "string") query = query.eq("candidate_id", candidate_id);
-  if (consultant_name && typeof consultant_name === "string") query = query.eq("consultant_name", consultant_name);
-  if (is_leader === "true") query = query.eq("is_leader", true);
-  if (is_leader === "false") query = query.eq("is_leader", false);
+
+  // データの社内アカウントスコープ:
+  //   - リーダーは consultant_name と is_leader を自由に絞り込める
+  //   - 一般メンバーは「自分の議事録」または「リーダーの議事録」のみ閲覧可
+  if (isLeader(appUser)) {
+    if (consultant_name && typeof consultant_name === "string") query = query.eq("consultant_name", consultant_name);
+    if (leaderFilter === "true") query = query.eq("is_leader", true);
+    if (leaderFilter === "false") query = query.eq("is_leader", false);
+  } else {
+    if (leaderFilter === "true") {
+      query = query.eq("is_leader", true);
+    } else if (leaderFilter === "false") {
+      query = query.eq("consultant_name", appUser).eq("is_leader", false);
+    } else if (consultant_name === appUser) {
+      query = query.eq("consultant_name", appUser);
+    } else {
+      // それ以外（無指定 or 他人指定）は自分の面談のみ
+      query = query.eq("consultant_name", appUser);
+    }
+  }
+
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ transcripts: data || [], total: (data || []).length });
 }
 
 async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
   const b = req.body;
+  // consultant_name は呼び出し元任せにせず、必ずヘッダの appUser を採用する。
+  // is_leader はリーダー本人のみ true 指定可能。
+  const consultantName = appUser;
+  const isLeaderFlag = isLeader(appUser) && b.is_leader === true;
   const { data, error } = await db.from("meeting_transcripts").insert({
     deal_id: b.deal_id || null,
     candidate_id: b.candidate_id || null,
-    consultant_name: b.consultant_name || null,
-    is_leader: b.is_leader || false,
+    consultant_name: consultantName,
+    is_leader: isLeaderFlag,
     title: b.title || "面談記録",
     transcript_text: b.transcript_text || "",
     summary: b.summary || null,
@@ -118,13 +162,31 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
   return res.status(201).json({ ...data, auto_scoring: !!(b.transcript_text && b.transcript_text.trim().length > 50) });
 }
 
-async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
+async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
   const { data, error } = await db.from("meeting_transcripts").select("*").eq("id", id).single();
   if (error) return res.status(404).json({ error: "議事録が見つかりません" });
+
+  // 一般メンバーは自分の議事録 or リーダー議事録のみ閲覧可
+  if (!isLeader(appUser) && !data.is_leader && data.consultant_name !== appUser) {
+    return res.status(403).json({ error: "この議事録にアクセスする権限がありません" });
+  }
   return res.json(data);
 }
 
 async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
+  // 所有権チェック
+  const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!isLeader(appUser) && existing.consultant_name !== appUser) {
+    return res.status(403).json({ error: "この議事録を更新する権限がありません" });
+  }
+
   const b = req.body;
   const updates: Record<string, unknown> = {};
   const fields = ["title", "transcript_text", "summary", "action_items", "key_points", "next_steps", "attendees", "duration_minutes", "deal_id", "candidate_id"];
@@ -134,7 +196,16 @@ async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: str
   return res.json(data);
 }
 
-async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
+async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
+  const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!isLeader(appUser) && existing.consultant_name !== appUser) {
+    return res.status(403).json({ error: "この議事録を削除する権限がありません" });
+  }
+
   const { error } = await db.from("meeting_transcripts").delete().eq("id", id);
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ deleted: true });
@@ -146,7 +217,12 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader } = req.body;
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
+  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, is_leader: isLeaderInput } = req.body;
+  const consultant_name = appUser;
+  const is_leader = isLeader(appUser) && isLeaderInput === true;
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
@@ -419,13 +495,28 @@ async function addLeaderFeedback(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const { feedback } = req.body || {};
-  if (!feedback || typeof feedback !== "string") {
-    return res.status(400).json({ error: "feedback (string) is required" });
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+  if (!isLeader(appUser)) {
+    return res.status(403).json({ error: "リーダーのみが面談へコメントできます" });
   }
+
+  const { feedback, resource_url, resource_label } = req.body || {};
+  if ((!feedback || typeof feedback !== "string") && !resource_url) {
+    return res.status(400).json({ error: "feedback または resource_url が必要です" });
+  }
+  if (resource_url && !/^https?:\/\//.test(resource_url)) {
+    return res.status(400).json({ error: "resource_url は http(s) で始まる URL を指定してください" });
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (typeof feedback === "string") updates.leader_feedback = feedback.trim();
+  if (resource_url !== undefined) updates.leader_resource_url = resource_url ? String(resource_url).trim() : null;
+  if (resource_label !== undefined) updates.leader_resource_label = resource_label ? String(resource_label).trim() : null;
+
   const { data, error } = await db
     .from("meeting_transcripts")
-    .update({ leader_feedback: feedback.trim() })
+    .update(updates)
     .eq("id", id)
     .select()
     .single();

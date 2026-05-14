@@ -2,6 +2,13 @@ import { supabase } from "../lib/supabase";
 
 const BASE = "/api";
 
+// 担当者識別: ローカルストレージで選択された wheelsup_current_user をサーバへ送る。
+// サーバ側は x-app-user ヘッダを見て他メンバーの議事録へのアクセスを禁止する。
+function getCurrentAppUser(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem("wheelsup_current_user");
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Supabase セッションのトークンを自動付与
   const {
@@ -12,6 +19,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   };
   if (session?.access_token) {
     headers["Authorization"] = `Bearer ${session.access_token}`;
+  }
+  const appUser = getCurrentAppUser();
+  if (appUser) {
+    headers["x-app-user"] = appUser;
   }
 
   const res = await fetch(`${BASE}${path}`, {
@@ -866,6 +877,8 @@ export interface MeetingTranscript {
   created_at: string;
   updated_at: string;
   leader_feedback?: string;
+  leader_resource_url?: string | null;
+  leader_resource_label?: string | null;
 }
 
 /* ---------- Meeting API (with demo fallback) ---------- */
@@ -930,6 +943,7 @@ export async function deleteMeeting(id: string): Promise<{ deleted: boolean }> {
 export async function addLeaderFeedback(
   id: string,
   feedback: string,
+  resource?: { url?: string | null; label?: string | null },
 ): Promise<MeetingTranscript> {
   if (DEMO_MODE) {
     const { demoAddLeaderFeedback } = await import("./demo");
@@ -937,7 +951,11 @@ export async function addLeaderFeedback(
   }
   return request(`/meetings/${id}/leader-feedback`, {
     method: "POST",
-    body: JSON.stringify({ feedback }),
+    body: JSON.stringify({
+      feedback,
+      resource_url: resource?.url ?? undefined,
+      resource_label: resource?.label ?? undefined,
+    }),
   });
 }
 

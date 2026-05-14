@@ -22,6 +22,14 @@ export default function MeetingHub() {
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // ブラウザ内録音 (MediaRecorder)
+  const mediaRecRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [recordingSec, setRecordingSec] = useState(0);
+  const recTimerRef = useRef<number | null>(null);
 
   const isLeaderUser = currentUser === "小林";
 
@@ -68,32 +76,110 @@ export default function MeetingHub() {
     prevScoredRef.current = scoredIds;
   }, [myMeetings]);
 
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const idx = result.indexOf(",");
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+
+  const submitAudioBlob = async (blob: Blob, mimeType: string, fallbackTitle: string) => {
+    // ~25MB を超える音声は Vercel/Gemini で失敗するため事前に弾く
+    const MAX = 25 * 1024 * 1024;
+    if (blob.size > MAX) {
+      throw new Error(`音声サイズが大きすぎます（${Math.round(blob.size / 1024 / 1024)}MB）。25MB以下に分割してください。`);
+    }
+    const base64 = await blobToBase64(blob);
+    await transcribeAudio({
+      audio_base64: base64,
+      mime_type: mimeType,
+      title: titleInput || fallbackTitle,
+      consultant_name: currentUser,
+      is_leader: isLeaderUser,
+    });
+    qc.invalidateQueries({ queryKey: ["meetings"] });
+    setTitleInput("");
+    // Auto-score runs server-side; poll for result
+    setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
+    setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
+  };
+
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setErrorMsg(null);
     setUploading(true);
     try {
-      const buffer = await file.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-      await transcribeAudio({
-        audio_base64: base64,
-        mime_type: file.type || "audio/webm",
-        title: titleInput || `${currentUser} 面談録音`,
-        consultant_name: currentUser,
-        is_leader: isLeaderUser,
-      });
-      qc.invalidateQueries({ queryKey: ["meetings"] });
-      setTitleInput("");
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+      await submitAudioBlob(file, file.type || "audio/webm", `${currentUser} 面談録音`);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg((err as Error).message || "音声アップロードに失敗しました");
+    }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  const startRecording = async () => {
+    setErrorMsg(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMsg("このブラウザは録音に対応していません");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "audio/mp4";
+      const mr = new MediaRecorder(stream, { mimeType: mime });
+      recordedChunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data.size > 0) recordedChunksRef.current.push(ev.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(recordedChunksRef.current, { type: mime });
+        if (blob.size === 0) { setErrorMsg("録音データが空です"); return; }
+        setUploading(true);
+        try {
+          await submitAudioBlob(blob, mime, `${currentUser} 面談録音 (${Math.floor(recordingSec / 60)}分${recordingSec % 60}秒)`);
+        } catch (err) {
+          console.error(err);
+          setErrorMsg((err as Error).message || "録音のアップロードに失敗しました");
+        }
+        setUploading(false);
+      };
+      mr.start();
+      mediaRecRef.current = mr;
+      setRecording(true);
+      setRecordingSec(0);
+      recTimerRef.current = window.setInterval(() => setRecordingSec((s) => s + 1), 1000);
+    } catch (err) {
+      setErrorMsg((err as Error).message || "マイクへのアクセスが拒否されました");
+    }
+  };
+
+  const stopRecording = () => {
+    if (recTimerRef.current != null) { window.clearInterval(recTimerRef.current); recTimerRef.current = null; }
+    mediaRecRef.current?.stop();
+    mediaRecRef.current = null;
+    setRecording(false);
+  };
+
+  useEffect(() => () => {
+    if (recTimerRef.current != null) window.clearInterval(recTimerRef.current);
+    if (mediaRecRef.current && mediaRecRef.current.state !== "inactive") {
+      try { mediaRecRef.current.stop(); } catch { /* ignore */ }
+    }
+  }, []);
+
   const handleTextSave = async () => {
     if (!textInput.trim()) return;
+    setErrorMsg(null);
     setUploading(true);
     try {
       await createMeeting({
@@ -110,7 +196,10 @@ export default function MeetingHub() {
       // Auto-score runs server-side; poll for result
       setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
       setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+      setErrorMsg((err as Error).message || "テキストの保存に失敗しました");
+    }
     setUploading(false);
   };
 
@@ -180,20 +269,45 @@ export default function MeetingHub() {
             placeholder="タイトル（例: 佐藤様 初回面談）"
             className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-sm font-bold text-[#4b4b4b] focus:border-duo-blue focus:outline-none"
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
+            {/* ブラウザ内録音 */}
+            <div className="text-center">
+              {recording ? (
+                <button
+                  onClick={stopRecording}
+                  className="w-full rounded-xl border-2 border-duo-red bg-duo-red/10 px-3 py-4 hover:bg-duo-red/20 transition-colors"
+                >
+                  <span className="text-2xl block mb-1 animate-pulse">⏺️</span>
+                  <span className="text-xs font-extrabold text-duo-red">
+                    停止 ({Math.floor(recordingSec / 60)}:{String(recordingSec % 60).padStart(2, "0")})
+                  </span>
+                </button>
+              ) : (
+                <button
+                  onClick={startRecording}
+                  disabled={uploading}
+                  className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-4 hover:border-duo-red hover:bg-duo-red/5 transition-colors disabled:opacity-40"
+                >
+                  <span className="text-2xl block mb-1">🎤</span>
+                  <span className="text-xs font-bold text-[#777]">録音開始</span>
+                </button>
+              )}
+            </div>
+            {/* ファイル選択 */}
             <div className="text-center">
               <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={handleAudioUpload} />
               <button
                 onClick={() => fileRef.current?.click()}
-                disabled={uploading}
-                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-4 hover:border-duo-blue hover:bg-duo-blue/5 transition-colors"
+                disabled={uploading || recording}
+                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-4 hover:border-duo-blue hover:bg-duo-blue/5 transition-colors disabled:opacity-40"
               >
                 <span className="text-2xl block mb-1">🎙️</span>
                 <span className="text-xs font-bold text-[#777]">
-                  {uploading ? "Geminiで分析中..." : "録音・録画ファイル"}
+                  {uploading ? "分析中..." : "ファイル"}
                 </span>
               </button>
             </div>
+            {/* テキスト */}
             <div className="text-center">
               <textarea
                 value={textInput}
@@ -213,6 +327,12 @@ export default function MeetingHub() {
           <p className="text-[10px] font-bold text-[#afafaf] text-center">
             {isLeaderUser ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
           </p>
+          {errorMsg && (
+            <div className="rounded-xl bg-duo-red/10 border-2 border-duo-red/30 px-3 py-2 flex items-start justify-between gap-2">
+              <span className="text-[11px] font-bold text-duo-red leading-relaxed">⚠️ {errorMsg}</span>
+              <button onClick={() => setErrorMsg(null)} className="text-duo-red font-black shrink-0">×</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -260,17 +380,33 @@ function MeetingEntry({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [fbText, setFbText] = useState("");
+  const [fbUrl, setFbUrl] = useState(m.leader_resource_url || "");
+  const [fbUrlLabel, setFbUrlLabel] = useState(m.leader_resource_label || "");
   const [fbSaving, setFbSaving] = useState(false);
+  const [fbError, setFbError] = useState<string | null>(null);
   const score = m.score_data;
 
   const handleFeedbackSave = async () => {
-    if (!fbText.trim()) return;
+    const hasText = fbText.trim().length > 0;
+    const hasUrl = fbUrl.trim().length > 0;
+    if (!hasText && !hasUrl && !m.leader_feedback) return;
+    if (hasUrl && !/^https?:\/\//.test(fbUrl.trim())) {
+      setFbError("URL は http:// または https:// で始めてください");
+      return;
+    }
+    setFbError(null);
     setFbSaving(true);
     try {
-      await addLeaderFeedback(m.id, fbText.trim());
+      await addLeaderFeedback(
+        m.id,
+        hasText ? fbText.trim() : (m.leader_feedback || ""),
+        { url: fbUrl.trim() || null, label: fbUrlLabel.trim() || null },
+      );
       setFbText("");
       onFeedbackSaved();
-    } catch { /* ignore */ }
+    } catch (err) {
+      setFbError((err as Error).message || "保存に失敗しました");
+    }
     setFbSaving(false);
   };
 
@@ -431,31 +567,62 @@ function MeetingEntry({
           )}
 
           {/* Leader Feedback (小林フィードバック) */}
-          {m.leader_feedback && (
-            <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">小林リーダーのコメント</div>
-              <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
+          {(m.leader_feedback || m.leader_resource_url) && (
+            <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">小林リーダーのコメント</div>
+              {m.leader_feedback && (
+                <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed whitespace-pre-wrap">{m.leader_feedback}</p>
+              )}
+              {m.leader_resource_url && (
+                <a
+                  href={m.leader_resource_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white border border-[#fbbf24] px-2.5 py-1.5 text-[11px] font-extrabold text-[#92400e] hover:bg-[#fef9e7]"
+                >
+                  <span>📚</span>
+                  <span className="truncate max-w-[260px]">{m.leader_resource_label || "学習リソース"}</span>
+                  <span className="text-[10px] opacity-60">↗</span>
+                </a>
+              )}
             </div>
           )}
 
           {isLeaderUser && !m.is_leader && score && (
             <div className="rounded-xl border-2 border-dashed border-[#fbbf24] p-3 space-y-2">
               <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
-                {m.leader_feedback ? "コメントを更新" : "リーダーコメントを追加"}
+                {m.leader_feedback || m.leader_resource_url ? "コメント・教材URLを更新" : "リーダーコメント・教材URLを追加"}
               </div>
               <textarea
                 value={fbText}
                 onChange={(e) => setFbText(e.target.value)}
-                placeholder="この面談へのアドバイスやフィードバックを入力..."
+                placeholder={m.leader_feedback || "この面談へのアドバイスやフィードバックを入力..."}
                 className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-16 focus:border-[#fbbf24] focus:outline-none resize-none"
               />
+              <div className="grid grid-cols-[1fr_120px] gap-2">
+                <input
+                  type="url"
+                  value={fbUrl}
+                  onChange={(e) => setFbUrl(e.target.value)}
+                  placeholder="https://… 新人教育用の外部URL（任意）"
+                  className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] focus:border-[#fbbf24] focus:outline-none"
+                />
+                <input
+                  type="text"
+                  value={fbUrlLabel}
+                  onChange={(e) => setFbUrlLabel(e.target.value)}
+                  placeholder="教材ラベル"
+                  className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] focus:border-[#fbbf24] focus:outline-none"
+                />
+              </div>
+              {fbError && <p className="text-[10px] font-bold text-duo-red">⚠️ {fbError}</p>}
               <button
                 onClick={handleFeedbackSave}
-                disabled={!fbText.trim() || fbSaving}
+                disabled={fbSaving || (!fbText.trim() && !fbUrl.trim() && !m.leader_feedback && !m.leader_resource_url)}
                 className="btn-duo !px-4 !py-1.5 !text-[10px] text-white disabled:opacity-40"
                 style={{ backgroundColor: "#f59e0b", borderBottomColor: "#d97706" }}
               >
-                {fbSaving ? "保存中..." : "コメント保存"}
+                {fbSaving ? "保存中..." : "保存"}
               </button>
             </div>
           )}
