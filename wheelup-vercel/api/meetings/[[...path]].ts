@@ -5,6 +5,11 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 // 他メンバーの面談データは見られない運用にする。リーダー (小林) のみ全件閲覧可。
 const LEADER_NAME = "小林";
 const ALLOWED_USERS = new Set(["小林", "西村", "辻内", "安藤", "村上"]);
+const MEETING_TYPES = new Set(["first_diagnosis", "second", "interview_prep", "closing", "other"]);
+
+function normalizeMeetingType(v: unknown): string {
+  return typeof v === "string" && MEETING_TYPES.has(v) ? v : "other";
+}
 
 function getAppUser(req: VercelRequest): string | null {
   const h = req.headers["x-app-user"];
@@ -55,6 +60,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (segments[0] === "extract-playbook" && req.method === "POST") {
       return await extractPlaybook(db, req, res);
     }
+    // --- /api/meetings/leader-strengths ---
+    if (segments[0] === "leader-strengths" && req.method === "GET") {
+      return await leaderStrengths(db, req, res);
+    }
     // --- /api/meetings/coach ---
     if (segments[0] === "coach" && req.method === "POST") {
       return await contextualCoach(db, req, res);
@@ -94,10 +103,13 @@ async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: Ver
   const appUser = getAppUser(req);
   if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
 
-  const { deal_id, candidate_id, consultant_name, is_leader: leaderFilter } = req.query;
+  const { deal_id, candidate_id, consultant_name, is_leader: leaderFilter, meeting_type } = req.query;
   let query = db.from("meeting_transcripts").select("*").order("recorded_at", { ascending: false });
   if (deal_id && typeof deal_id === "string") query = query.eq("deal_id", deal_id);
   if (candidate_id && typeof candidate_id === "string") query = query.eq("candidate_id", candidate_id);
+  if (meeting_type && typeof meeting_type === "string" && MEETING_TYPES.has(meeting_type)) {
+    query = query.eq("meeting_type", meeting_type);
+  }
 
   // データの社内アカウントスコープ:
   //   - リーダーは consultant_name と is_leader を自由に絞り込める
@@ -137,6 +149,7 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
     candidate_id: b.candidate_id || null,
     consultant_name: consultantName,
     is_leader: isLeaderFlag,
+    meeting_type: normalizeMeetingType(b.meeting_type),
     title: b.title || "面談記録",
     transcript_text: b.transcript_text || "",
     summary: b.summary || null,
@@ -191,6 +204,7 @@ async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: str
   const updates: Record<string, unknown> = {};
   const fields = ["title", "transcript_text", "summary", "action_items", "key_points", "next_steps", "attendees", "duration_minutes", "deal_id", "candidate_id"];
   for (const f of fields) { if (b[f] !== undefined) updates[f] = b[f]; }
+  if (b.meeting_type !== undefined) updates.meeting_type = normalizeMeetingType(b.meeting_type);
   const { data, error } = await db.from("meeting_transcripts").update(updates).eq("id", id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   return res.json(data);
@@ -220,9 +234,10 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const appUser = getAppUser(req);
   if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
 
-  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, is_leader: isLeaderInput } = req.body;
+  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, is_leader: isLeaderInput, meeting_type } = req.body;
   const consultant_name = appUser;
   const is_leader = isLeader(appUser) && isLeaderInput === true;
+  const meetingType = normalizeMeetingType(meeting_type);
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
@@ -286,6 +301,7 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
     candidate_id: candidate_id || null,
     consultant_name: consultant_name || null,
     is_leader: is_leader || false,
+    meeting_type: meetingType,
     title: title || "Gemini 文字起こし",
     transcript_text: sections.transcript,
     summary: sections.summary,
@@ -692,6 +708,141 @@ ${current_situation || "特記事項なし"}
     phase,
     coaching,
     context: { candidateInfo, companyInfo, dealInfo, pastMeetings: pastMeetings ? "あり" : "なし" },
+  });
+}
+
+/* ========== Leader Strengths Aggregation ========== */
+//
+// 初回診断のCVRを上げるため、リーダー(小林)の面談を 5軸で集計し、
+// 強み軸 / 若手とのギャップを返す。デフォルトは初回診断のみを対象。
+//
+type AxisKey = "needs" | "proposal" | "trust" | "closing" | "intel";
+const AXES: AxisKey[] = ["needs", "proposal", "trust", "closing", "intel"];
+
+async function leaderStrengths(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const appUser = getAppUser(req);
+  if (!appUser) return res.status(401).json({ error: "x-app-user ヘッダが未設定または許可されていません" });
+
+  const mtRaw = req.query.meeting_type;
+  const meetingType = typeof mtRaw === "string" && MEETING_TYPES.has(mtRaw) ? mtRaw : "first_diagnosis";
+
+  // リーダーの面談（スコア済みのみ）を最大100件
+  let leaderQ = db.from("meeting_transcripts")
+    .select("id, title, recorded_at, score_data, transcript_text, meeting_type")
+    .eq("is_leader", true)
+    .not("score_data", "is", null)
+    .order("recorded_at", { ascending: false })
+    .limit(100);
+  if (meetingType !== "all") leaderQ = leaderQ.eq("meeting_type", meetingType);
+  const { data: leaderRows, error: leaderErr } = await leaderQ;
+  if (leaderErr) return res.status(500).json({ error: leaderErr.message });
+
+  // 自分（若手）の面談（リーダー以外）
+  let mineQ = db.from("meeting_transcripts")
+    .select("id, score_data, meeting_type, consultant_name")
+    .eq("is_leader", false)
+    .eq("consultant_name", appUser)
+    .not("score_data", "is", null)
+    .order("recorded_at", { ascending: false })
+    .limit(100);
+  if (meetingType !== "all") mineQ = mineQ.eq("meeting_type", meetingType);
+  const { data: mineRows } = await mineQ;
+
+  const avg = (rows: Array<{ score_data: { scores?: Record<string, number> } | null }>) => {
+    const sums: Record<AxisKey, number> = { needs: 0, proposal: 0, trust: 0, closing: 0, intel: 0 };
+    let n = 0;
+    for (const r of rows) {
+      const s = r.score_data?.scores;
+      if (!s) continue;
+      for (const k of AXES) sums[k] += Number(s[k] ?? 0);
+      n++;
+    }
+    if (n === 0) return null;
+    const out: Record<AxisKey, number> = { needs: 0, proposal: 0, trust: 0, closing: 0, intel: 0 };
+    for (const k of AXES) out[k] = Math.round((sums[k] / n) * 10) / 10;
+    return { avg: out, count: n };
+  };
+
+  const leaderAgg = avg(leaderRows || []);
+  const myAgg = avg(mineRows || []);
+
+  // 強み軸 (リーダーが高い順) と 若手とのギャップ
+  let strengths: Array<{ axis: AxisKey; leader_avg: number; member_avg: number | null; gap: number | null }> = [];
+  if (leaderAgg) {
+    strengths = AXES.map((axis) => {
+      const leader = leaderAgg.avg[axis];
+      const member = myAgg ? myAgg.avg[axis] : null;
+      return { axis, leader_avg: leader, member_avg: member, gap: member != null ? Math.round((leader - member) * 10) / 10 : null };
+    }).sort((a, b) => b.leader_avg - a.leader_avg);
+  }
+
+  // 最大ギャップ軸（若手が伸ばすべき軸）
+  const topGap = strengths
+    .filter((s) => s.gap != null)
+    .sort((a, b) => (b.gap as number) - (a.gap as number))[0];
+
+  // リーダーが繰り返し使うキーフレーズを Gemini で抽出（API キーが無ければスキップ）
+  let key_phrases: Array<{ axis: AxisKey; phrase: string; example: string }> = [];
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (apiKey && (leaderRows?.length || 0) >= 3) {
+    const samples = (leaderRows || [])
+      .slice(0, 8)
+      .map((r, i) => `[面談${i + 1}] ${(r.transcript_text || "").slice(0, 1500)}`)
+      .join("\n---\n");
+    const prompt = `あなたは建築技術者専門の人材紹介のセールスコーチです。
+以下はリーダー(小林)の${meetingType === "first_diagnosis" ? "初回診断" : meetingType}面談 ${(leaderRows || []).length}件の抜粋です。
+リーダーが繰り返し使う「決めゼリフ／聞き出すための質問」を 5軸ごとに 1〜2 個抽出してください。
+
+${samples}
+
+## 出力形式（JSON）:
+{
+  "needs": [{"phrase": "短いフレーズや質問", "example": "実際の使われ方"}],
+  "proposal": [...],
+  "trust": [...],
+  "closing": [...],
+  "intel": [...]
+}
+必ず JSON のみ返してください。`;
+
+    try {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const gr = await fetch(geminiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 1500 },
+        }),
+      });
+      if (gr.ok) {
+        const gd = await gr.json();
+        const raw = gd.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as Record<AxisKey, Array<{ phrase: string; example: string }>>;
+          for (const axis of AXES) {
+            for (const p of parsed[axis] || []) {
+              if (p?.phrase) key_phrases.push({ axis, phrase: p.phrase, example: p.example || "" });
+            }
+          }
+        }
+      }
+    } catch { /* ignore phrase extraction failures */ }
+  }
+
+  return res.json({
+    meeting_type: meetingType,
+    leader: leaderAgg ? { avg: leaderAgg.avg, count: leaderAgg.count } : null,
+    member: myAgg ? { avg: myAgg.avg, count: myAgg.count, name: appUser } : null,
+    strengths,
+    top_gap: topGap || null,
+    key_phrases,
+    minimum_sample_warning: (leaderAgg?.count || 0) < 5,
   });
 }
 

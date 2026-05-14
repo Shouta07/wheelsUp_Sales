@@ -857,6 +857,16 @@ export async function generateCoachingFeedback(
 
 /* ---------- Meeting Transcript Types ---------- */
 
+export type MeetingType = "first_diagnosis" | "second" | "interview_prep" | "closing" | "other";
+
+export const MEETING_TYPE_LABELS: Record<MeetingType, string> = {
+  first_diagnosis: "初回診断",
+  second: "2回目以降",
+  interview_prep: "面接対策",
+  closing: "クロージング",
+  other: "その他",
+};
+
 export interface MeetingTranscript {
   id: string;
   deal_id: string | null;
@@ -879,6 +889,7 @@ export interface MeetingTranscript {
   leader_feedback?: string;
   leader_resource_url?: string | null;
   leader_resource_label?: string | null;
+  meeting_type?: MeetingType;
 }
 
 /* ---------- Meeting API (with demo fallback) ---------- */
@@ -894,6 +905,7 @@ export async function fetchMeetings(
   candidateId?: string,
   consultantName?: string,
   isLeader?: boolean,
+  meetingType?: MeetingType,
 ): Promise<{ transcripts: MeetingTranscript[]; total: number }> {
   if (DEMO_MODE) return demoFetchMeetings(dealId, candidateId, consultantName, isLeader);
   const params = new URLSearchParams();
@@ -901,8 +913,32 @@ export async function fetchMeetings(
   if (candidateId) params.set("candidate_id", candidateId);
   if (consultantName) params.set("consultant_name", consultantName);
   if (isLeader !== undefined) params.set("is_leader", String(isLeader));
+  if (meetingType) params.set("meeting_type", meetingType);
   const qs = params.toString();
   return request(`/meetings${qs ? `?${qs}` : ""}`);
+}
+
+export interface LeaderStrengthAxis {
+  axis: "needs" | "proposal" | "trust" | "closing" | "intel";
+  leader_avg: number;
+  member_avg: number | null;
+  gap: number | null;
+}
+
+export interface LeaderStrengthsResponse {
+  meeting_type: MeetingType;
+  leader: { avg: Record<string, number>; count: number } | null;
+  member: { avg: Record<string, number>; count: number; name: string } | null;
+  strengths: LeaderStrengthAxis[];
+  top_gap: LeaderStrengthAxis | null;
+  key_phrases: Array<{ axis: string; phrase: string; example: string }>;
+  minimum_sample_warning: boolean;
+}
+
+export async function fetchLeaderStrengths(
+  meetingType: MeetingType = "first_diagnosis",
+): Promise<LeaderStrengthsResponse> {
+  return request(`/meetings/leader-strengths?meeting_type=${meetingType}`);
 }
 
 export async function createMeeting(
@@ -925,6 +961,7 @@ export async function transcribeAudio(data: {
   attendees?: string[];
   consultant_name?: string;
   is_leader?: boolean;
+  meeting_type?: MeetingType;
 }): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string; auto_scoring?: boolean }> {
   return request("/meetings/transcribe", { method: "POST", body: JSON.stringify(data) });
 }

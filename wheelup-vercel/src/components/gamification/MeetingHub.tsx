@@ -8,9 +8,11 @@ import {
   transcribeAudio,
   summarizeMeeting,
   addLeaderFeedback,
+  MEETING_TYPE_LABELS,
   type MeetingTranscript,
   type MeetingScore,
   type KeyMoment,
+  type MeetingType,
 } from "../../api/client";
 
 export default function MeetingHub() {
@@ -21,6 +23,8 @@ export default function MeetingHub() {
   const [uploading, setUploading] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
+  const [meetingType, setMeetingType] = useState<MeetingType>("first_diagnosis");
+  const [typeFilter, setTypeFilter] = useState<MeetingType | "all">("first_diagnosis");
   const [showUpload, setShowUpload] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -33,9 +37,11 @@ export default function MeetingHub() {
 
   const isLeaderUser = currentUser === "小林";
 
+  const filterArg: MeetingType | undefined = typeFilter === "all" ? undefined : typeFilter;
+
   const { data: myMeetings } = useQuery({
-    queryKey: ["meetings", "mine", currentUser],
-    queryFn: () => fetchMeetings(undefined, undefined, currentUser),
+    queryKey: ["meetings", "mine", currentUser, typeFilter],
+    queryFn: () => fetchMeetings(undefined, undefined, currentUser, undefined, filterArg),
     enabled: !!currentUser,
     refetchInterval: (query) => {
       const hasUnscored = query.state.data?.transcripts?.some(
@@ -46,8 +52,8 @@ export default function MeetingHub() {
   });
 
   const { data: leaderMeetings } = useQuery({
-    queryKey: ["meetings", "leader"],
-    queryFn: () => fetchMeetings(undefined, undefined, undefined, true),
+    queryKey: ["meetings", "leader", typeFilter],
+    queryFn: () => fetchMeetings(undefined, undefined, undefined, true, filterArg),
   });
 
   const meetings = tab === "mine" ? myMeetings?.transcripts : leaderMeetings?.transcripts;
@@ -101,6 +107,7 @@ export default function MeetingHub() {
       title: titleInput || fallbackTitle,
       consultant_name: currentUser,
       is_leader: isLeaderUser,
+      meeting_type: meetingType,
     });
     qc.invalidateQueries({ queryKey: ["meetings"] });
     setTitleInput("");
@@ -188,6 +195,7 @@ export default function MeetingHub() {
         consultant_name: currentUser,
         is_leader: isLeaderUser,
         source: "manual",
+        meeting_type: meetingType,
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTextInput("");
@@ -239,6 +247,24 @@ export default function MeetingHub() {
         </button>
       </div>
 
+      {/* Meeting type filter */}
+      <div className="flex flex-wrap gap-1 mb-3">
+        <span className="text-[10px] font-extrabold text-[#afafaf] self-center mr-1">面談種別</span>
+        {(["first_diagnosis", "second", "interview_prep", "closing", "other", "all"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTypeFilter(t)}
+            className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold transition-colors ${
+              typeFilter === t
+                ? "bg-[#4b4b4b] text-white"
+                : "bg-[#f7f7f7] text-[#777] hover:bg-[#e5e5e5]"
+            }`}
+          >
+            {t === "all" ? "全て" : MEETING_TYPE_LABELS[t]}
+          </button>
+        ))}
+      </div>
+
       {/* Tabs */}
       <div className="flex gap-1 mb-4">
         {([
@@ -262,6 +288,21 @@ export default function MeetingHub() {
       {/* Upload area */}
       {showUpload && (
         <div className="rounded-2xl border-2 border-dashed border-[#e5e5e5] p-4 mb-4 space-y-3">
+          <div className="flex flex-wrap gap-1">
+            {(Object.keys(MEETING_TYPE_LABELS) as MeetingType[]).map((t) => (
+              <button
+                key={t}
+                onClick={() => setMeetingType(t)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-colors ${
+                  meetingType === t
+                    ? "bg-duo-green text-white"
+                    : "bg-[#f7f7f7] text-[#777] hover:bg-[#e5e5e5]"
+                }`}
+              >
+                {MEETING_TYPE_LABELS[t]}
+              </button>
+            ))}
+          </div>
           <input
             type="text"
             value={titleInput}
@@ -423,6 +464,11 @@ function MeetingEntry({
             <span className="text-[10px] font-bold text-[#afafaf]">
               {new Date(m.recorded_at).toLocaleDateString("ja-JP")}
               {m.consultant_name && ` · ${m.consultant_name}`}
+              {m.meeting_type && m.meeting_type !== "other" && (
+                <span className="ml-1 px-1.5 py-0.5 rounded bg-duo-green/10 text-duo-green font-extrabold">
+                  {MEETING_TYPE_LABELS[m.meeting_type]}
+                </span>
+              )}
             </span>
           </div>
         </div>

@@ -6,6 +6,7 @@ import WeeklyChallenge from "../components/gamification/WeeklyChallenge";
 import WeeklyReport from "../components/gamification/WeeklyReport";
 import TeamHighlights from "../components/gamification/TeamHighlights";
 import PlaybookPanel from "../components/gamification/PlaybookPanel";
+import LeaderStrengthsPanel from "../components/gamification/LeaderStrengthsPanel";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -30,6 +31,7 @@ export default function Home() {
           {/* MAIN — Meeting feedback + Playbook */}
           <main className="space-y-5">
             <MeetingHub />
+            <LeaderStrengthsPanel />
             <PlaybookPanel />
           </main>
 
