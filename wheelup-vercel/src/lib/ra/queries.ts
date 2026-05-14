@@ -243,7 +243,7 @@ export const api = {
     call<{ ok: true; candidate: Candidate }>("add-candidate", { body: input }),
 
   // Triggers
-  run: (kind: "crawl" | "match" | "discover" | "import", params: Record<string, string | number> = {}) => {
+  run: (kind: "crawl" | "match" | "discover" | "import" | "enrich", params: Record<string, string | number> = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return call<Record<string, unknown>>(`${kind}${qs ? `?${qs}` : ""}`);
   },
