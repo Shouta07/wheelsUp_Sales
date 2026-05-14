@@ -547,35 +547,71 @@ async function contextualCoach(
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
   const { phase, candidate_id, company_id, deal_id, current_situation } = req.body || {};
-  if (!phase) return res.status(400).json({ error: "phase required (1-4)" });
+  if (!phase || phase < 1 || phase > 4) {
+    return res.status(400).json({ error: "phase は 1〜4 で指定してください" });
+  }
 
-  // Gather context
+  // 文脈は取れたら使うが、無くてもフェーズ別の汎用コーチングを返せるようにする
   let candidateInfo = "";
   let companyInfo = "";
   let dealInfo = "";
   let pastMeetings = "";
+  let leaderExamples = "";
+
+  const safeSingle = async <T,>(p: PromiseLike<{ data: T | null; error: unknown }>): Promise<T | null> => {
+    try { const { data } = await p; return data; } catch { return null; }
+  };
 
   if (candidate_id) {
-    const { data: c } = await db.from("candidates").select("*").eq("id", candidate_id).single();
-    if (c) candidateInfo = `候補者: ${c.name}, 現職: ${c.current_position || "不明"}, 年収: ${c.current_salary || "不明"}万, 資格: ${(c.qualifications as string[])?.join(",") || "不明"}, 希望: ${c.desired_position || "不明"}, ステータス: ${c.status}`;
+    const c = await safeSingle(db.from("candidates").select("*").eq("id", candidate_id).single());
+    if (c) {
+      const cand = c as Record<string, unknown>;
+      candidateInfo = `候補者: ${cand.name}, 現職: ${cand.current_position || "不明"}, 年収: ${cand.current_salary || "不明"}万, 資格: ${(cand.qualifications as string[])?.join(",") || "不明"}, 希望: ${cand.desired_position || "不明"}, ステータス: ${cand.status}`;
+    }
   }
   if (company_id) {
-    const { data: co } = await db.from("companies").select("*").eq("id", company_id).single();
-    if (co) companyInfo = `企業: ${co.name}, 業種: ${co.industry || "不明"}, 所在地: ${co.address || "不明"}`;
+    const co = await safeSingle(db.from("companies").select("*").eq("id", company_id).single());
+    if (co) {
+      const c = co as Record<string, unknown>;
+      companyInfo = `企業: ${c.name}, 業種: ${c.industry || "不明"}, 所在地: ${c.address || "不明"}`;
+    }
   }
   if (deal_id) {
-    const { data: d } = await db.from("deals").select("*").eq("id", deal_id).single();
-    if (d) dealInfo = `Deal: ${d.title}, ステージ: ${d.stage_name}, 滞在日数: ${d.days_in_stage}日, 金額: ${d.value}`;
+    const d = await safeSingle(db.from("deals").select("*").eq("id", deal_id).single());
+    if (d) {
+      const deal = d as Record<string, unknown>;
+      dealInfo = `Deal: ${deal.title}, ステージ: ${deal.stage_name}, 滞在日数: ${deal.days_in_stage}日, 金額: ${deal.value}`;
+    }
   }
   if (candidate_id || deal_id) {
     const mq = candidate_id
-      ? db.from("meeting_transcripts").select("summary, key_points, action_items").eq("candidate_id", candidate_id).order("recorded_at", { ascending: false }).limit(3)
-      : db.from("meeting_transcripts").select("summary, key_points, action_items").eq("deal_id", deal_id).order("recorded_at", { ascending: false }).limit(3);
-    const { data: meetings } = await mq;
-    if (meetings && meetings.length > 0) {
-      pastMeetings = meetings.map((m, i) => `過去面談${i + 1}: ${m.summary || "要約なし"}`).join("\n");
-    }
+      ? db.from("meeting_transcripts").select("summary, key_points, action_items, recorded_at").eq("candidate_id", candidate_id).order("recorded_at", { ascending: false }).limit(3)
+      : db.from("meeting_transcripts").select("summary, key_points, action_items, recorded_at").eq("deal_id", deal_id).order("recorded_at", { ascending: false }).limit(3);
+    try {
+      const { data: meetings } = await mq;
+      if (meetings && meetings.length > 0) {
+        pastMeetings = meetings.map((m, i) => {
+          const summary = m.summary || (m.key_points as string[])?.slice(0, 3).join(" / ") || "（要約なし）";
+          return `過去面談${i + 1} (${new Date(m.recorded_at).toLocaleDateString("ja-JP")}): ${summary}`;
+        }).join("\n");
+      }
+    } catch { /* ignore */ }
   }
+
+  // リーダーの最近の面談をプレイブック素材として注入（文脈が無い場合の強い手当て）
+  try {
+    const { data: leaderRows } = await db.from("meeting_transcripts")
+      .select("title, transcript_text, summary")
+      .eq("is_leader", true)
+      .order("recorded_at", { ascending: false })
+      .limit(5);
+    if (leaderRows && leaderRows.length > 0) {
+      leaderExamples = leaderRows.map((m, i) => {
+        const body = (m.transcript_text as string)?.slice(0, 500) || m.summary || "";
+        return `[リーダー事例${i + 1}] ${m.title}\n${body}`;
+      }).join("\n\n");
+    }
+  } catch { /* ignore */ }
 
   const phaseGoals: Record<number, string> = {
     1: "仮説を立てる。候補者の転職動機を3パターン想定し、企業側の採用背景を理解する。マッチ求人を2-3件準備。",
@@ -584,40 +620,68 @@ async function contextualCoach(
     4: "条件交渉をリード。候補者と企業の期待値ギャップを埋める。内定承諾までのタイムラインを管理。",
   };
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-  const geminiRes = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介のベテランリーダーです。
+  const contextProvided = !!(candidateInfo || companyInfo || dealInfo || pastMeetings);
+  const contextSection = contextProvided
+    ? `## 案件情報:
+${candidateInfo || "（候補者情報なし）"}
+${companyInfo || "（企業情報なし）"}
+${dealInfo || "（Deal情報なし）"}
+
+## 過去の面談履歴:
+${pastMeetings || "（なし）"}`
+    : `## 案件情報:
+（指定なし — 候補者・企業・Deal が紐付いていないため、フェーズ${phase}の一般的なベストプラクティスとリーダー事例を元に指導してください）`;
+
+  const prompt = `あなたは建築技術者専門の人材紹介のベテランリーダー（小林）です。
 ジュニアコンサルタントがフェーズ${phase}で何をすべきか、この具体的な案件の文脈で指導してください。
 
 ## フェーズ${phase}の目的:
 ${phaseGoals[phase as number] || ""}
 
-## 案件情報:
-${candidateInfo || "候補者情報なし"}
-${companyInfo || "企業情報なし"}
-${dealInfo || "Deal情報なし"}
+${contextSection}
 
-## 過去の面談履歴:
-${pastMeetings || "なし"}
+## 現在の状況（コンサルタントの自己申告）:
+${current_situation || "（特記事項なし）"}
 
-## 現在の状況:
-${current_situation || "特記事項なし"}
+## リーダーの過去面談（参考事例）:
+${leaderExamples || "（事例なし）"}
 
-## 回答形式:
-1. **今すぐやること**（具体的なアクション3つ、優先順位付き）
-2. **この案件で聞くべき質問**（候補者向け/企業向け各3つ、なぜその質問が重要か含む）
-3. **注意点**（この案件特有のリスク、よくある失敗パターン）
-4. **リーダーならこう話す**（具体的なセリフ例1つ）
+## 回答形式（Markdown、見出しは ### で）:
+### 今すぐやること
+1. … （優先順位順に3つ、具体的アクション）
+2. …
+3. …
 
-建築技術者の転職市場の文脈（中堅ゼネコン以上/ハウスメーカー、年収帯の実態）を踏まえてください。` }] }],
+### 聞くべき質問
+**候補者向け:**
+- … （3つ、各質問の意図を一文で）
+
+**企業向け:**
+- … （3つ、各質問の意図を一文で）
+
+### この案件のリスク
+- … （2〜3個、よくある失敗パターン込み）
+
+### リーダーならこう話す
+> 「…」 （具体的セリフ、状況描写込みで2〜3文）
+
+建築技術者の転職市場の実態（中堅ゼネコン・ハウスメーカー・デベ・CM の年収帯と動機）を踏まえてください。
+案件情報が無い場合は仮定を明記し、汎用ベストプラクティスを示してください。`;
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiRes = await fetch(geminiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
     }),
   });
 
-  if (!geminiRes.ok) return res.status(500).json({ error: "Gemini API error" });
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text().catch(() => "");
+    return res.status(502).json({ error: `Gemini API error: ${errText.slice(0, 300)}` });
+  }
 
   const geminiData = await geminiRes.json();
   const coaching = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -625,7 +689,14 @@ ${current_situation || "特記事項なし"}
   return res.json({
     phase,
     coaching,
-    context: { candidateInfo, companyInfo, dealInfo, pastMeetings: pastMeetings ? "あり" : "なし" },
+    context: {
+      candidateInfo,
+      companyInfo,
+      dealInfo,
+      pastMeetings: pastMeetings ? "あり" : "なし",
+      leaderExamples: leaderExamples ? "あり" : "なし",
+      fallback: !contextProvided,
+    },
   });
 }
 

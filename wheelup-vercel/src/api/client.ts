@@ -1,26 +1,25 @@
-import { supabase } from "../lib/supabase";
-
 const BASE = "/api";
 
+// サーバ側は service_role で動かしているためブラウザ認証ヘッダは不要。
+// 5人チーム運用なのでユーザー識別は consultant_name フィールドで管理する。
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  // Supabase セッションのトークンを自動付与
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (session?.access_token) {
-    headers["Authorization"] = `Bearer ${session.access_token}`;
-  }
-
   const res = await fetch(`${BASE}${path}`, {
-    headers,
+    headers: { "Content-Type": "application/json" },
     ...init,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "Unknown error");
-    throw new Error(`API Error ${res.status}: ${text}`);
+    let detail = `${res.status}`;
+    try {
+      const body = await res.text();
+      // JSON でエラーが返ってきていればメッセージだけ抜く
+      try {
+        const parsed = JSON.parse(body);
+        detail = parsed.error || parsed.message || body.slice(0, 300);
+      } catch {
+        detail = body.slice(0, 300) || detail;
+      }
+    } catch { /* ignore */ }
+    throw new Error(detail);
   }
   return res.json() as Promise<T>;
 }
@@ -873,6 +872,7 @@ export interface MeetingTranscript {
 import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
 
 const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
+export const IS_DEMO_MODE = DEMO_MODE;
 
 if (DEMO_MODE) seedDemoData();
 
@@ -988,7 +988,14 @@ export interface PlaybookEntry {
 export interface ContextualCoachingResponse {
   phase: number;
   coaching: string;
-  context: Record<string, string>;
+  context: {
+    candidateInfo?: string;
+    companyInfo?: string;
+    dealInfo?: string;
+    pastMeetings?: string;
+    leaderExamples?: string;
+    fallback?: boolean;
+  };
 }
 
 export async function scoreMeeting(id: string): Promise<MeetingScore> {
@@ -999,7 +1006,7 @@ export async function scoreMeeting(id: string): Promise<MeetingScore> {
 export async function extractPlaybook(
   leaderName?: string,
   limit?: number,
-): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string }> {
+): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string; warning?: string; message?: string }> {
   if (DEMO_MODE) return demoExtractPlaybook();
   return request("/meetings/extract-playbook", {
     method: "POST",

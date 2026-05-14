@@ -20,6 +20,8 @@ interface Props {
 
 export default function PhaseCoaching({ phase, candidateId, companyId, dealId, candidateName, companyName }: Props) {
   const [coaching, setCoaching] = useState<string | null>(null);
+  const [fallback, setFallback] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [situation, setSituation] = useState("");
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -28,6 +30,7 @@ export default function PhaseCoaching({ phase, candidateId, companyId, dealId, c
 
   const handleAsk = async () => {
     setLoading(true);
+    setErrorMsg(null);
     try {
       const res = await getContextualCoaching({
         phase,
@@ -37,8 +40,10 @@ export default function PhaseCoaching({ phase, candidateId, companyId, dealId, c
         current_situation: situation || undefined,
       });
       setCoaching(res.coaching);
-    } catch {
-      setCoaching("コーチングの取得に失敗しました。面談データがあるか確認してください。");
+      setFallback(!!res.context?.fallback);
+    } catch (err) {
+      setCoaching(null);
+      setErrorMsg(`コーチング取得に失敗: ${(err as Error).message}`);
     }
     setLoading(false);
   };
@@ -101,15 +106,28 @@ export default function PhaseCoaching({ phase, candidateId, companyId, dealId, c
             </button>
           </div>
 
+          {errorMsg && (
+            <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
+              <p className="text-[11px] font-bold text-duo-red leading-snug">{errorMsg}</p>
+            </div>
+          )}
+
           {coaching && (
             <div className="rounded-2xl border-2 border-[#e5e5e5] overflow-hidden">
-              <div className="px-4 py-2 flex items-center gap-2" style={{ backgroundColor: `${info.color}10` }}>
-                <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px]" style={{ backgroundColor: info.color }}>
-                  <span className="text-white font-black">AI</span>
+              <div className="px-4 py-2 flex items-center justify-between gap-2" style={{ backgroundColor: `${info.color}10` }}>
+                <div className="flex items-center gap-2">
+                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px]" style={{ backgroundColor: info.color }}>
+                    <span className="text-white font-black">AI</span>
+                  </div>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider" style={{ color: info.color }}>
+                    リーダーの視点でアドバイス
+                  </span>
                 </div>
-                <span className="text-[10px] font-extrabold uppercase tracking-wider" style={{ color: info.color }}>
-                  リーダーの視点でアドバイス
-                </span>
+                {fallback && (
+                  <span className="text-[9px] font-bold text-[#92400e] bg-[#fef3c7] px-1.5 py-0.5 rounded">
+                    案件未指定: 汎用ガイド
+                  </span>
+                )}
               </div>
               <div className="px-4 py-3 prose prose-sm max-w-none text-sm text-[#4b4b4b] leading-relaxed">
                 <ReactMarkdown>{coaching}</ReactMarkdown>

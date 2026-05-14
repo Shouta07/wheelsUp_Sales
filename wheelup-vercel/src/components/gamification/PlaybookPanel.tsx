@@ -7,15 +7,20 @@ export default function PlaybookPanel() {
   const [leaderName, setLeaderName] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [generated, setGenerated] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "error" | "warning"; text: string } | null>(null);
 
   const handleExtract = async () => {
     setLoading(true);
+    setNotice(null);
     try {
       const res = await extractPlaybook(leaderName || undefined);
       setEntries(res.playbook);
       setGenerated(true);
-    } catch {
+      if (res.warning) setNotice({ kind: "warning", text: res.warning });
+      else if (res.message) setNotice({ kind: "warning", text: res.message });
+    } catch (err) {
       setEntries([]);
+      setNotice({ kind: "error", text: `プレイブック生成に失敗: ${(err as Error).message}` });
     }
     setLoading(false);
   };
@@ -32,6 +37,18 @@ export default function PlaybookPanel() {
       <p className="text-xs font-bold text-[#afafaf] mb-3">
         リーダーの面談記録から「この場面ではこう話す」を自動抽出
       </p>
+
+      {notice && (
+        <div
+          className={`mb-3 rounded-xl border p-2.5 ${
+            notice.kind === "error"
+              ? "bg-duo-red/10 border-duo-red/30 text-duo-red"
+              : "bg-[#fffbeb] border-[#fde68a] text-[#92400e]"
+          }`}
+        >
+          <p className="text-[11px] font-bold leading-snug">{notice.text}</p>
+        </div>
+      )}
 
       {!generated && (
         <div>
