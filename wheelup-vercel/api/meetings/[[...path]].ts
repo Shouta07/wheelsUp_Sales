@@ -396,15 +396,24 @@ ${text.slice(0, 6000)}
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  let parsed;
+  let parsed: Record<string, unknown> = {};
   try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw };
+    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
   } catch {
-    parsed = { raw };
+    parsed = {};
   }
 
-  if (parsed.scores) {
+  // total を実値で再計算（モデルが間違えていることがある）
+  const s = (parsed as { scores?: Record<string, number> }).scores;
+  if (s && typeof s === "object") {
+    const total = ["needs", "proposal", "trust", "closing", "intel"]
+      .reduce((acc, k) => acc + (typeof s[k] === "number" ? s[k] : 0), 0);
+    parsed.total = total;
+    if (!parsed.grade) {
+      parsed.grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 25 ? "B" : total >= 15 ? "C" : "D";
+    }
     await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
   }
 
@@ -445,23 +454,33 @@ async function extractPlaybook(
 
   const { leader_name, limit: maxMeetings } = req.body || {};
 
+  // リーダー面談を抽出。leader_name 指定があれば consultant_name で絞り、無ければ is_leader=true のみ
   let query = db.from("meeting_transcripts")
     .select("*")
+    .eq("is_leader", true)
     .order("recorded_at", { ascending: false })
     .limit(maxMeetings || 20);
 
   if (leader_name) {
-    query = query.contains("attendees", [leader_name]);
+    query = query.eq("consultant_name", leader_name);
   }
 
-  const { data: meetings } = await query;
+  const { data: meetings, error: queryError } = await query;
+  if (queryError) {
+    return res.status(500).json({ error: `面談取得失敗: ${queryError.message}` });
+  }
   if (!meetings || meetings.length === 0) {
-    return res.json({ playbook: [], message: "面談記録がありません" });
+    return res.json({ playbook: [], source_meetings: 0, leader_name: leader_name || "全員", message: "リーダー面談がありません。/api/seed でサンプルを投入してください。" });
   }
 
-  const transcriptSummaries = meetings.map((m, i) =>
-    `[面談${i + 1}] ${m.title}\n要約: ${m.summary || "なし"}\n要点: ${(m.key_points as string[])?.join(", ") || "なし"}\nアクション: ${(m.action_items as string[])?.join(", ") || "なし"}`
-  ).join("\n\n");
+  // 文字起こし優先で送る（要約より発話そのものから抽出した方が精度が高い）
+  const transcriptSummaries = meetings.map((m, i) => {
+    const body = (m.transcript_text as string)?.slice(0, 1200)
+      || (m.summary as string)
+      || (m.key_points as string[])?.join(", ")
+      || "";
+    return `[面談${i + 1}] ${m.title}\n${body}`;
+  }).join("\n\n");
 
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
@@ -496,18 +515,24 @@ ${transcriptSummaries.slice(0, 8000)}
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  let playbook;
+  let playbook: unknown[] = [];
   try {
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    playbook = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    // ```json ... ``` フェンス対策
+    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+    const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) playbook = parsed;
+    }
   } catch {
-    playbook = [{ raw }];
+    playbook = [];
   }
 
   return res.json({
     playbook,
     source_meetings: meetings.length,
     leader_name: leader_name || "全員",
+    ...(playbook.length === 0 ? { warning: "プレイブックを抽出できませんでした。面談記録の質・量を確認してください。" } : {}),
   });
 }
 

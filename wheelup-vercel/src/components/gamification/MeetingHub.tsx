@@ -22,6 +22,7 @@ export default function MeetingHub() {
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const isLeaderUser = currentUser === "小林";
 
@@ -68,13 +69,25 @@ export default function MeetingHub() {
     prevScoredRef.current = scoredIds;
   }, [myMeetings]);
 
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const idx = result.indexOf(",");
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setErrorMsg(null);
     try {
-      const buffer = await file.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+      const base64 = await fileToBase64(file);
       await transcribeAudio({
         audio_base64: base64,
         mime_type: file.type || "audio/webm",
@@ -84,10 +97,10 @@ export default function MeetingHub() {
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+      // refetchInterval (5s) が自動採点の完了を拾う
+    } catch (err) {
+      setErrorMsg(`録音の保存に失敗しました: ${(err as Error).message}`);
+    }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -95,6 +108,7 @@ export default function MeetingHub() {
   const handleTextSave = async () => {
     if (!textInput.trim()) return;
     setUploading(true);
+    setErrorMsg(null);
     try {
       await createMeeting({
         title: titleInput || `${currentUser} 面談記録`,
@@ -107,10 +121,9 @@ export default function MeetingHub() {
       setTextInput("");
       setTitleInput("");
       setShowUpload(false);
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      setErrorMsg(`保存に失敗しました: ${(err as Error).message}`);
+    }
     setUploading(false);
   };
 
@@ -213,6 +226,11 @@ export default function MeetingHub() {
           <p className="text-[10px] font-bold text-[#afafaf] text-center">
             {isLeaderUser ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
           </p>
+          {errorMsg && (
+            <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
+              <p className="text-[11px] font-bold text-duo-red leading-snug">{errorMsg}</p>
+            </div>
+          )}
         </div>
       )}
 
