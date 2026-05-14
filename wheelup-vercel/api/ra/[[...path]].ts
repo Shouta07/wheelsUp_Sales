@@ -2,6 +2,7 @@
  * Consolidated RA prospecting API (Hobby plan: 1 function).
  *
  *   POST /api/ra/import             seed CSV/JSON → ra_companies + ra_candidates
+ *   POST /api/ra/enrich             URL未設定の会社を Gemini で一括補完
  *   POST /api/ra/crawl              ra_companies → fetchPage → Gemini extract → ra_jobs upsert
  *   POST /api/ra/match              open ra_jobs × ra_candidates → Gemini score → ra_matches
  *   POST /api/ra/discover           Gemini suggest new companies → ra_discovery_queue
@@ -66,6 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     switch (sub) {
       case "import":            return await importSeed(db, req, res);
+      case "enrich":            return await enrichEndpoint(db, req, res);
       case "crawl":             return await crawl(db, req, res);
       case "match":             return await match(db, req, res);
       case "discover":          return await discover(db, req, res);
@@ -400,19 +402,25 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  // 安全側: 1 cron で 25 社 / 25 求人。2 cron/日 = 50 社/日。
-  // 246 社 × 5 日サイクル。Gemini ~ 25 + 25×4 = 125 calls/cron → 250/日 (free 1500/日 の 17%)。
-  // これで「無料運用かつ安全マージン」を担保。
-  const c = await tryRun(() => runCrawl(db, { limit: 25, companyId: null }));
-  const m = await tryRun(() => runMatch(db, { limit: 25, jobId: null }));
-  const ok = c.ok && m.ok;
+  // 1 cron 構成: enrich(URL補完) → crawl(求人取得) → match(候補者採点)
+  //   - enrich 10 社 (~6s)        : 採用URL未設定をAIで補完
+  //   - crawl  25 社 (~25s)       : recruit_page_url を Jina+Gemini で巡回
+  //   - match  25 求人 (~20s)     : 開いてる求人 × 候補者を ◎○△× 採点
+  // 合計 ~50s で 60s タイムアウトに収まる。
+  // Gemini calls/cron: 10 (enrich) + 25 (crawl) + 25-100 (match) = ~150 calls/cron
+  //                  × 2 cron/日 = ~300/日 < 無料枠 1500/日 (20%)
+  const e = await tryRun(() => runEnrich(db, { limit: 10 }));
+  const c = await tryRun(() => runCrawl(db,  { limit: 25, companyId: null }));
+  const m = await tryRun(() => runMatch(db,  { limit: 25, jobId: null }));
+  const ok = e.ok && c.ok && m.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
-    ok, stats: { crawl: c.body, match: m.body }, error: ok ? null : `${c.error ?? ""} | ${m.error ?? ""}`,
+    ok, stats: { enrich: e.body, crawl: c.body, match: m.body },
+    error: ok ? null : `${e.error ?? ""} | ${c.error ?? ""} | ${m.error ?? ""}`,
   });
   // Lark / Slack notification — fire-and-forget, never block the cron response.
   notifyAfterCron(db).catch(() => undefined);
-  return res.json({ ok, crawl: c.body, match: m.body });
+  return res.json({ ok, enrich: e.body, crawl: c.body, match: m.body });
 }
 
 async function notifyAfterCron(db: DB) {
@@ -478,7 +486,23 @@ async function findContactInfo(db: DB, req: VercelRequest, res: VercelResponse) 
   }
   if (!name) return res.status(400).json({ error: "name or company_id required" });
 
-  const prompt = `日本企業「${name}」について、以下 5 種類の URL / 情報を可能な限り推定。
+  const result = await enrichOne(db, { id: body.company_id ?? null, name });
+  return res.json({ ok: true, ...result });
+}
+
+/** Pure helper: ask Gemini for a company's URLs, optionally write back to DB. */
+type EnrichResult = {
+  corporate_url: string | null;
+  recruit_page_url: string | null;
+  contact_form_url: string | null;
+  contact_email: string | null;
+  linkedin_url: string | null;
+  confidence: number;
+  note?: string;
+};
+
+async function enrichOne(db: DB, target: { id: string | null; name: string }): Promise<EnrichResult> {
+  const prompt = `日本企業「${target.name}」について、以下 5 種類の URL / 情報を可能な限り推定。
 **確証が無いものは null** にする。推測で URL をでっち上げないこと。
 
 JSON のみ:
@@ -491,24 +515,15 @@ JSON のみ:
   "confidence": 0-1,
   "note": "判断根拠を 1 文で"
 }`;
-  const parsed = await generateJson<{
-    corporate_url: string | null;
-    recruit_page_url: string | null;
-    contact_form_url: string | null;
-    contact_email: string | null;
-    linkedin_url: string | null;
-    confidence: number;
-    note?: string;
-  }>(prompt, { temperature: 0.1 });
+  const parsed = await generateJson<EnrichResult>(prompt, { temperature: 0.1 });
 
-  if (body.company_id) {
-    // Merge into contact_paths jsonb and set top-level URLs.
-    const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", body.company_id).maybeSingle();
-    const existing = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
+  if (target.id) {
+    const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", target.id).maybeSingle();
+    const existing: Array<{ kind?: string; url?: string }> = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
     const next = [...existing];
     const upsertPath = (kind: string, url: string | null) => {
       if (!url) return;
-      if (next.find((p: { kind?: string; url?: string }) => p.kind === kind && p.url === url)) return;
+      if (next.find((p) => p.kind === kind && p.url === url)) return;
       next.push({ kind, url });
     };
     upsertPath("form",     parsed.contact_form_url);
@@ -518,9 +533,51 @@ JSON のみ:
     const patch: Record<string, unknown> = { contact_paths: next, updated_at: new Date().toISOString() };
     if (parsed.recruit_page_url) patch.recruit_page_url = parsed.recruit_page_url;
     if (parsed.corporate_url)    patch.corporate_url    = parsed.corporate_url;
-    await db.from("ra_companies").update(patch).eq("id", body.company_id);
+    await db.from("ra_companies").update(patch).eq("id", target.id);
   }
-  return res.json({ ok: true, ...parsed });
+  return parsed;
+}
+
+/**
+ * Auto-enrich: pick companies that have NO recruit_page_url and NO contact_paths,
+ * and let Gemini guess their URLs. This is what makes the pipeline truly hands-free.
+ */
+async function runEnrich(db: DB, opts: { limit: number }) {
+  if (!hasGemini) return { enriched: 0, failed: 0, errors: [] };
+
+  const { data: companies, error } = await db
+    .from("ra_companies")
+    .select("id,name")
+    .is("recruit_page_url", null)
+    .order("created_at", { ascending: true })
+    .limit(opts.limit);
+  if (error) throw new Error(error.message);
+
+  let enriched = 0, failed = 0;
+  const errors: string[] = [];
+
+  await mapWithConcurrency(companies ?? [], 5, async (c) => {
+    try {
+      await enrichOne(db, { id: c.id as string, name: c.name as string });
+      enriched += 1;
+    } catch (err) {
+      failed += 1;
+      errors.push(`${c.name}: ${(err as Error).message}`);
+    }
+  });
+
+  await db.from("ra_crawl_runs").insert({
+    kind: "enrich", finished_at: new Date().toISOString(),
+    ok: failed === 0, stats: { enriched, failed, model: geminiModel }, error: errors.join(" | ") || null,
+  });
+  return { ok: true, enriched, failed, errors };
+}
+
+/** Manual trigger from the UI / curl. */
+async function enrichEndpoint(db: DB, req: VercelRequest, res: VercelResponse) {
+  const limit = Number(req.query.limit ?? 20);
+  const r = await runEnrich(db, { limit });
+  return res.json(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -557,8 +614,18 @@ async function addCompanies(db: DB, req: VercelRequest, res: VercelResponse) {
   const { data, error } = await db
     .from("ra_companies")
     .upsert(payload, { onConflict: "name", ignoreDuplicates: false })
-    .select("id,name");
+    .select("id,name,recruit_page_url");
   if (error) return res.status(500).json({ error: error.message });
+
+  // Background: enrich URLs for newly added companies that came in without one.
+  // Fire-and-forget so the UI gets a fast response. Up to 20 in parallel(5).
+  if (hasGemini && data) {
+    const targets = data.filter((d) => !d.recruit_page_url).slice(0, 20);
+    void mapWithConcurrency(targets, 5, async (c) => {
+      try { await enrichOne(db, { id: c.id as string, name: c.name as string }); } catch { /* swallowed */ }
+    });
+  }
+
   return res.json({ ok: true, added: data?.length ?? 0, names: (data ?? []).map((d) => d.name) });
 }
 
