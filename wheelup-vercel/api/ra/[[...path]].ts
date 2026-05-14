@@ -8,10 +8,8 @@
  *   POST /api/ra/activity           activity log → ra_activities
  *   POST /api/ra/find-recruit-url   Gemini guesses recruit-page URL for a company name
  *   POST /api/ra/approve-discovery  promote a queued discovery row into ra_companies
- *   POST /api/ra/draft              Gemini drafts an outreach email for a match_id
  *   POST /api/ra/update-company     PATCH name / contact_paths / notes / recruit_page_url
  *   POST /api/ra/update-candidate   PATCH candidate profile
- *   GET  /api/ra/pipedrive-match    cross-match an ra_company against the existing companies table
  *   POST /api/ra/cron               crawl + match + optional Lark notify (Vercel Cron)
  *   GET  /api/ra/cron               same — Vercel Cron sends GET
  *
@@ -77,10 +75,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case "add-companies":     return await addCompanies(db, req, res);
       case "add-candidate":     return await addCandidate(db, req, res);
       case "approve-discovery": return await approveDiscovery(db, req, res);
-      case "draft":             return await draftEmail(db, req, res);
       case "update-company":    return await updateCompany(db, req, res);
       case "update-candidate":  return await updateCandidate(db, req, res);
-      case "pipedrive-match":   return await pipedriveMatch(db, req, res);
       case "cron":              return await cron(db, req, res);
       default:                  return res.status(404).json({ error: "unknown RA endpoint" });
     }
@@ -404,10 +400,11 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  // Concurrency 5 lets us comfortably fit ~50 companies in a 60s Hobby budget
-  // (3-5s per Gemini call × 5 parallel ≈ 10 batches × 4-5s = 40-50s).
-  const c = await tryRun(() => runCrawl(db, { limit: 50, companyId: null }));
-  const m = await tryRun(() => runMatch(db, { limit: 50, jobId: null }));
+  // 安全側: 1 cron で 25 社 / 25 求人。2 cron/日 = 50 社/日。
+  // 246 社 × 5 日サイクル。Gemini ~ 25 + 25×4 = 125 calls/cron → 250/日 (free 1500/日 の 17%)。
+  // これで「無料運用かつ安全マージン」を担保。
+  const c = await tryRun(() => runCrawl(db, { limit: 25, companyId: null }));
+  const m = await tryRun(() => runMatch(db, { limit: 25, jobId: null }));
   const ok = c.ok && m.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
@@ -626,41 +623,6 @@ async function approveDiscovery(db: DB, req: VercelRequest, res: VercelResponse)
 }
 
 // ---------------------------------------------------------------------------
-// /api/ra/draft  — Gemini writes an outreach email for a match
-// ---------------------------------------------------------------------------
-async function draftEmail(db: DB, req: VercelRequest, res: VercelResponse) {
-  if (!hasGemini) return res.status(412).json({ error: "GEMINI_API_KEY not configured" });
-  const body = (req.body ?? {}) as { match_id?: string };
-  if (!body.match_id) return res.status(400).json({ error: "match_id required" });
-
-  const { data: row } = await db.from("ra_ready_to_execute").select("*").eq("match_id", body.match_id).maybeSingle();
-  if (!row) return res.status(404).json({ error: "match not found in ready_to_execute" });
-  const { data: candidate } = await db.from("ra_candidates").select("*").eq("id", row.candidate_id).maybeSingle();
-
-  const prompt = `あなたは日本のRA(リクルーティング・アドバイザー)です。下記の求人に対し、候補者を打診する**初回メールの下書き** (件名 + 本文) を 200〜350 字程度で書いてください。
-過度な煽りは避け、求人の魅力ポイントと候補者の合致点を 2〜3 行で明示。
-署名は "—— Wheels Up RA" 固定。
-
-# 企業 / 求人
-企業: ${row.company_name}
-求人: ${row.job_title}
-理由: ${(row.reasons ?? []).join(" / ")}
-懸念: ${(row.concerns ?? []).join(" / ")}
-
-# 候補者
-名前: ${candidate?.name}
-ヘッドライン: ${candidate?.headline ?? ""}
-specialties: ${(candidate?.profile?.specialties ?? []).join(", ")}
-in_progress: ${(candidate?.profile?.in_progress ?? []).join(", ")}
-
-JSON のみ:
-{ "subject": "...", "body": "..." }`;
-
-  const parsed = await generateJson<{ subject: string; body: string }>(prompt, { temperature: 0.4 });
-  return res.json({ ok: true, ...parsed });
-}
-
-// ---------------------------------------------------------------------------
 // /api/ra/update-company  — PATCH metadata
 // ---------------------------------------------------------------------------
 async function updateCompany(db: DB, req: VercelRequest, res: VercelResponse) {
@@ -703,21 +665,6 @@ async function updateCandidate(db: DB, req: VercelRequest, res: VercelResponse) 
   const { data, error } = await db.from("ra_candidates").update(patch).eq("id", body.id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ ok: true, candidate: data });
-}
-
-// ---------------------------------------------------------------------------
-// /api/ra/pipedrive-match  — cross-match ra_companies.name against companies
-// ---------------------------------------------------------------------------
-async function pipedriveMatch(db: DB, req: VercelRequest, res: VercelResponse) {
-  const id = typeof req.query.company_id === "string" ? req.query.company_id : null;
-  if (!id) return res.status(400).json({ error: "company_id required" });
-  const { data: ra } = await db.from("ra_companies").select("name").eq("id", id).maybeSingle();
-  if (!ra) return res.status(404).json({ error: "ra_company not found" });
-
-  // Loose match — ILIKE %name% both ways. The existing companies table is small
-  // enough (a few hundred rows) that filtering in-memory is cheap.
-  const { data: existing } = await db.from("companies").select("id,name,pipedrive_org_id,won_deals_count,open_deals_count,people_count").ilike("name", `%${ra.name}%`).limit(10);
-  return res.json({ ok: true, ra_name: ra.name, matches: existing ?? [] });
 }
 
 async function tryRun(fn: () => Promise<unknown>) {

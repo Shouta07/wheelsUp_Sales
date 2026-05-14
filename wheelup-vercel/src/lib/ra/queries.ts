@@ -233,9 +233,6 @@ export const api = {
   approveDiscovery: (id: string, opts: { reject?: boolean; priority?: string } = {}) =>
     call<{ ok: true; status: string; company_id?: string }>("approve-discovery", { body: { id, ...opts } }),
 
-  draftEmail: (match_id: string) =>
-    call<{ ok: true; subject: string; body: string }>("draft", { body: { match_id } }),
-
   updateCompany: (patch: { id: string } & Record<string, unknown>) =>
     call<{ ok: true; company: Company }>("update-company", { body: patch }),
 
@@ -244,12 +241,6 @@ export const api = {
 
   addCandidate: (input: { code: string; name: string; headline?: string; profile?: Record<string, unknown>; is_active?: boolean }) =>
     call<{ ok: true; candidate: Candidate }>("add-candidate", { body: input }),
-
-  pipedriveMatch: (company_id: string) =>
-    call<{
-      ok: true; ra_name: string;
-      matches: Array<{ id: string; name: string; pipedrive_org_id?: number; won_deals_count?: number; open_deals_count?: number; people_count?: number }>;
-    }>(`pipedrive-match?company_id=${encodeURIComponent(company_id)}`, { method: "GET" }),
 
   // Triggers
   run: (kind: "crawl" | "match" | "discover" | "import", params: Record<string, string | number> = {}) => {
