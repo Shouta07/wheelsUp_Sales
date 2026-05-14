@@ -27,6 +27,10 @@ import { parseCsv } from "../_lib/ra-csv.js";
 import { generateJson, geminiModel, hasGemini } from "../_lib/ra-gemini.js";
 import { fetchPage, sha256 } from "../_lib/ra-scrape.js";
 
+// Vercel function timeout — Hobby plan caps at 60s, Pro at 300s.
+// Crawl + match can be heavy; opt into the full budget.
+export const config = { maxDuration: 60 };
+
 type DB = ReturnType<typeof getSupabaseAdmin>;
 
 async function authorize(req: VercelRequest, db: DB): Promise<{ ok: true } | { ok: false; status: number; body: object }> {
@@ -141,6 +145,33 @@ async function crawl(db: DB, req: VercelRequest, res: VercelResponse) {
   return res.json(r);
 }
 
+/**
+ * Run N async functions over an array with bounded concurrency.
+ * Lets us fan out crawl/match work without overwhelming Gemini's 15 RPM
+ * free-tier ceiling. We pick the concurrency cap based on realistic
+ * Gemini latency (~3–5s per call) so 5-way × ~4s ≈ 75 RPM peak, but each
+ * call takes >4s so effective rate is ~12-15 RPM.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length || 1) }, () => worker()),
+  );
+  return results;
+}
+
 async function runCrawl(db: DB, opts: { limit: number; companyId: string | null }) {
   let q = db.from("ra_companies").select("*").not("recruit_page_url", "is", null).order("last_crawled_at", { ascending: true, nullsFirst: true }).limit(opts.limit);
   if (opts.companyId) q = q.eq("id", opts.companyId);
@@ -150,7 +181,7 @@ async function runCrawl(db: DB, opts: { limit: number; companyId: string | null 
   const stats = { crawled: 0, newJobs: 0, updatedJobs: 0, errors: 0 };
   const errors: string[] = [];
 
-  for (const c of companies ?? []) {
+  await mapWithConcurrency(companies ?? [], 5, async (c) => {
     try {
       const body = await fetchPage(c.recruit_page_url as string);
       const extracted = await extractJobs(c.name as string, body);
@@ -183,7 +214,7 @@ async function runCrawl(db: DB, opts: { limit: number; companyId: string | null 
       stats.errors += 1;
       errors.push(`${c.name}: ${(err as Error).message}`);
     }
-  }
+  });
 
   await db.from("ra_crawl_runs").insert({
     kind: "crawl", finished_at: new Date().toISOString(),
@@ -246,23 +277,25 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const stats = { scored: 0, skipped: 0, errors: 0 };
   const errors: string[] = [];
 
-  for (const j of jobs ?? []) {
-    for (const c of candidates ?? []) {
-      try {
-        const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
-        if (existing && existing.length > 0) { stats.skipped += 1; continue; }
-        const s = await scoreOne(j, c);
-        await db.from("ra_matches").insert({
-          job_id: j.id, candidate_id: c.id,
-          grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
-        });
-        stats.scored += 1;
-      } catch (err) {
-        stats.errors += 1;
-        errors.push(`${j.title} × ${c.name}: ${(err as Error).message}`);
-      }
+  // Cartesian product of jobs × candidates, then run in parallel pool.
+  const pairs: Array<{ j: typeof jobs extends Array<infer J> | null ? J : never; c: typeof candidates extends Array<infer C> | null ? C : never }> = [];
+  for (const j of jobs ?? []) for (const c of candidates ?? []) pairs.push({ j, c });
+
+  await mapWithConcurrency(pairs, 5, async ({ j, c }) => {
+    try {
+      const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
+      if (existing && existing.length > 0) { stats.skipped += 1; return; }
+      const s = await scoreOne(j, c);
+      await db.from("ra_matches").insert({
+        job_id: j.id, candidate_id: c.id,
+        grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
+      });
+      stats.scored += 1;
+    } catch (err) {
+      stats.errors += 1;
+      errors.push(`${j.title} × ${c.name}: ${(err as Error).message}`);
     }
-  }
+  });
 
   await db.from("ra_crawl_runs").insert({
     kind: "match", finished_at: new Date().toISOString(),
@@ -371,8 +404,10 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  const c = await tryRun(() => runCrawl(db, { limit: 20, companyId: null }));
-  const m = await tryRun(() => runMatch(db, { limit: 20, jobId: null }));
+  // Concurrency 5 lets us comfortably fit ~50 companies in a 60s Hobby budget
+  // (3-5s per Gemini call × 5 parallel ≈ 10 batches × 4-5s = 40-50s).
+  const c = await tryRun(() => runCrawl(db, { limit: 50, companyId: null }));
+  const m = await tryRun(() => runMatch(db, { limit: 50, jobId: null }));
   const ok = c.ok && m.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
