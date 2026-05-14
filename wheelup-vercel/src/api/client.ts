@@ -3,15 +3,27 @@ import { supabase } from "../lib/supabase";
 const BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  // Supabase セッションのトークンを自動付与
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (session?.access_token) {
-    headers["Authorization"] = `Bearer ${session.access_token}`;
+
+  // Supabase セッションが取得できる場合は Bearer JWT を付与（team mode 用）。
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers["Authorization"] = `Bearer ${session.access_token}`;
+    }
+  } catch {
+    // open mode では Supabase Auth に依存しないので無視
+  }
+
+  // open mode 用: 名前ピッカーで選んだ名前を X-User-Name で送る。
+  // サーバは AUTH_MODE=open のときだけこれを identity として採用する。
+  if (typeof window !== "undefined") {
+    const name = window.localStorage.getItem("wheelsup_current_user");
+    if (name) headers["X-User-Name"] = name;
   }
 
   const res = await fetch(`${BASE}${path}`, {

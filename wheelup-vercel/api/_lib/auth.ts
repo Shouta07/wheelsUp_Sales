@@ -97,9 +97,53 @@ async function verifyJwt(token: string): Promise<SessionUser | null> {
   }
 }
 
+// 3 deployment modes:
+//   team  — Supabase JWT (browser) OR Bearer CRON_SECRET (machine). Default.
+//   open  — no authentication. Identity comes from the X-User-Name header
+//           (set by the browser from the name-picker). Audit only; trust
+//           the URL secrecy + Vercel deploy URL as the perimeter.
+//   mock  — auth not yet configured. Used for local dev/CI.
+export type AuthMode = "team" | "open" | "mock";
+
+export function authMode(): AuthMode {
+  const m = (process.env.AUTH_MODE || "").toLowerCase();
+  if (m === "open") return "open";
+  if (m === "mock") return "mock";
+  return "team";
+}
+
+const NAME_RE = /^[\p{L}\p{N}_\-. ]{1,60}$/u;
+function pickedName(req: VercelRequest): string | null {
+  const raw = req.headers["x-user-name"];
+  const h = typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : null;
+  if (h && NAME_RE.test(h.trim())) return h.trim();
+  const body = (req.body || {}) as Record<string, unknown>;
+  const b = body.consultant_name;
+  if (typeof b === "string" && NAME_RE.test(b.trim())) return b.trim();
+  return null;
+}
+
 export async function checkAuth(req: VercelRequest): Promise<AuthResult> {
+  const mode = authMode();
+
+  if (mode === "mock") {
+    return { ok: true, via: "bearer", user: null };
+  }
+
+  if (mode === "open") {
+    // No authentication. Identity is whatever name the browser claims via
+    // X-User-Name (or consultant_name in the body). Used for tiny internal
+    // teams behind a private Vercel URL.
+    const name = pickedName(req);
+    return {
+      ok: true,
+      via: "session",
+      user: name ? { id: `open:${name}`, email: name } : null,
+    };
+  }
+
+  // team mode — full Supabase JWT + Bearer fallback.
   const cron = configuredCronSecret();
-  // Server misconfig is its own bucket; auth can't proceed.
   if (!cron.ok) return { ok: false, status: 500, reason: cron.reason };
 
   const token = extractToken(req);

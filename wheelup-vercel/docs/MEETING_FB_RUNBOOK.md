@@ -16,19 +16,20 @@
 
 ### Vercel 環境変数
 
-| 変数 | 必須 | 説明 |
-|---|---|---|
-| `SUPABASE_URL` | ✅ | サーバ側 |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | サーバ側のみ。漏らさない |
-| `SUPABASE_ANON_KEY` | ✅ | JWT 検証用（サーバ） |
-| `VITE_SUPABASE_URL` | ✅ | ブラウザ |
-| `VITE_SUPABASE_ANON_KEY` | ✅ | ブラウザ |
-| `ALLOWED_EMAILS` | ✅ | カンマ区切り。リストに無いメールは API・UI で 401 |
-| `GEMINI_API_KEY` | ✅ | Gemini 文字起こし・採点 |
-| `GEMINI_MODEL` | 任意 | デフォルト `gemini-2.0-flash` |
-| `CRON_SECRET` | ✅ | `openssl rand -base64 36` で 24 文字以上 |
-| `KILL_LLM` | 緊急時 | `true` で全 LLM ルートを 503 |
-| `LLM_DAILY_RUN_LIMIT` | 任意 | 日次上限 (UTC)。デフォルト 200 |
+| 変数 | open mode | team mode | 説明 |
+|---|---|---|---|
+| `AUTH_MODE` | `open` | (省略=team) | 認証モード |
+| `SUPABASE_URL` | ✅ | ✅ | サーバ側 |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | ✅ | サーバ側のみ。漏らさない |
+| `SUPABASE_ANON_KEY` | 不要 | ✅ | JWT 検証用（サーバ） |
+| `VITE_SUPABASE_URL` | ✅ | ✅ | ブラウザ |
+| `VITE_SUPABASE_ANON_KEY` | ✅ | ✅ | ブラウザ |
+| `ALLOWED_EMAILS` | 不要 | ✅ | リストに無いメールは API・UI で 401 |
+| `GEMINI_API_KEY` | ✅ | ✅ | Gemini 文字起こし・採点 |
+| `GEMINI_MODEL` | 任意 | 任意 | デフォルト `gemini-2.0-flash` |
+| `CRON_SECRET` | 不要 | ✅ | `openssl rand -base64 36` で 24 文字以上 |
+| `KILL_LLM` | 緊急時 | 緊急時 | `true` で全 LLM ルートを 503 |
+| `LLM_DAILY_RUN_LIMIT` | 任意 | 任意 | 日次上限 (UTC)。デフォルト 200 |
 
 ### 動作確認
 - [ ] `/api/health` で `db: "ok"`, `config.*: "set"` が並ぶこと
@@ -39,12 +40,22 @@
 
 ## 2. API 認証モデル
 
-| 経路 | 認証方法 |
-|---|---|
-| `/api/health` | 不要 |
-| `/api/meetings/*` | Bearer (Supabase JWT) **または** Bearer (`CRON_SECRET`) |
+3つのモードを `AUTH_MODE` 環境変数で切り替え：
 
-- ブラウザは `client.ts` の `request()` が自動で Supabase セッションの `access_token` を付与
+| `AUTH_MODE` | 認証 | identity (created_by) | 使い所 |
+|---|---|---|---|
+| `team` (デフォルト) | Supabase JWT or Bearer `CRON_SECRET` | JWT の email | 外部公開・5名以上 |
+| **`open`** | **なし** | **`X-User-Name` ヘッダ or `consultant_name` body** | **5名・社内URL専用（推奨）** |
+| `mock` | なし（user=null） | null | ローカル開発・CI |
+
+### `open` モードの挙動
+- ブラウザは `wheelsup_current_user` (localStorage) の名前を `X-User-Name` で自動送信
+- サーバはその名前を信用して `created_by` に書く（**証拠の改ざんは可能**——内部用URLの秘匿性が唯一の防壁）
+- レート制限・cost guard・killswitch は引き続き有効
+- `CRON_SECRET` / `ALLOWED_EMAILS` / `SUPABASE_ANON_KEY` は不要
+
+### `team` モードの挙動
+- ブラウザは `client.ts` の `request()` が自動で Supabase セッションの `access_token` を Bearer 付与
 - マシン (curl / cron) は `CRON_SECRET` を Bearer に
 - JWT は `supabase.auth.getUser(token)` で検証 → `email` を `ALLOWED_EMAILS` と照合
 - 認証失敗時は常に 401。レスポンスヘッダに `X-Request-Id` を付与
