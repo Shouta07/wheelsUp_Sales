@@ -350,17 +350,35 @@ async function scoreMeetingInternal(
   const text = (meeting.transcript_text as string) || (meeting.summary as string) || "";
   if (!text) return { error: "テキストがありません", status: 400 };
 
+  // リーダーの面談タイトルを学習リソースの素材として注入（URL ハルシネーション回避）
+  let leaderRefs = "";
+  try {
+    const { data: leaderRows } = await db.from("meeting_transcripts")
+      .select("title, summary")
+      .eq("is_leader", true)
+      .order("recorded_at", { ascending: false })
+      .limit(5);
+    if (leaderRows && leaderRows.length > 0) {
+      leaderRefs = leaderRows
+        .map((r, i) => `${i + 1}. 「${r.title}」 ${(r.summary as string)?.slice(0, 80) || ""}`)
+        .join("\n");
+    }
+  } catch { /* ignore */ }
+
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
-以下の面談記録を5つの観点で10点満点で採点してください。
+以下の面談記録を5つの観点で10点満点で採点し、ダイジェスト用キーモーメントと学習リソースまで含めて返してください。
 **必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
 
 ## 面談記録:
 ${text.slice(0, 6000)}
+
+## 参考: リーダーの過去面談（学習リソース推薦時に source_name として引用してよい）:
+${leaderRefs || "（なし）"}
 
 ## 採点基準（各10点）:
 1. **ニーズ深掘り(needs)**: 候補者/企業の本音・課題を引き出せたか
@@ -369,7 +387,7 @@ ${text.slice(0, 6000)}
 4. **クロージング(closing)**: 次のアクションを明確にし、期限付きのコミットを得られたか
 5. **情報収集(intel)**: 他社状況・温度感・意思決定者情報を聞き出せたか
 
-## 出力形式（JSON厳守）:
+## 出力形式（JSON厳守、コードフェンスや前後の説明文を出さない）:
 {
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "total": 30,
@@ -383,26 +401,54 @@ ${text.slice(0, 6000)}
   },
   "strengths": ["具体的な強み1", "強み2"],
   "improvements": ["具体的な改善点1（どう言い換えれば良かったか含む）", "改善点2"],
-  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）"
+  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）",
+  "key_moments": [
+    {
+      "text": "面談記録から抜き出した実際の発言を50〜120字で",
+      "axis": "needs",
+      "axis_label": "ニーズ深掘り",
+      "relevance": 0.9,
+      "speaker": "コンサル"
+    }
+  ],
+  "learning_resources": [
+    {
+      "axis": "needs",
+      "title": "本音を引き出す質問の型",
+      "description": "なぜ転職するのかを3層で深掘りする手順を、リーダー面談の同じ場面で再現する",
+      "source_type": "playbook",
+      "source_name": "上記参考リーダー面談のタイトル",
+      "playbook_situation": "候補者が「年収を上げたい」と表層的な理由しか出さない場面"
+    }
+  ]
 }
 
-重要: evidenceは面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。` }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+要件:
+- key_moments は 4〜6 件、面談中の主要な転換点（強みでも弱みでも）を時系列順で。axis は needs/proposal/trust/closing/intel のいずれか、axis_label は日本語ラベル、relevance は 0〜1。speaker は判別できれば「候補者」「企業」「コンサル」、不明なら省略。timestamp や seconds は不明なら省略（推測しない）。
+- learning_resources は弱い軸（点数の低い 2 軸）を中心に 2〜3 件。source_type は基本 "playbook"、source_name は参考リストの face value をそのまま使うか、空なら "リーダー面談記録"。url は決して推測しない（URLを書かない）。
+- evidence は面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。
+- 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2800, responseMimeType: "application/json" },
     }),
   });
 
-  if (!geminiRes.ok) return { error: "Gemini API error", status: 500 };
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text().catch(() => "");
+    return { error: `Gemini API error: ${errText.slice(0, 200)}`, status: 502 };
+  }
 
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
   let parsed: Record<string, unknown> = {};
+  let parseError: string | null = null;
   try {
     const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-  } catch {
-    parsed = {};
+    else parseError = "JSON が含まれていません";
+  } catch (e) {
+    parseError = (e as Error).message;
   }
 
   // total を実値で再計算（モデルが間違えていることがある）
@@ -414,7 +460,50 @@ ${text.slice(0, 6000)}
     if (!parsed.grade) {
       parsed.grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 25 ? "B" : total >= 15 ? "C" : "D";
     }
+
+    // key_moments / learning_resources のサニタイズ（型不整合を吸う）
+    const km = (parsed as { key_moments?: unknown }).key_moments;
+    if (Array.isArray(km)) {
+      parsed.key_moments = km
+        .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
+        .slice(0, 8)
+        .map((m) => ({
+          text: String(m.text || "").slice(0, 240),
+          axis: typeof m.axis === "string" ? m.axis : "needs",
+          axis_label: typeof m.axis_label === "string" ? m.axis_label : "",
+          relevance: typeof m.relevance === "number" ? Math.min(1, Math.max(0, m.relevance)) : 0.5,
+          ...(typeof m.speaker === "string" && m.speaker ? { speaker: m.speaker } : {}),
+          ...(typeof m.timestamp === "string" && m.timestamp ? { timestamp: m.timestamp } : {}),
+          ...(typeof m.seconds === "number" ? { seconds: m.seconds } : {}),
+        }))
+        .filter((m) => m.text);
+    } else {
+      parsed.key_moments = [];
+    }
+
+    const lr = (parsed as { learning_resources?: unknown }).learning_resources;
+    if (Array.isArray(lr)) {
+      parsed.learning_resources = lr
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .slice(0, 5)
+        .map((r) => ({
+          axis: typeof r.axis === "string" ? r.axis : "needs",
+          title: String(r.title || "").slice(0, 120),
+          description: String(r.description || "").slice(0, 300),
+          source_type: (r.source_type === "video" || r.source_type === "article" || r.source_type === "playbook")
+            ? r.source_type : "playbook",
+          ...(typeof r.source_name === "string" && r.source_name ? { source_name: r.source_name } : {}),
+          ...(typeof r.playbook_situation === "string" && r.playbook_situation ? { playbook_situation: r.playbook_situation } : {}),
+          // url はハルシネーション防止のため捨てる（プロンプトでも禁じているが念のため）
+        }))
+        .filter((r) => r.title);
+    } else {
+      parsed.learning_resources = [];
+    }
+
     await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
+  } else if (parseError) {
+    return { error: `スコアJSONのパース失敗: ${parseError}`, raw: raw.slice(0, 500), status: 502 };
   }
 
   return { meeting_id: id, ...parsed };
