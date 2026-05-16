@@ -146,10 +146,19 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader } = req.body;
+  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader, recorded_at } = req.body;
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
+  }
+
+  // base64 文字列のサイズから元バイナリサイズを概算（Vercel ボディ上限 4.5MB ≒ base64 で 6MB）
+  const approxBytes = Math.floor((audio_base64.length * 3) / 4);
+  const MAX_BYTES = 4 * 1024 * 1024; // 4MB の元バイナリ
+  if (approxBytes > MAX_BYTES) {
+    return res.status(413).json({
+      error: `音声ファイルが大きすぎます (約 ${(approxBytes / 1024 / 1024).toFixed(1)}MB)。${(MAX_BYTES / 1024 / 1024).toFixed(0)}MB 以下に分割するか圧縮してください。`,
+    });
   }
 
   const mimeType = mime_type || "audio/webm";
@@ -218,7 +227,7 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
     next_steps: sections.actionItems.join("\n"),
     attendees: attendees || [],
     source: "gemini",
-    recorded_at: new Date().toISOString(),
+    recorded_at: recorded_at || new Date().toISOString(),
   }).select().single();
 
   if (error) return res.status(500).json({ error: error.message });

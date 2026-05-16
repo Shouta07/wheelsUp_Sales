@@ -1,10 +1,20 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { GamificationProvider, getSavedUser, clearSavedUser } from "./gamification/GamificationProvider";
 import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
 import StreakFlame from "./components/gamification/StreakFlame";
 import UserSelectPage from "./pages/UserSelectPage";
-import Home from "./pages/Home";
-import ProspectingApp from "./pages/ra/ProspectingApp";
+
+// 面談FB / RA 開拓は片方ずつしか使わないので分割ロード
+const Home = lazy(() => import("./pages/Home"));
+const ProspectingApp = lazy(() => import("./pages/ra/ProspectingApp"));
+
+function PageFallback() {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="animate-spin w-6 h-6 border-2 border-duo-green border-t-transparent rounded-full" />
+    </div>
+  );
+}
 
 type Mode = "meeting" | "ra";
 const MODE_KEY = "wheelsup_active_mode";
@@ -109,7 +119,9 @@ export default function App() {
           mode={mode}
           onChangeMode={changeMode}
         />
-        {mode === "meeting" ? <Home /> : <ProspectingApp />}
+        <Suspense fallback={<PageFallback />}>
+          {mode === "meeting" ? <Home /> : <ProspectingApp />}
+        </Suspense>
       </div>
     </GamificationProvider>
   );

@@ -869,7 +869,7 @@ export interface MeetingTranscript {
 
 /* ---------- Meeting API (with demo fallback) ---------- */
 
-import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, seedDemoData } from "./demo";
+import { demoFetchMeetings, demoCreateMeeting, demoScoreMeeting, demoSummarizeMeeting, demoExtractPlaybook, demoAddLeaderFeedback, seedDemoData } from "./demo";
 
 const DEMO_MODE = !import.meta.env.VITE_SUPABASE_URL;
 export const IS_DEMO_MODE = DEMO_MODE;
@@ -912,6 +912,7 @@ export async function transcribeAudio(data: {
   attendees?: string[];
   consultant_name?: string;
   is_leader?: boolean;
+  recorded_at?: string;
 }): Promise<{ transcript: MeetingTranscript; raw_gemini_output: string; auto_scoring?: boolean }> {
   return request("/meetings/transcribe", { method: "POST", body: JSON.stringify(data) });
 }
@@ -931,10 +932,7 @@ export async function addLeaderFeedback(
   id: string,
   feedback: string,
 ): Promise<MeetingTranscript> {
-  if (DEMO_MODE) {
-    const { demoAddLeaderFeedback } = await import("./demo");
-    return demoAddLeaderFeedback(id, feedback);
-  }
+  if (DEMO_MODE) return demoAddLeaderFeedback(id, feedback);
   return request(`/meetings/${id}/leader-feedback`, {
     method: "POST",
     body: JSON.stringify({ feedback }),
