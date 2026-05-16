@@ -1,23 +1,13 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseAdmin } from "./_lib/supabase-admin.js";
 
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) {
-    return res.status(500).json({
-      error: "環境変数が未設定",
-      SUPABASE_URL: url ? "設定済み" : "未設定",
-      SUPABASE_SERVICE_ROLE_KEY: key ? "設定済み" : "未設定",
-    });
+  let db;
+  try {
+    db = getSupabaseAdmin();
+  } catch (e) {
+    return res.status(500).json({ error: (e as Error).message });
   }
-
-  let fixedUrl = url.trim().replace(/^["']+|["']+$/g, "");
-  if (!fixedUrl.startsWith("http")) fixedUrl = `https://${fixedUrl}`;
-  fixedUrl = fixedUrl.replace(/\/+$/, "");
-
-  const db = createClient(fixedUrl, key.trim());
 
   const { data: existing } = await db
     .from("meeting_transcripts")

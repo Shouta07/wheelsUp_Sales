@@ -146,10 +146,19 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader } = req.body;
+  const { audio_base64, mime_type, deal_id, candidate_id, title, attendees, consultant_name, is_leader, recorded_at } = req.body;
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
+  }
+
+  // base64 文字列のサイズから元バイナリサイズを概算（Vercel ボディ上限 4.5MB ≒ base64 で 6MB）
+  const approxBytes = Math.floor((audio_base64.length * 3) / 4);
+  const MAX_BYTES = 4 * 1024 * 1024; // 4MB の元バイナリ
+  if (approxBytes > MAX_BYTES) {
+    return res.status(413).json({
+      error: `音声ファイルが大きすぎます (約 ${(approxBytes / 1024 / 1024).toFixed(1)}MB)。${(MAX_BYTES / 1024 / 1024).toFixed(0)}MB 以下に分割するか圧縮してください。`,
+    });
   }
 
   const mimeType = mime_type || "audio/webm";
@@ -218,7 +227,7 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
     next_steps: sections.actionItems.join("\n"),
     attendees: attendees || [],
     source: "gemini",
-    recorded_at: new Date().toISOString(),
+    recorded_at: recorded_at || new Date().toISOString(),
   }).select().single();
 
   if (error) return res.status(500).json({ error: error.message });
@@ -350,17 +359,35 @@ async function scoreMeetingInternal(
   const text = (meeting.transcript_text as string) || (meeting.summary as string) || "";
   if (!text) return { error: "テキストがありません", status: 400 };
 
+  // リーダーの面談タイトルを学習リソースの素材として注入（URL ハルシネーション回避）
+  let leaderRefs = "";
+  try {
+    const { data: leaderRows } = await db.from("meeting_transcripts")
+      .select("title, summary")
+      .eq("is_leader", true)
+      .order("recorded_at", { ascending: false })
+      .limit(5);
+    if (leaderRows && leaderRows.length > 0) {
+      leaderRefs = leaderRows
+        .map((r, i) => `${i + 1}. 「${r.title}」 ${(r.summary as string)?.slice(0, 80) || ""}`)
+        .join("\n");
+    }
+  } catch { /* ignore */ }
+
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
-以下の面談記録を5つの観点で10点満点で採点してください。
+以下の面談記録を5つの観点で10点満点で採点し、ダイジェスト用キーモーメントと学習リソースまで含めて返してください。
 **必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
 
 ## 面談記録:
 ${text.slice(0, 6000)}
+
+## 参考: リーダーの過去面談（学習リソース推薦時に source_name として引用してよい）:
+${leaderRefs || "（なし）"}
 
 ## 採点基準（各10点）:
 1. **ニーズ深掘り(needs)**: 候補者/企業の本音・課題を引き出せたか
@@ -369,7 +396,7 @@ ${text.slice(0, 6000)}
 4. **クロージング(closing)**: 次のアクションを明確にし、期限付きのコミットを得られたか
 5. **情報収集(intel)**: 他社状況・温度感・意思決定者情報を聞き出せたか
 
-## 出力形式（JSON厳守）:
+## 出力形式（JSON厳守、コードフェンスや前後の説明文を出さない）:
 {
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "total": 30,
@@ -383,29 +410,109 @@ ${text.slice(0, 6000)}
   },
   "strengths": ["具体的な強み1", "強み2"],
   "improvements": ["具体的な改善点1（どう言い換えれば良かったか含む）", "改善点2"],
-  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）"
+  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）",
+  "key_moments": [
+    {
+      "text": "面談記録から抜き出した実際の発言を50〜120字で",
+      "axis": "needs",
+      "axis_label": "ニーズ深掘り",
+      "relevance": 0.9,
+      "speaker": "コンサル"
+    }
+  ],
+  "learning_resources": [
+    {
+      "axis": "needs",
+      "title": "本音を引き出す質問の型",
+      "description": "なぜ転職するのかを3層で深掘りする手順を、リーダー面談の同じ場面で再現する",
+      "source_type": "playbook",
+      "source_name": "上記参考リーダー面談のタイトル",
+      "playbook_situation": "候補者が「年収を上げたい」と表層的な理由しか出さない場面"
+    }
+  ]
 }
 
-重要: evidenceは面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。` }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+要件:
+- key_moments は 4〜6 件、面談中の主要な転換点（強みでも弱みでも）を時系列順で。axis は needs/proposal/trust/closing/intel のいずれか、axis_label は日本語ラベル、relevance は 0〜1。speaker は判別できれば「候補者」「企業」「コンサル」、不明なら省略。timestamp や seconds は不明なら省略（推測しない）。
+- learning_resources は弱い軸（点数の低い 2 軸）を中心に 2〜3 件。source_type は基本 "playbook"、source_name は参考リストの face value をそのまま使うか、空なら "リーダー面談記録"。url は決して推測しない（URLを書かない）。
+- evidence は面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。
+- 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2800, responseMimeType: "application/json" },
     }),
   });
 
-  if (!geminiRes.ok) return { error: "Gemini API error", status: 500 };
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text().catch(() => "");
+    return { error: `Gemini API error: ${errText.slice(0, 200)}`, status: 502 };
+  }
 
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  let parsed;
+  let parsed: Record<string, unknown> = {};
+  let parseError: string | null = null;
   try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw };
-  } catch {
-    parsed = { raw };
+    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    else parseError = "JSON が含まれていません";
+  } catch (e) {
+    parseError = (e as Error).message;
   }
 
-  if (parsed.scores) {
+  // total を実値で再計算（モデルが間違えていることがある）
+  const s = (parsed as { scores?: Record<string, number> }).scores;
+  if (s && typeof s === "object") {
+    const total = ["needs", "proposal", "trust", "closing", "intel"]
+      .reduce((acc, k) => acc + (typeof s[k] === "number" ? s[k] : 0), 0);
+    parsed.total = total;
+    if (!parsed.grade) {
+      parsed.grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 25 ? "B" : total >= 15 ? "C" : "D";
+    }
+
+    // key_moments / learning_resources のサニタイズ（型不整合を吸う）
+    const km = (parsed as { key_moments?: unknown }).key_moments;
+    if (Array.isArray(km)) {
+      parsed.key_moments = km
+        .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
+        .slice(0, 8)
+        .map((m) => ({
+          text: String(m.text || "").slice(0, 240),
+          axis: typeof m.axis === "string" ? m.axis : "needs",
+          axis_label: typeof m.axis_label === "string" ? m.axis_label : "",
+          relevance: typeof m.relevance === "number" ? Math.min(1, Math.max(0, m.relevance)) : 0.5,
+          ...(typeof m.speaker === "string" && m.speaker ? { speaker: m.speaker } : {}),
+          ...(typeof m.timestamp === "string" && m.timestamp ? { timestamp: m.timestamp } : {}),
+          ...(typeof m.seconds === "number" ? { seconds: m.seconds } : {}),
+        }))
+        .filter((m) => m.text);
+    } else {
+      parsed.key_moments = [];
+    }
+
+    const lr = (parsed as { learning_resources?: unknown }).learning_resources;
+    if (Array.isArray(lr)) {
+      parsed.learning_resources = lr
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .slice(0, 5)
+        .map((r) => ({
+          axis: typeof r.axis === "string" ? r.axis : "needs",
+          title: String(r.title || "").slice(0, 120),
+          description: String(r.description || "").slice(0, 300),
+          source_type: (r.source_type === "video" || r.source_type === "article" || r.source_type === "playbook")
+            ? r.source_type : "playbook",
+          ...(typeof r.source_name === "string" && r.source_name ? { source_name: r.source_name } : {}),
+          ...(typeof r.playbook_situation === "string" && r.playbook_situation ? { playbook_situation: r.playbook_situation } : {}),
+          // url はハルシネーション防止のため捨てる（プロンプトでも禁じているが念のため）
+        }))
+        .filter((r) => r.title);
+    } else {
+      parsed.learning_resources = [];
+    }
+
     await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
+  } else if (parseError) {
+    return { error: `スコアJSONのパース失敗: ${parseError}`, raw: raw.slice(0, 500), status: 502 };
   }
 
   return { meeting_id: id, ...parsed };
@@ -435,6 +542,17 @@ async function addLeaderFeedback(
 
 /* ========== Leader Playbook Extraction ========== */
 
+// 同一ソース面談集合からの再生成を避けるキャッシュキー。
+// 面談IDの並び + 各行の updated_at をハッシュ。1件でも更新されれば自動的に無効化される。
+async function computePlaybookCacheKey(meetings: Array<{ id: string; updated_at?: string | null; recorded_at?: string | null }>): Promise<string> {
+  const seed = meetings
+    .map((m) => `${m.id}:${m.updated_at || m.recorded_at || ""}`)
+    .sort()
+    .join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function extractPlaybook(
   db: ReturnType<typeof getSupabaseAdmin>,
   req: VercelRequest,
@@ -443,25 +561,58 @@ async function extractPlaybook(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { leader_name, limit: maxMeetings } = req.body || {};
+  const { leader_name, limit: maxMeetings, force } = req.body || {};
+  const cacheLeaderKey = leader_name || "__all__";
 
+  // リーダー面談を抽出。leader_name 指定があれば consultant_name で絞り、無ければ is_leader=true のみ
   let query = db.from("meeting_transcripts")
     .select("*")
+    .eq("is_leader", true)
     .order("recorded_at", { ascending: false })
     .limit(maxMeetings || 20);
 
   if (leader_name) {
-    query = query.contains("attendees", [leader_name]);
+    query = query.eq("consultant_name", leader_name);
   }
 
-  const { data: meetings } = await query;
+  const { data: meetings, error: queryError } = await query;
+  if (queryError) {
+    return res.status(500).json({ error: `面談取得失敗: ${queryError.message}` });
+  }
   if (!meetings || meetings.length === 0) {
-    return res.json({ playbook: [], message: "面談記録がありません" });
+    return res.json({ playbook: [], source_meetings: 0, leader_name: leader_name || "全員", message: "リーダー面談がありません。/api/seed でサンプルを投入してください。" });
   }
 
-  const transcriptSummaries = meetings.map((m, i) =>
-    `[面談${i + 1}] ${m.title}\n要約: ${m.summary || "なし"}\n要点: ${(m.key_points as string[])?.join(", ") || "なし"}\nアクション: ${(m.action_items as string[])?.join(", ") || "なし"}`
-  ).join("\n\n");
+  const cacheKey = await computePlaybookCacheKey(meetings);
+
+  // force=true でなければキャッシュヒットチェック
+  if (!force) {
+    try {
+      const { data: cached } = await db
+        .from("meeting_playbook_cache")
+        .select("playbook, source_meeting_count, generated_at, cache_key")
+        .eq("leader_name", cacheLeaderKey)
+        .single();
+      if (cached && cached.cache_key === cacheKey) {
+        return res.json({
+          playbook: cached.playbook,
+          source_meetings: cached.source_meeting_count,
+          leader_name: leader_name || "全員",
+          cached: true,
+          generated_at: cached.generated_at,
+        });
+      }
+    } catch { /* テーブル未作成 / 行なし → ヒット無しと同じ扱い */ }
+  }
+
+  // 文字起こし優先で送る（要約より発話そのものから抽出した方が精度が高い）
+  const transcriptSummaries = meetings.map((m, i) => {
+    const body = (m.transcript_text as string)?.slice(0, 1200)
+      || (m.summary as string)
+      || (m.key_points as string[])?.join(", ")
+      || "";
+    return `[面談${i + 1}] ${m.title}\n${body}`;
+  }).join("\n\n");
 
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
@@ -496,18 +647,38 @@ ${transcriptSummaries.slice(0, 8000)}
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  let playbook;
+  let playbook: unknown[] = [];
   try {
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    playbook = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    // ```json ... ``` フェンス対策
+    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+    const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) playbook = parsed;
+    }
   } catch {
-    playbook = [{ raw }];
+    playbook = [];
+  }
+
+  // 生成成功時のみキャッシュに upsert
+  if (playbook.length > 0) {
+    try {
+      await db.from("meeting_playbook_cache").upsert({
+        leader_name: cacheLeaderKey,
+        cache_key: cacheKey,
+        playbook,
+        source_meeting_count: meetings.length,
+        generated_at: new Date().toISOString(),
+      });
+    } catch { /* テーブル未作成でも生成自体は成功させる */ }
   }
 
   return res.json({
     playbook,
     source_meetings: meetings.length,
     leader_name: leader_name || "全員",
+    cached: false,
+    ...(playbook.length === 0 ? { warning: "プレイブックを抽出できませんでした。面談記録の質・量を確認してください。" } : {}),
   });
 }
 
@@ -522,35 +693,71 @@ async function contextualCoach(
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
   const { phase, candidate_id, company_id, deal_id, current_situation } = req.body || {};
-  if (!phase) return res.status(400).json({ error: "phase required (1-4)" });
+  if (!phase || phase < 1 || phase > 4) {
+    return res.status(400).json({ error: "phase は 1〜4 で指定してください" });
+  }
 
-  // Gather context
+  // 文脈は取れたら使うが、無くてもフェーズ別の汎用コーチングを返せるようにする
   let candidateInfo = "";
   let companyInfo = "";
   let dealInfo = "";
   let pastMeetings = "";
+  let leaderExamples = "";
+
+  const safeSingle = async <T,>(p: PromiseLike<{ data: T | null; error: unknown }>): Promise<T | null> => {
+    try { const { data } = await p; return data; } catch { return null; }
+  };
 
   if (candidate_id) {
-    const { data: c } = await db.from("candidates").select("*").eq("id", candidate_id).single();
-    if (c) candidateInfo = `候補者: ${c.name}, 現職: ${c.current_position || "不明"}, 年収: ${c.current_salary || "不明"}万, 資格: ${(c.qualifications as string[])?.join(",") || "不明"}, 希望: ${c.desired_position || "不明"}, ステータス: ${c.status}`;
+    const c = await safeSingle(db.from("candidates").select("*").eq("id", candidate_id).single());
+    if (c) {
+      const cand = c as Record<string, unknown>;
+      candidateInfo = `候補者: ${cand.name}, 現職: ${cand.current_position || "不明"}, 年収: ${cand.current_salary || "不明"}万, 資格: ${(cand.qualifications as string[])?.join(",") || "不明"}, 希望: ${cand.desired_position || "不明"}, ステータス: ${cand.status}`;
+    }
   }
   if (company_id) {
-    const { data: co } = await db.from("companies").select("*").eq("id", company_id).single();
-    if (co) companyInfo = `企業: ${co.name}, 業種: ${co.industry || "不明"}, 所在地: ${co.address || "不明"}`;
+    const co = await safeSingle(db.from("companies").select("*").eq("id", company_id).single());
+    if (co) {
+      const c = co as Record<string, unknown>;
+      companyInfo = `企業: ${c.name}, 業種: ${c.industry || "不明"}, 所在地: ${c.address || "不明"}`;
+    }
   }
   if (deal_id) {
-    const { data: d } = await db.from("deals").select("*").eq("id", deal_id).single();
-    if (d) dealInfo = `Deal: ${d.title}, ステージ: ${d.stage_name}, 滞在日数: ${d.days_in_stage}日, 金額: ${d.value}`;
+    const d = await safeSingle(db.from("deals").select("*").eq("id", deal_id).single());
+    if (d) {
+      const deal = d as Record<string, unknown>;
+      dealInfo = `Deal: ${deal.title}, ステージ: ${deal.stage_name}, 滞在日数: ${deal.days_in_stage}日, 金額: ${deal.value}`;
+    }
   }
   if (candidate_id || deal_id) {
     const mq = candidate_id
-      ? db.from("meeting_transcripts").select("summary, key_points, action_items").eq("candidate_id", candidate_id).order("recorded_at", { ascending: false }).limit(3)
-      : db.from("meeting_transcripts").select("summary, key_points, action_items").eq("deal_id", deal_id).order("recorded_at", { ascending: false }).limit(3);
-    const { data: meetings } = await mq;
-    if (meetings && meetings.length > 0) {
-      pastMeetings = meetings.map((m, i) => `過去面談${i + 1}: ${m.summary || "要約なし"}`).join("\n");
-    }
+      ? db.from("meeting_transcripts").select("summary, key_points, action_items, recorded_at").eq("candidate_id", candidate_id).order("recorded_at", { ascending: false }).limit(3)
+      : db.from("meeting_transcripts").select("summary, key_points, action_items, recorded_at").eq("deal_id", deal_id).order("recorded_at", { ascending: false }).limit(3);
+    try {
+      const { data: meetings } = await mq;
+      if (meetings && meetings.length > 0) {
+        pastMeetings = meetings.map((m, i) => {
+          const summary = m.summary || (m.key_points as string[])?.slice(0, 3).join(" / ") || "（要約なし）";
+          return `過去面談${i + 1} (${new Date(m.recorded_at).toLocaleDateString("ja-JP")}): ${summary}`;
+        }).join("\n");
+      }
+    } catch { /* ignore */ }
   }
+
+  // リーダーの最近の面談をプレイブック素材として注入（文脈が無い場合の強い手当て）
+  try {
+    const { data: leaderRows } = await db.from("meeting_transcripts")
+      .select("title, transcript_text, summary")
+      .eq("is_leader", true)
+      .order("recorded_at", { ascending: false })
+      .limit(5);
+    if (leaderRows && leaderRows.length > 0) {
+      leaderExamples = leaderRows.map((m, i) => {
+        const body = (m.transcript_text as string)?.slice(0, 500) || m.summary || "";
+        return `[リーダー事例${i + 1}] ${m.title}\n${body}`;
+      }).join("\n\n");
+    }
+  } catch { /* ignore */ }
 
   const phaseGoals: Record<number, string> = {
     1: "仮説を立てる。候補者の転職動機を3パターン想定し、企業側の採用背景を理解する。マッチ求人を2-3件準備。",
@@ -559,40 +766,68 @@ async function contextualCoach(
     4: "条件交渉をリード。候補者と企業の期待値ギャップを埋める。内定承諾までのタイムラインを管理。",
   };
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-  const geminiRes = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介のベテランリーダーです。
+  const contextProvided = !!(candidateInfo || companyInfo || dealInfo || pastMeetings);
+  const contextSection = contextProvided
+    ? `## 案件情報:
+${candidateInfo || "（候補者情報なし）"}
+${companyInfo || "（企業情報なし）"}
+${dealInfo || "（Deal情報なし）"}
+
+## 過去の面談履歴:
+${pastMeetings || "（なし）"}`
+    : `## 案件情報:
+（指定なし — 候補者・企業・Deal が紐付いていないため、フェーズ${phase}の一般的なベストプラクティスとリーダー事例を元に指導してください）`;
+
+  const prompt = `あなたは建築技術者専門の人材紹介のベテランリーダー（小林）です。
 ジュニアコンサルタントがフェーズ${phase}で何をすべきか、この具体的な案件の文脈で指導してください。
 
 ## フェーズ${phase}の目的:
 ${phaseGoals[phase as number] || ""}
 
-## 案件情報:
-${candidateInfo || "候補者情報なし"}
-${companyInfo || "企業情報なし"}
-${dealInfo || "Deal情報なし"}
+${contextSection}
 
-## 過去の面談履歴:
-${pastMeetings || "なし"}
+## 現在の状況（コンサルタントの自己申告）:
+${current_situation || "（特記事項なし）"}
 
-## 現在の状況:
-${current_situation || "特記事項なし"}
+## リーダーの過去面談（参考事例）:
+${leaderExamples || "（事例なし）"}
 
-## 回答形式:
-1. **今すぐやること**（具体的なアクション3つ、優先順位付き）
-2. **この案件で聞くべき質問**（候補者向け/企業向け各3つ、なぜその質問が重要か含む）
-3. **注意点**（この案件特有のリスク、よくある失敗パターン）
-4. **リーダーならこう話す**（具体的なセリフ例1つ）
+## 回答形式（Markdown、見出しは ### で）:
+### 今すぐやること
+1. … （優先順位順に3つ、具体的アクション）
+2. …
+3. …
 
-建築技術者の転職市場の文脈（中堅ゼネコン以上/ハウスメーカー、年収帯の実態）を踏まえてください。` }] }],
+### 聞くべき質問
+**候補者向け:**
+- … （3つ、各質問の意図を一文で）
+
+**企業向け:**
+- … （3つ、各質問の意図を一文で）
+
+### この案件のリスク
+- … （2〜3個、よくある失敗パターン込み）
+
+### リーダーならこう話す
+> 「…」 （具体的セリフ、状況描写込みで2〜3文）
+
+建築技術者の転職市場の実態（中堅ゼネコン・ハウスメーカー・デベ・CM の年収帯と動機）を踏まえてください。
+案件情報が無い場合は仮定を明記し、汎用ベストプラクティスを示してください。`;
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiRes = await fetch(geminiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
     }),
   });
 
-  if (!geminiRes.ok) return res.status(500).json({ error: "Gemini API error" });
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text().catch(() => "");
+    return res.status(502).json({ error: `Gemini API error: ${errText.slice(0, 300)}` });
+  }
 
   const geminiData = await geminiRes.json();
   const coaching = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -600,7 +835,14 @@ ${current_situation || "特記事項なし"}
   return res.json({
     phase,
     coaching,
-    context: { candidateInfo, companyInfo, dealInfo, pastMeetings: pastMeetings ? "あり" : "なし" },
+    context: {
+      candidateInfo,
+      companyInfo,
+      dealInfo,
+      pastMeetings: pastMeetings ? "あり" : "なし",
+      leaderExamples: leaderExamples ? "あり" : "なし",
+      fallback: !contextProvided,
+    },
   });
 }
 

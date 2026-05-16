@@ -1,37 +1,45 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { getSupabaseAdmin, normalizeSupabaseUrl } from "./_lib/supabase-admin.js";
 
-export default async function handler(_req: VercelRequest, res: VercelResponse) {
-  const raw = process.env.SUPABASE_URL ?? "";
-  let url = raw.trim().replace(/^["']+|["']+$/g, "");
-  if (url && !url.startsWith("http")) url = `https://${url}`;
-  url = url.replace(/\/+$/, "");
-
+/**
+ * 診断エンドポイント。
+ *  GET /api/health           → Supabase 設定 / 接続 / 主要テーブル疎通を返す
+ *  GET /api/health?reveal=1  → URL 値も表示（デバッグ用、本番では避ける）
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const reveal = req.query.reveal === "1";
+  const rawUrl = process.env.SUPABASE_URL ?? "";
+  const url = normalizeSupabaseUrl(rawUrl);
   const key = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
 
-  const checks: Record<string, string> = {
-    SUPABASE_URL_full: url,
-    SUPABASE_SERVICE_ROLE_KEY: key ? `set (len=${key.length})` : "MISSING",
+  const checks: Record<string, unknown> = {
+    SUPABASE_URL: url ? "set" : "MISSING",
+    SUPABASE_SERVICE_ROLE_KEY: key ? "set" : "MISSING",
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? "set" : "MISSING",
   };
+  if (reveal) checks.SUPABASE_URL_value = url;
 
-  // Test 1: raw fetch to Supabase REST API
+  if (!url || !key) {
+    return res.status(500).json({ ok: false, checks });
+  }
+
   try {
     const r = await fetch(`${url}/rest/v1/`, {
       headers: { apikey: key, Authorization: `Bearer ${key}` },
     });
-    checks.raw_fetch = `status=${r.status}`;
-  } catch (e: any) {
-    checks.raw_fetch = `FAIL: ${e.message}`;
-    if (e.cause) checks.raw_fetch_cause = String(e.cause);
+    checks.rest_api = `status=${r.status}`;
+  } catch (e) {
+    checks.rest_api = `FAIL: ${(e as Error).message}`;
   }
 
-  // Test 2: supabase-js client
   try {
-    const { createClient } = await import("@supabase/supabase-js");
-    const db = createClient(url, key);
-    const { data, error } = await db.from("meeting_transcripts").select("id").limit(1);
-    checks.supabase_client = error ? `error: ${error.message}` : `ok (${data?.length ?? 0} rows)`;
-  } catch (e: any) {
-    checks.supabase_client = `FAIL: ${e.message}`;
+    const db = getSupabaseAdmin();
+    const { error, count } = await db
+      .from("meeting_transcripts")
+      .select("id", { count: "exact", head: true });
+    checks.meeting_transcripts = error ? `error: ${error.message}` : `ok (${count ?? 0} rows)`;
+  } catch (e) {
+    checks.meeting_transcripts = `FAIL: ${(e as Error).message}`;
   }
 
   return res.json({ ok: true, checks });

@@ -2,16 +2,26 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
+import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
 import {
   fetchMeetings,
   createMeeting,
   transcribeAudio,
   summarizeMeeting,
   addLeaderFeedback,
+  scoreMeeting,
+  deleteMeeting,
   type MeetingTranscript,
   type MeetingScore,
   type KeyMoment,
 } from "../../api/client";
+
+const AUDIO_MAX_BYTES = 4 * 1024 * 1024;
+const todayInputValue = () => {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+};
 
 export default function MeetingHub() {
   const { currentUser } = useGamification();
@@ -21,9 +31,11 @@ export default function MeetingHub() {
   const [uploading, setUploading] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
+  const [dateInput, setDateInput] = useState<string>(todayInputValue);
   const [showUpload, setShowUpload] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const isLeaderUser = currentUser === "小林";
+  const isLeaderUser = isLeaderRole(currentUser);
 
   const { data: myMeetings } = useQuery({
     queryKey: ["meetings", "mine", currentUser],
@@ -68,26 +80,46 @@ export default function MeetingHub() {
     prevScoredRef.current = scoredIds;
   }, [myMeetings]);
 
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const idx = result.indexOf(",");
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > AUDIO_MAX_BYTES) {
+      setErrorMsg(
+        `音声ファイルが大きすぎます (${(file.size / 1024 / 1024).toFixed(1)}MB)。${(AUDIO_MAX_BYTES / 1024 / 1024).toFixed(0)}MB 以下に分割するか、低ビットレートで再エンコードしてください。`,
+      );
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
     setUploading(true);
+    setErrorMsg(null);
     try {
-      const buffer = await file.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+      const base64 = await fileToBase64(file);
       await transcribeAudio({
         audio_base64: base64,
         mime_type: file.type || "audio/webm",
         title: titleInput || `${currentUser} 面談録音`,
         consultant_name: currentUser,
         is_leader: isLeaderUser,
+        recorded_at: dateInput ? new Date(`${dateInput}T09:00:00`).toISOString() : undefined,
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+      // refetchInterval (5s) が自動採点の完了を拾う
+    } catch (err) {
+      setErrorMsg(`録音の保存に失敗しました: ${(err as Error).message}`);
+    }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -95,6 +127,7 @@ export default function MeetingHub() {
   const handleTextSave = async () => {
     if (!textInput.trim()) return;
     setUploading(true);
+    setErrorMsg(null);
     try {
       await createMeeting({
         title: titleInput || `${currentUser} 面談記録`,
@@ -102,21 +135,36 @@ export default function MeetingHub() {
         consultant_name: currentUser,
         is_leader: isLeaderUser,
         source: "manual",
+        recorded_at: dateInput ? new Date(`${dateInput}T09:00:00`).toISOString() : undefined,
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTextInput("");
       setTitleInput("");
       setShowUpload(false);
-      // Auto-score runs server-side; poll for result
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 8000);
-      setTimeout(() => qc.invalidateQueries({ queryKey: ["meetings"] }), 15000);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      setErrorMsg(`保存に失敗しました: ${(err as Error).message}`);
+    }
     setUploading(false);
   };
 
   const handleSummarize = async (id: string) => {
     await summarizeMeeting(id);
     qc.invalidateQueries({ queryKey: ["meetings"] });
+  };
+
+  const handleRescore = async (id: string) => {
+    await scoreMeeting(id);
+    qc.invalidateQueries({ queryKey: ["meetings"] });
+  };
+
+  const handleDelete = async (id: string, title: string) => {
+    if (!window.confirm(`「${title}」を削除します。よろしいですか？\n（採点・要約・リーダーコメントも一緒に消えます）`)) return;
+    try {
+      await deleteMeeting(id);
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+    } catch (err) {
+      setErrorMsg(`削除に失敗しました: ${(err as Error).message}`);
+    }
   };
 
   // Calculate leader average scores
@@ -154,7 +202,7 @@ export default function MeetingHub() {
       <div className="flex gap-1 mb-4">
         {([
           { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          { key: "leader" as const, label: "小林（リーダー）の面談", count: leaderMeetings?.total || 0 },
+          { key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 },
         ]).map(({ key, label, count }) => (
           <button
             key={key}
@@ -180,6 +228,23 @@ export default function MeetingHub() {
             placeholder="タイトル（例: 佐藤様 初回面談）"
             className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-sm font-bold text-[#4b4b4b] focus:border-duo-blue focus:outline-none"
           />
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] font-extrabold text-[#777] shrink-0">面談日</label>
+            <input
+              type="date"
+              value={dateInput}
+              max={todayInputValue()}
+              onChange={(e) => setDateInput(e.target.value)}
+              className="rounded-xl border-2 border-[#e5e5e5] px-2 py-1 text-xs font-bold text-[#4b4b4b] focus:border-duo-blue focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => setDateInput(todayInputValue())}
+              className="text-[10px] font-bold text-duo-blue hover:underline"
+            >
+              今日に戻す
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="text-center">
               <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={handleAudioUpload} />
@@ -213,6 +278,11 @@ export default function MeetingHub() {
           <p className="text-[10px] font-bold text-[#afafaf] text-center">
             {isLeaderUser ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
           </p>
+          {errorMsg && (
+            <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
+              <p className="text-[11px] font-bold text-duo-red leading-snug">{errorMsg}</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -236,7 +306,10 @@ export default function MeetingHub() {
             meeting={m}
             leaderAvg={leaderAvg}
             onSummarize={handleSummarize}
+            onRescore={handleRescore}
+            onDelete={handleDelete}
             isLeaderUser={isLeaderUser}
+            currentUser={currentUser}
             onFeedbackSaved={() => qc.invalidateQueries({ queryKey: ["meetings"] })}
           />
         ))}
@@ -249,19 +322,39 @@ function MeetingEntry({
   meeting: m,
   leaderAvg,
   onSummarize,
+  onRescore,
+  onDelete,
   isLeaderUser,
+  currentUser,
   onFeedbackSaved,
 }: {
   meeting: MeetingTranscript;
   leaderAvg: Record<string, number> | null;
   onSummarize: (id: string) => void;
+  onRescore: (id: string) => Promise<void>;
+  onDelete: (id: string, title: string) => Promise<void>;
   isLeaderUser: boolean;
+  currentUser: string;
   onFeedbackSaved: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [fbText, setFbText] = useState("");
   const [fbSaving, setFbSaving] = useState(false);
+  const [rescoring, setRescoring] = useState(false);
+  const [rescoreError, setRescoreError] = useState<string | null>(null);
   const score = m.score_data;
+  const canDelete = isLeaderUser || (m.consultant_name && m.consultant_name === currentUser);
+
+  const handleRescoreClick = async () => {
+    setRescoring(true);
+    setRescoreError(null);
+    try {
+      await onRescore(m.id);
+    } catch (err) {
+      setRescoreError(`再採点に失敗: ${(err as Error).message}`);
+    }
+    setRescoring(false);
+  };
 
   const handleFeedbackSave = async () => {
     if (!fbText.trim()) return;
@@ -317,7 +410,7 @@ function MeetingEntry({
       {expanded && (
         <div className="px-4 pb-4 space-y-3">
           {/* Actions */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap items-center">
             {!m.summary && (
               <button
                 onClick={() => onSummarize(m.id)}
@@ -327,13 +420,45 @@ function MeetingEntry({
                 AI要約
               </button>
             )}
-            {!score && m.transcript_text && (
-              <span className="flex items-center gap-1.5 text-[10px] font-bold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
+            {!score && m.transcript_text && !rescoring && (
+              <button
+                onClick={handleRescoreClick}
+                className="flex items-center gap-1.5 text-[10px] font-extrabold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10 hover:bg-duo-orange/20 transition-colors"
+                title="自動採点が失敗している場合に手動で再試行"
+              >
                 <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
-                自動採点中...
+                採点中... (クリックで再採点)
+              </button>
+            )}
+            {score && m.transcript_text && (
+              <button
+                onClick={handleRescoreClick}
+                disabled={rescoring}
+                className="text-[10px] font-extrabold text-duo-blue px-3 py-1.5 rounded-xl bg-duo-blue/10 hover:bg-duo-blue/20 disabled:opacity-40 transition-colors"
+              >
+                {rescoring ? "再採点中..." : "再採点"}
+              </button>
+            )}
+            {rescoring && !score && (
+              <span className="text-[10px] font-bold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
+                再採点中...
               </span>
             )}
+            {canDelete && (
+              <button
+                onClick={() => onDelete(m.id, m.title)}
+                className="ml-auto text-[10px] font-extrabold text-duo-red px-3 py-1.5 rounded-xl bg-duo-red/10 hover:bg-duo-red/20 transition-colors"
+              >
+                削除
+              </button>
+            )}
           </div>
+
+          {rescoreError && (
+            <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
+              <p className="text-[11px] font-bold text-duo-red leading-snug">{rescoreError}</p>
+            </div>
+          )}
 
           {/* Summary */}
           {m.summary && (
@@ -430,10 +555,10 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* Leader Feedback (小林フィードバック) */}
+          {/* Leader Feedback */}
           {m.leader_feedback && (
             <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">小林リーダーのコメント</div>
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">リーダーコメント</div>
               <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
             </div>
           )}

@@ -7,18 +7,28 @@ export default function PlaybookPanel() {
   const [leaderName, setLeaderName] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [generated, setGenerated] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "error" | "warning"; text: string } | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<{ cached: boolean; generatedAt?: string } | null>(null);
 
-  const handleExtract = async () => {
+  const runExtract = async (force: boolean) => {
     setLoading(true);
+    setNotice(null);
     try {
-      const res = await extractPlaybook(leaderName || undefined);
+      const res = await extractPlaybook(leaderName || undefined, undefined, force);
       setEntries(res.playbook);
       setGenerated(true);
-    } catch {
+      setCacheInfo({ cached: !!res.cached, generatedAt: res.generated_at });
+      if (res.warning) setNotice({ kind: "warning", text: res.warning });
+      else if (res.message) setNotice({ kind: "warning", text: res.message });
+    } catch (err) {
       setEntries([]);
+      setNotice({ kind: "error", text: `プレイブック生成に失敗: ${(err as Error).message}` });
     }
     setLoading(false);
   };
+
+  const handleExtract = () => runExtract(false);
+  const handleForceRegenerate = () => runExtract(true);
 
   return (
     <div className="card-duo p-5">
@@ -32,6 +42,18 @@ export default function PlaybookPanel() {
       <p className="text-xs font-bold text-[#afafaf] mb-3">
         リーダーの面談記録から「この場面ではこう話す」を自動抽出
       </p>
+
+      {notice && (
+        <div
+          className={`mb-3 rounded-xl border p-2.5 ${
+            notice.kind === "error"
+              ? "bg-duo-red/10 border-duo-red/30 text-duo-red"
+              : "bg-[#fffbeb] border-[#fde68a] text-[#92400e]"
+          }`}
+        >
+          <p className="text-[11px] font-bold leading-snug">{notice.text}</p>
+        </div>
+      )}
 
       {!generated && (
         <div>
@@ -58,6 +80,26 @@ export default function PlaybookPanel() {
             <p className="text-sm font-bold text-[#777]">面談記録からリーダーの対応パターンをAIが分析</p>
             <p className="text-xs text-[#afafaf] mt-1">「年収交渉の切り返し」「温度感が低い時の対処」など</p>
           </div>
+        </div>
+      )}
+
+      {entries.length > 0 && cacheInfo && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-[#f7f7f7] px-3 py-2">
+          <div className="text-[10px] font-extrabold text-[#777]">
+            {cacheInfo.cached ? "⚡ キャッシュから即表示" : "🆕 たった今生成"}
+            {cacheInfo.generatedAt && (
+              <span className="text-[#afafaf] font-bold ml-2">
+                {new Date(cacheInfo.generatedAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleForceRegenerate}
+            disabled={loading}
+            className="text-[10px] font-extrabold text-duo-orange hover:underline disabled:opacity-40"
+          >
+            {loading ? "再生成中..." : "🔄 強制再生成"}
+          </button>
         </div>
       )}
 
