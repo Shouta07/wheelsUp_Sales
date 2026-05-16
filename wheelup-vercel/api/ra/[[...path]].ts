@@ -24,7 +24,7 @@ import path from "node:path";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
 import { generateJson, geminiModel, hasGemini } from "../_lib/ra-gemini.js";
-import { fetchPage, sha256 } from "../_lib/ra-scrape.js";
+import { fetchPage, sha256, urlExists } from "../_lib/ra-scrape.js";
 
 // Vercel function timeout — Hobby plan caps at 60s, Pro at 300s.
 // Crawl + match can be heavy; opt into the full budget.
@@ -517,6 +517,24 @@ JSON のみ:
 }`;
   const parsed = await generateJson<EnrichResult>(prompt, { temperature: 0.1 });
 
+  // HEAD-check each Gemini-suggested URL in parallel. Hallucinated 404s get
+  // nulled out before they reach the DB. Email/note are not URLs → skip check.
+  const [corpOk, recruitOk, formOk, linkedinOk] = await Promise.all([
+    parsed.corporate_url    ? urlExists(parsed.corporate_url)    : Promise.resolve(false),
+    parsed.recruit_page_url ? urlExists(parsed.recruit_page_url) : Promise.resolve(false),
+    parsed.contact_form_url ? urlExists(parsed.contact_form_url) : Promise.resolve(false),
+    parsed.linkedin_url     ? urlExists(parsed.linkedin_url)     : Promise.resolve(false),
+  ]);
+  const verified: EnrichResult = {
+    corporate_url:    corpOk     ? parsed.corporate_url    : null,
+    recruit_page_url: recruitOk  ? parsed.recruit_page_url : null,
+    contact_form_url: formOk     ? parsed.contact_form_url : null,
+    linkedin_url:     linkedinOk ? parsed.linkedin_url     : null,
+    contact_email:    parsed.contact_email, // メールは HEAD 不可、Gemini 信頼
+    confidence:       parsed.confidence,
+    note:             parsed.note,
+  };
+
   if (target.id) {
     const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", target.id).maybeSingle();
     const existing: Array<{ kind?: string; url?: string }> = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
@@ -526,16 +544,16 @@ JSON のみ:
       if (next.find((p) => p.kind === kind && p.url === url)) return;
       next.push({ kind, url });
     };
-    upsertPath("form",     parsed.contact_form_url);
-    upsertPath("email",    parsed.contact_email);
-    upsertPath("linkedin", parsed.linkedin_url);
+    upsertPath("form",     verified.contact_form_url);
+    upsertPath("email",    verified.contact_email);
+    upsertPath("linkedin", verified.linkedin_url);
 
     const patch: Record<string, unknown> = { contact_paths: next, updated_at: new Date().toISOString() };
-    if (parsed.recruit_page_url) patch.recruit_page_url = parsed.recruit_page_url;
-    if (parsed.corporate_url)    patch.corporate_url    = parsed.corporate_url;
+    if (verified.recruit_page_url) patch.recruit_page_url = verified.recruit_page_url;
+    if (verified.corporate_url)    patch.corporate_url    = verified.corporate_url;
     await db.from("ra_companies").update(patch).eq("id", target.id);
   }
-  return parsed;
+  return verified;
 }
 
 /**
