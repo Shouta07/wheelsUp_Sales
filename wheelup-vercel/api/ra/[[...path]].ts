@@ -402,25 +402,43 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  // 1 cron 構成: enrich(URL補完) → crawl(求人取得) → match(候補者採点)
+  // 1 cron 構成: enrich(URL補完) → crawl(求人取得) → match(候補者採点) → 古い求人を閉じる
   //   - enrich 10 社 (~6s)        : 採用URL未設定をAIで補完
   //   - crawl  25 社 (~25s)       : recruit_page_url を Jina+Gemini で巡回
   //   - match  25 求人 (~20s)     : 開いてる求人 × 候補者を ◎○△× 採点
+  //   - stale  (~1s)              : 30日 last_seen_at 更新なしの jobs を is_open=false
   // 合計 ~50s で 60s タイムアウトに収まる。
   // Gemini calls/cron: 10 (enrich) + 25 (crawl) + 25-100 (match) = ~150 calls/cron
   //                  × 2 cron/日 = ~300/日 < 無料枠 1500/日 (20%)
   const e = await tryRun(() => runEnrich(db, { limit: 10 }));
   const c = await tryRun(() => runCrawl(db,  { limit: 25, companyId: null }));
   const m = await tryRun(() => runMatch(db,  { limit: 25, jobId: null }));
-  const ok = e.ok && c.ok && m.ok;
+  const s = await tryRun(() => closeStaleJobs(db, 30));
+  const ok = e.ok && c.ok && m.ok && s.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
-    ok, stats: { enrich: e.body, crawl: c.body, match: m.body },
-    error: ok ? null : `${e.error ?? ""} | ${c.error ?? ""} | ${m.error ?? ""}`,
+    ok, stats: { enrich: e.body, crawl: c.body, match: m.body, stale: s.body },
+    error: ok ? null : `${e.error ?? ""} | ${c.error ?? ""} | ${m.error ?? ""} | ${s.error ?? ""}`,
   });
   // Lark / Slack notification — fire-and-forget, never block the cron response.
   notifyAfterCron(db).catch(() => undefined);
-  return res.json({ ok, enrich: e.body, crawl: c.body, match: m.body });
+  return res.json({ ok, enrich: e.body, crawl: c.body, match: m.body, stale: s.body });
+}
+
+/**
+ * 古い求人を自動で閉じる。N 日 last_seen_at が更新されていない open な ra_jobs を
+ * is_open=false / closed_at=now にする。これで /ready に古い求人が居座らない。
+ */
+async function closeStaleJobs(db: DB, days: number) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await db
+    .from("ra_jobs")
+    .update({ is_open: false, closed_at: new Date().toISOString() })
+    .lt("last_seen_at", cutoff)
+    .eq("is_open", true)
+    .select("id");
+  if (error) throw new Error(error.message);
+  return { ok: true, closed: data?.length ?? 0, cutoff };
 }
 
 async function notifyAfterCron(db: DB) {
