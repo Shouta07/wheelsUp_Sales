@@ -542,6 +542,17 @@ async function addLeaderFeedback(
 
 /* ========== Leader Playbook Extraction ========== */
 
+// 同一ソース面談集合からの再生成を避けるキャッシュキー。
+// 面談IDの並び + 各行の updated_at をハッシュ。1件でも更新されれば自動的に無効化される。
+async function computePlaybookCacheKey(meetings: Array<{ id: string; updated_at?: string | null; recorded_at?: string | null }>): Promise<string> {
+  const seed = meetings
+    .map((m) => `${m.id}:${m.updated_at || m.recorded_at || ""}`)
+    .sort()
+    .join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function extractPlaybook(
   db: ReturnType<typeof getSupabaseAdmin>,
   req: VercelRequest,
@@ -550,7 +561,8 @@ async function extractPlaybook(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
 
-  const { leader_name, limit: maxMeetings } = req.body || {};
+  const { leader_name, limit: maxMeetings, force } = req.body || {};
+  const cacheLeaderKey = leader_name || "__all__";
 
   // リーダー面談を抽出。leader_name 指定があれば consultant_name で絞り、無ければ is_leader=true のみ
   let query = db.from("meeting_transcripts")
@@ -569,6 +581,28 @@ async function extractPlaybook(
   }
   if (!meetings || meetings.length === 0) {
     return res.json({ playbook: [], source_meetings: 0, leader_name: leader_name || "全員", message: "リーダー面談がありません。/api/seed でサンプルを投入してください。" });
+  }
+
+  const cacheKey = await computePlaybookCacheKey(meetings);
+
+  // force=true でなければキャッシュヒットチェック
+  if (!force) {
+    try {
+      const { data: cached } = await db
+        .from("meeting_playbook_cache")
+        .select("playbook, source_meeting_count, generated_at, cache_key")
+        .eq("leader_name", cacheLeaderKey)
+        .single();
+      if (cached && cached.cache_key === cacheKey) {
+        return res.json({
+          playbook: cached.playbook,
+          source_meetings: cached.source_meeting_count,
+          leader_name: leader_name || "全員",
+          cached: true,
+          generated_at: cached.generated_at,
+        });
+      }
+    } catch { /* テーブル未作成 / 行なし → ヒット無しと同じ扱い */ }
   }
 
   // 文字起こし優先で送る（要約より発話そのものから抽出した方が精度が高い）
@@ -626,10 +660,24 @@ ${transcriptSummaries.slice(0, 8000)}
     playbook = [];
   }
 
+  // 生成成功時のみキャッシュに upsert
+  if (playbook.length > 0) {
+    try {
+      await db.from("meeting_playbook_cache").upsert({
+        leader_name: cacheLeaderKey,
+        cache_key: cacheKey,
+        playbook,
+        source_meeting_count: meetings.length,
+        generated_at: new Date().toISOString(),
+      });
+    } catch { /* テーブル未作成でも生成自体は成功させる */ }
+  }
+
   return res.json({
     playbook,
     source_meetings: meetings.length,
     leader_name: leader_name || "全員",
+    cached: false,
     ...(playbook.length === 0 ? { warning: "プレイブックを抽出できませんでした。面談記録の質・量を確認してください。" } : {}),
   });
 }

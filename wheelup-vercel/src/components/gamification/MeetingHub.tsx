@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
+import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
 import {
   fetchMeetings,
   createMeeting,
@@ -34,7 +35,7 @@ export default function MeetingHub() {
   const [showUpload, setShowUpload] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const isLeaderUser = currentUser === "小林";
+  const isLeaderUser = isLeaderRole(currentUser);
 
   const { data: myMeetings } = useQuery({
     queryKey: ["meetings", "mine", currentUser],
@@ -201,7 +202,7 @@ export default function MeetingHub() {
       <div className="flex gap-1 mb-4">
         {([
           { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          { key: "leader" as const, label: "小林（リーダー）の面談", count: leaderMeetings?.total || 0 },
+          { key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 },
         ]).map(({ key, label, count }) => (
           <button
             key={key}
@@ -554,10 +555,10 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* Leader Feedback (小林フィードバック) */}
+          {/* Leader Feedback */}
           {m.leader_feedback && (
             <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">小林リーダーのコメント</div>
+              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">リーダーコメント</div>
               <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
             </div>
           )}

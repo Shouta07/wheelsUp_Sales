@@ -1004,11 +1004,20 @@ export async function scoreMeeting(id: string): Promise<MeetingScore> {
 export async function extractPlaybook(
   leaderName?: string,
   limit?: number,
-): Promise<{ playbook: PlaybookEntry[]; source_meetings: number; leader_name: string; warning?: string; message?: string }> {
+  force = false,
+): Promise<{
+  playbook: PlaybookEntry[];
+  source_meetings: number;
+  leader_name: string;
+  cached?: boolean;
+  generated_at?: string;
+  warning?: string;
+  message?: string;
+}> {
   if (DEMO_MODE) return demoExtractPlaybook();
   return request("/meetings/extract-playbook", {
     method: "POST",
-    body: JSON.stringify({ leader_name: leaderName, limit }),
+    body: JSON.stringify({ leader_name: leaderName, limit, force }),
   });
 }
 
