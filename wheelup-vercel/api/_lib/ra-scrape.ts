@@ -34,3 +34,43 @@ export async function fetchPage(url: string): Promise<string> {
 export function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
+
+/**
+ * HEAD-check (or shallow GET fallback) to verify a URL actually responds.
+ * Used to validate Gemini-suggested URLs before persisting them, so we don't
+ * fill the DB with hallucinated 404s.
+ *
+ * Returns true iff the URL returns a 2xx/3xx status within the timeout.
+ * Network errors / 4xx / 5xx → false.
+ */
+export async function urlExists(url: string, timeoutMs = 5000): Promise<boolean> {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    // Some sites block HEAD; try HEAD first, fall back to a tiny GET on 405.
+    let res = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 wheelup-prospecting/0.1 (url-check)" },
+    });
+    if (res.status === 405 || res.status === 501) {
+      res = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: ctrl.signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 wheelup-prospecting/0.1 (url-check)",
+          // Range hint asks for the first bytes only.
+          Range: "bytes=0-0",
+        },
+      });
+    }
+    return res.status < 400;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}

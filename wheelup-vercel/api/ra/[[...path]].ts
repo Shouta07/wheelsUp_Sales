@@ -2,16 +2,15 @@
  * Consolidated RA prospecting API (Hobby plan: 1 function).
  *
  *   POST /api/ra/import             seed CSV/JSON → ra_companies + ra_candidates
+ *   POST /api/ra/enrich             URL未設定の会社を Gemini で一括補完
  *   POST /api/ra/crawl              ra_companies → fetchPage → Gemini extract → ra_jobs upsert
  *   POST /api/ra/match              open ra_jobs × ra_candidates → Gemini score → ra_matches
  *   POST /api/ra/discover           Gemini suggest new companies → ra_discovery_queue
  *   POST /api/ra/activity           activity log → ra_activities
  *   POST /api/ra/find-recruit-url   Gemini guesses recruit-page URL for a company name
  *   POST /api/ra/approve-discovery  promote a queued discovery row into ra_companies
- *   POST /api/ra/draft              Gemini drafts an outreach email for a match_id
  *   POST /api/ra/update-company     PATCH name / contact_paths / notes / recruit_page_url
  *   POST /api/ra/update-candidate   PATCH candidate profile
- *   GET  /api/ra/pipedrive-match    cross-match an ra_company against the existing companies table
  *   POST /api/ra/cron               crawl + match + optional Lark notify (Vercel Cron)
  *   GET  /api/ra/cron               same — Vercel Cron sends GET
  *
@@ -25,7 +24,11 @@ import path from "node:path";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
 import { generateJson, geminiModel, hasGemini } from "../_lib/ra-gemini.js";
-import { fetchPage, sha256 } from "../_lib/ra-scrape.js";
+import { fetchPage, sha256, urlExists } from "../_lib/ra-scrape.js";
+
+// Vercel function timeout — Hobby plan caps at 60s, Pro at 300s.
+// Crawl + match can be heavy; opt into the full budget.
+export const config = { maxDuration: 60 };
 
 type DB = ReturnType<typeof getSupabaseAdmin>;
 
@@ -64,6 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     switch (sub) {
       case "import":            return await importSeed(db, req, res);
+      case "enrich":            return await enrichEndpoint(db, req, res);
       case "crawl":             return await crawl(db, req, res);
       case "match":             return await match(db, req, res);
       case "discover":          return await discover(db, req, res);
@@ -73,10 +77,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case "add-companies":     return await addCompanies(db, req, res);
       case "add-candidate":     return await addCandidate(db, req, res);
       case "approve-discovery": return await approveDiscovery(db, req, res);
-      case "draft":             return await draftEmail(db, req, res);
       case "update-company":    return await updateCompany(db, req, res);
       case "update-candidate":  return await updateCandidate(db, req, res);
-      case "pipedrive-match":   return await pipedriveMatch(db, req, res);
       case "cron":              return await cron(db, req, res);
       default:                  return res.status(404).json({ error: "unknown RA endpoint" });
     }
@@ -134,18 +136,50 @@ async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
 // /api/ra/crawl
 // ---------------------------------------------------------------------------
 async function crawl(db: DB, req: VercelRequest, res: VercelResponse) {
-  const limit = Number(req.query.limit ?? 10);
-  const companyId = typeof req.query.company_id === "string" ? req.query.company_id : null;
+  const r = await runCrawl(db, {
+    limit: Number(req.query.limit ?? 10),
+    companyId: typeof req.query.company_id === "string" ? req.query.company_id : null,
+  });
+  return res.json(r);
+}
 
-  let q = db.from("ra_companies").select("*").not("recruit_page_url", "is", null).order("last_crawled_at", { ascending: true, nullsFirst: true }).limit(limit);
-  if (companyId) q = q.eq("id", companyId);
+/**
+ * Run N async functions over an array with bounded concurrency.
+ * Lets us fan out crawl/match work without overwhelming Gemini's 15 RPM
+ * free-tier ceiling. We pick the concurrency cap based on realistic
+ * Gemini latency (~3–5s per call) so 5-way × ~4s ≈ 75 RPM peak, but each
+ * call takes >4s so effective rate is ~12-15 RPM.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length || 1) }, () => worker()),
+  );
+  return results;
+}
+
+async function runCrawl(db: DB, opts: { limit: number; companyId: string | null }) {
+  let q = db.from("ra_companies").select("*").not("recruit_page_url", "is", null).order("last_crawled_at", { ascending: true, nullsFirst: true }).limit(opts.limit);
+  if (opts.companyId) q = q.eq("id", opts.companyId);
   const { data: companies, error } = await q;
   if (error) throw new Error(error.message);
 
   const stats = { crawled: 0, newJobs: 0, updatedJobs: 0, errors: 0 };
   const errors: string[] = [];
 
-  for (const c of companies ?? []) {
+  await mapWithConcurrency(companies ?? [], 5, async (c) => {
     try {
       const body = await fetchPage(c.recruit_page_url as string);
       const extracted = await extractJobs(c.name as string, body);
@@ -178,13 +212,13 @@ async function crawl(db: DB, req: VercelRequest, res: VercelResponse) {
       stats.errors += 1;
       errors.push(`${c.name}: ${(err as Error).message}`);
     }
-  }
+  });
 
   await db.from("ra_crawl_runs").insert({
     kind: "crawl", finished_at: new Date().toISOString(),
     ok: stats.errors === 0, stats: { ...stats, model: geminiModel }, error: errors.join(" | ") || null,
   });
-  return res.json({ ok: true, ...stats, errors });
+  return { ok: true, ...stats, errors };
 }
 
 type ExtractedJob = {
@@ -223,43 +257,50 @@ ${body.slice(0, 20000)}`;
 // /api/ra/match
 // ---------------------------------------------------------------------------
 async function match(db: DB, req: VercelRequest, res: VercelResponse) {
-  const limit = Number(req.query.limit ?? 20);
-  const jobId = typeof req.query.job_id === "string" ? req.query.job_id : null;
+  const r = await runMatch(db, {
+    limit: Number(req.query.limit ?? 20),
+    jobId: typeof req.query.job_id === "string" ? req.query.job_id : null,
+  });
+  return res.json(r);
+}
 
+async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const { data: candidates } = await db.from("ra_candidates").select("*").eq("is_active", true).limit(20);
-  const jobsQuery = jobId
-    ? db.from("ra_jobs").select("*").eq("id", jobId).limit(1)
-    : db.from("ra_jobs").select("*").eq("is_open", true).order("last_seen_at", { ascending: false }).limit(limit);
+  const jobsQuery = opts.jobId
+    ? db.from("ra_jobs").select("*").eq("id", opts.jobId).limit(1)
+    : db.from("ra_jobs").select("*").eq("is_open", true).order("last_seen_at", { ascending: false }).limit(opts.limit);
   const { data: jobs, error } = await jobsQuery;
   if (error) throw new Error(error.message);
 
   const stats = { scored: 0, skipped: 0, errors: 0 };
   const errors: string[] = [];
 
-  for (const j of jobs ?? []) {
-    for (const c of candidates ?? []) {
-      try {
-        const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
-        if (existing && existing.length > 0) { stats.skipped += 1; continue; }
-        const s = await scoreOne(j, c);
-        await db.from("ra_matches").insert({
-          job_id: j.id, candidate_id: c.id,
-          grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
-        });
-        stats.scored += 1;
-      } catch (err) {
-        stats.errors += 1;
-        errors.push(`${j.title} × ${c.name}: ${(err as Error).message}`);
-      }
+  // Cartesian product of jobs × candidates, then run in parallel pool.
+  const pairs: Array<{ j: typeof jobs extends Array<infer J> | null ? J : never; c: typeof candidates extends Array<infer C> | null ? C : never }> = [];
+  for (const j of jobs ?? []) for (const c of candidates ?? []) pairs.push({ j, c });
+
+  await mapWithConcurrency(pairs, 5, async ({ j, c }) => {
+    try {
+      const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
+      if (existing && existing.length > 0) { stats.skipped += 1; return; }
+      const s = await scoreOne(j, c);
+      await db.from("ra_matches").insert({
+        job_id: j.id, candidate_id: c.id,
+        grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
+      });
+      stats.scored += 1;
+    } catch (err) {
+      stats.errors += 1;
+      errors.push(`${j.title} × ${c.name}: ${(err as Error).message}`);
     }
-  }
+  });
 
   await db.from("ra_crawl_runs").insert({
     kind: "match", finished_at: new Date().toISOString(),
     ok: stats.errors === 0, stats: { ...stats, jobs: jobs?.length ?? 0, candidates: candidates?.length ?? 0, model: geminiModel },
     error: errors.join(" | ") || null,
   });
-  return res.json({ ok: true, ...stats, errors });
+  return { ok: true, ...stats, errors };
 }
 
 type Scored = { grade: "◎" | "○" | "△" | "×"; score: number; reasons: string[]; concerns: string[] };
@@ -359,18 +400,27 @@ async function activity(db: DB, req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 // /api/ra/cron — crawl + match
 // ---------------------------------------------------------------------------
-async function cron(db: DB, req: VercelRequest, res: VercelResponse) {
+async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   const started_at = new Date().toISOString();
-  const c = await tryRun(() => crawlInternal(db));
-  const m = await tryRun(() => matchInternal(db));
-  const ok = c.ok && m.ok;
+  // 1 cron 構成: enrich(URL補完) → crawl(求人取得) → match(候補者採点)
+  //   - enrich 10 社 (~6s)        : 採用URL未設定をAIで補完
+  //   - crawl  25 社 (~25s)       : recruit_page_url を Jina+Gemini で巡回
+  //   - match  25 求人 (~20s)     : 開いてる求人 × 候補者を ◎○△× 採点
+  // 合計 ~50s で 60s タイムアウトに収まる。
+  // Gemini calls/cron: 10 (enrich) + 25 (crawl) + 25-100 (match) = ~150 calls/cron
+  //                  × 2 cron/日 = ~300/日 < 無料枠 1500/日 (20%)
+  const e = await tryRun(() => runEnrich(db, { limit: 10 }));
+  const c = await tryRun(() => runCrawl(db,  { limit: 25, companyId: null }));
+  const m = await tryRun(() => runMatch(db,  { limit: 25, jobId: null }));
+  const ok = e.ok && c.ok && m.ok;
   await db.from("ra_crawl_runs").insert({
     kind: "cron", started_at, finished_at: new Date().toISOString(),
-    ok, stats: { crawl: c.body, match: m.body }, error: ok ? null : `${c.error ?? ""} | ${m.error ?? ""}`,
+    ok, stats: { enrich: e.body, crawl: c.body, match: m.body },
+    error: ok ? null : `${e.error ?? ""} | ${c.error ?? ""} | ${m.error ?? ""}`,
   });
   // Lark / Slack notification — fire-and-forget, never block the cron response.
   notifyAfterCron(db).catch(() => undefined);
-  return res.json({ ok, crawl: c.body, match: m.body });
+  return res.json({ ok, enrich: e.body, crawl: c.body, match: m.body });
 }
 
 async function notifyAfterCron(db: DB) {
@@ -436,7 +486,23 @@ async function findContactInfo(db: DB, req: VercelRequest, res: VercelResponse) 
   }
   if (!name) return res.status(400).json({ error: "name or company_id required" });
 
-  const prompt = `日本企業「${name}」について、以下 5 種類の URL / 情報を可能な限り推定。
+  const result = await enrichOne(db, { id: body.company_id ?? null, name });
+  return res.json({ ok: true, ...result });
+}
+
+/** Pure helper: ask Gemini for a company's URLs, optionally write back to DB. */
+type EnrichResult = {
+  corporate_url: string | null;
+  recruit_page_url: string | null;
+  contact_form_url: string | null;
+  contact_email: string | null;
+  linkedin_url: string | null;
+  confidence: number;
+  note?: string;
+};
+
+async function enrichOne(db: DB, target: { id: string | null; name: string }): Promise<EnrichResult> {
+  const prompt = `日本企業「${target.name}」について、以下 5 種類の URL / 情報を可能な限り推定。
 **確証が無いものは null** にする。推測で URL をでっち上げないこと。
 
 JSON のみ:
@@ -449,36 +515,87 @@ JSON のみ:
   "confidence": 0-1,
   "note": "判断根拠を 1 文で"
 }`;
-  const parsed = await generateJson<{
-    corporate_url: string | null;
-    recruit_page_url: string | null;
-    contact_form_url: string | null;
-    contact_email: string | null;
-    linkedin_url: string | null;
-    confidence: number;
-    note?: string;
-  }>(prompt, { temperature: 0.1 });
+  const parsed = await generateJson<EnrichResult>(prompt, { temperature: 0.1 });
 
-  if (body.company_id) {
-    // Merge into contact_paths jsonb and set top-level URLs.
-    const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", body.company_id).maybeSingle();
-    const existing = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
+  // HEAD-check each Gemini-suggested URL in parallel. Hallucinated 404s get
+  // nulled out before they reach the DB. Email/note are not URLs → skip check.
+  const [corpOk, recruitOk, formOk, linkedinOk] = await Promise.all([
+    parsed.corporate_url    ? urlExists(parsed.corporate_url)    : Promise.resolve(false),
+    parsed.recruit_page_url ? urlExists(parsed.recruit_page_url) : Promise.resolve(false),
+    parsed.contact_form_url ? urlExists(parsed.contact_form_url) : Promise.resolve(false),
+    parsed.linkedin_url     ? urlExists(parsed.linkedin_url)     : Promise.resolve(false),
+  ]);
+  const verified: EnrichResult = {
+    corporate_url:    corpOk     ? parsed.corporate_url    : null,
+    recruit_page_url: recruitOk  ? parsed.recruit_page_url : null,
+    contact_form_url: formOk     ? parsed.contact_form_url : null,
+    linkedin_url:     linkedinOk ? parsed.linkedin_url     : null,
+    contact_email:    parsed.contact_email, // メールは HEAD 不可、Gemini 信頼
+    confidence:       parsed.confidence,
+    note:             parsed.note,
+  };
+
+  if (target.id) {
+    const { data: cur } = await db.from("ra_companies").select("contact_paths").eq("id", target.id).maybeSingle();
+    const existing: Array<{ kind?: string; url?: string }> = Array.isArray(cur?.contact_paths) ? cur!.contact_paths : [];
     const next = [...existing];
     const upsertPath = (kind: string, url: string | null) => {
       if (!url) return;
-      if (next.find((p: { kind?: string; url?: string }) => p.kind === kind && p.url === url)) return;
+      if (next.find((p) => p.kind === kind && p.url === url)) return;
       next.push({ kind, url });
     };
-    upsertPath("form",     parsed.contact_form_url);
-    upsertPath("email",    parsed.contact_email);
-    upsertPath("linkedin", parsed.linkedin_url);
+    upsertPath("form",     verified.contact_form_url);
+    upsertPath("email",    verified.contact_email);
+    upsertPath("linkedin", verified.linkedin_url);
 
     const patch: Record<string, unknown> = { contact_paths: next, updated_at: new Date().toISOString() };
-    if (parsed.recruit_page_url) patch.recruit_page_url = parsed.recruit_page_url;
-    if (parsed.corporate_url)    patch.corporate_url    = parsed.corporate_url;
-    await db.from("ra_companies").update(patch).eq("id", body.company_id);
+    if (verified.recruit_page_url) patch.recruit_page_url = verified.recruit_page_url;
+    if (verified.corporate_url)    patch.corporate_url    = verified.corporate_url;
+    await db.from("ra_companies").update(patch).eq("id", target.id);
   }
-  return res.json({ ok: true, ...parsed });
+  return verified;
+}
+
+/**
+ * Auto-enrich: pick companies that have NO recruit_page_url and NO contact_paths,
+ * and let Gemini guess their URLs. This is what makes the pipeline truly hands-free.
+ */
+async function runEnrich(db: DB, opts: { limit: number }) {
+  if (!hasGemini) return { enriched: 0, failed: 0, errors: [] };
+
+  const { data: companies, error } = await db
+    .from("ra_companies")
+    .select("id,name")
+    .is("recruit_page_url", null)
+    .order("created_at", { ascending: true })
+    .limit(opts.limit);
+  if (error) throw new Error(error.message);
+
+  let enriched = 0, failed = 0;
+  const errors: string[] = [];
+
+  await mapWithConcurrency(companies ?? [], 5, async (c) => {
+    try {
+      await enrichOne(db, { id: c.id as string, name: c.name as string });
+      enriched += 1;
+    } catch (err) {
+      failed += 1;
+      errors.push(`${c.name}: ${(err as Error).message}`);
+    }
+  });
+
+  await db.from("ra_crawl_runs").insert({
+    kind: "enrich", finished_at: new Date().toISOString(),
+    ok: failed === 0, stats: { enriched, failed, model: geminiModel }, error: errors.join(" | ") || null,
+  });
+  return { ok: true, enriched, failed, errors };
+}
+
+/** Manual trigger from the UI / curl. */
+async function enrichEndpoint(db: DB, req: VercelRequest, res: VercelResponse) {
+  const limit = Number(req.query.limit ?? 20);
+  const r = await runEnrich(db, { limit });
+  return res.json(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -515,8 +632,18 @@ async function addCompanies(db: DB, req: VercelRequest, res: VercelResponse) {
   const { data, error } = await db
     .from("ra_companies")
     .upsert(payload, { onConflict: "name", ignoreDuplicates: false })
-    .select("id,name");
+    .select("id,name,recruit_page_url");
   if (error) return res.status(500).json({ error: error.message });
+
+  // Background: enrich URLs for newly added companies that came in without one.
+  // Fire-and-forget so the UI gets a fast response. Up to 20 in parallel(5).
+  if (hasGemini && data) {
+    const targets = data.filter((d) => !d.recruit_page_url).slice(0, 20);
+    void mapWithConcurrency(targets, 5, async (c) => {
+      try { await enrichOne(db, { id: c.id as string, name: c.name as string }); } catch { /* swallowed */ }
+    });
+  }
+
   return res.json({ ok: true, added: data?.length ?? 0, names: (data ?? []).map((d) => d.name) });
 }
 
@@ -581,41 +708,6 @@ async function approveDiscovery(db: DB, req: VercelRequest, res: VercelResponse)
 }
 
 // ---------------------------------------------------------------------------
-// /api/ra/draft  — Gemini writes an outreach email for a match
-// ---------------------------------------------------------------------------
-async function draftEmail(db: DB, req: VercelRequest, res: VercelResponse) {
-  if (!hasGemini) return res.status(412).json({ error: "GEMINI_API_KEY not configured" });
-  const body = (req.body ?? {}) as { match_id?: string };
-  if (!body.match_id) return res.status(400).json({ error: "match_id required" });
-
-  const { data: row } = await db.from("ra_ready_to_execute").select("*").eq("match_id", body.match_id).maybeSingle();
-  if (!row) return res.status(404).json({ error: "match not found in ready_to_execute" });
-  const { data: candidate } = await db.from("ra_candidates").select("*").eq("id", row.candidate_id).maybeSingle();
-
-  const prompt = `あなたは日本のRA(リクルーティング・アドバイザー)です。下記の求人に対し、候補者を打診する**初回メールの下書き** (件名 + 本文) を 200〜350 字程度で書いてください。
-過度な煽りは避け、求人の魅力ポイントと候補者の合致点を 2〜3 行で明示。
-署名は "—— Wheels Up RA" 固定。
-
-# 企業 / 求人
-企業: ${row.company_name}
-求人: ${row.job_title}
-理由: ${(row.reasons ?? []).join(" / ")}
-懸念: ${(row.concerns ?? []).join(" / ")}
-
-# 候補者
-名前: ${candidate?.name}
-ヘッドライン: ${candidate?.headline ?? ""}
-specialties: ${(candidate?.profile?.specialties ?? []).join(", ")}
-in_progress: ${(candidate?.profile?.in_progress ?? []).join(", ")}
-
-JSON のみ:
-{ "subject": "...", "body": "..." }`;
-
-  const parsed = await generateJson<{ subject: string; body: string }>(prompt, { temperature: 0.4 });
-  return res.json({ ok: true, ...parsed });
-}
-
-// ---------------------------------------------------------------------------
 // /api/ra/update-company  — PATCH metadata
 // ---------------------------------------------------------------------------
 async function updateCompany(db: DB, req: VercelRequest, res: VercelResponse) {
@@ -660,43 +752,7 @@ async function updateCandidate(db: DB, req: VercelRequest, res: VercelResponse) 
   return res.json({ ok: true, candidate: data });
 }
 
-// ---------------------------------------------------------------------------
-// /api/ra/pipedrive-match  — cross-match ra_companies.name against companies
-// ---------------------------------------------------------------------------
-async function pipedriveMatch(db: DB, req: VercelRequest, res: VercelResponse) {
-  const id = typeof req.query.company_id === "string" ? req.query.company_id : null;
-  if (!id) return res.status(400).json({ error: "company_id required" });
-  const { data: ra } = await db.from("ra_companies").select("name").eq("id", id).maybeSingle();
-  if (!ra) return res.status(404).json({ error: "ra_company not found" });
-
-  // Loose match — ILIKE %name% both ways. The existing companies table is small
-  // enough (a few hundred rows) that filtering in-memory is cheap.
-  const { data: existing } = await db.from("companies").select("id,name,pipedrive_org_id,won_deals_count,open_deals_count,people_count").ilike("name", `%${ra.name}%`).limit(10);
-  return res.json({ ok: true, ra_name: ra.name, matches: existing ?? [] });
-}
-
 async function tryRun(fn: () => Promise<unknown>) {
   try { return { ok: true, body: await fn(), error: null }; }
   catch (err) { return { ok: false, body: null, error: (err as Error).message }; }
-}
-
-async function crawlInternal(db: DB) {
-  const reqLike = { query: { limit: "20" } } as unknown as VercelRequest;
-  const recorder: { body?: unknown } = {};
-  const resLike = {
-    json(b: unknown) { recorder.body = b; return resLike; },
-    status() { return resLike; },
-  } as unknown as VercelResponse;
-  await crawl(db, reqLike, resLike);
-  return recorder.body;
-}
-async function matchInternal(db: DB) {
-  const reqLike = { query: { limit: "20" } } as unknown as VercelRequest;
-  const recorder: { body?: unknown } = {};
-  const resLike = {
-    json(b: unknown) { recorder.body = b; return resLike; },
-    status() { return resLike; },
-  } as unknown as VercelResponse;
-  await match(db, reqLike, resLike);
-  return recorder.body;
 }
