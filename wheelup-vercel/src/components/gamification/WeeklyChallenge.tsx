@@ -30,7 +30,7 @@ function generateChallenges(meetings: MeetingTranscript[]): Challenge[] {
       id: "first-score",
       icon: "🎯",
       title: "はじめの一歩",
-      description: "面談を1件記録してスコアを���認しよう",
+      description: "面談を1件記録してスコアを確認しよう",
       progress: 0,
       target: 1,
       reward: "スコアリング解放",
