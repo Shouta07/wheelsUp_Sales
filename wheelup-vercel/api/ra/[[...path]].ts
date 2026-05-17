@@ -25,6 +25,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
 import { generateJson, geminiModel, hasGemini } from "../_lib/ra-gemini.js";
 import { fetchPage, sha256, urlExists } from "../_lib/ra-scrape.js";
+import { googleSearch, hasGoogleSearch } from "../_lib/ra-search.js";
 
 // Vercel function timeout — Hobby plan caps at 60s, Pro at 300s.
 // Crawl + match can be heavy; opt into the full budget.
@@ -519,38 +520,100 @@ type EnrichResult = {
   note?: string;
 };
 
+/**
+ * 4 層フォールバックで企業 URL を高精度に特定する:
+ *   Layer 1: Google Custom Search (公式/採用/問合せ/LinkedIn の 4 クエリ) → Gemini が選別
+ *   Layer 2: 2 段階 Gemini (Corp URL → 実 HTML から /recruit /contact を抽出)
+ *   Layer 3: パターン総当たり (/recruit, /careers, /採用情報, /contact... + HEAD)
+ *   Layer 4: 単発 Gemini (最終フォールバック)
+ * 各 URL は最終的に HEAD で検証してから保存。
+ */
 async function enrichOne(db: DB, target: { id: string | null; name: string }): Promise<EnrichResult> {
-  const prompt = `日本企業「${target.name}」について、以下 5 種類の URL / 情報を可能な限り推定。
-**確証が無いものは null** にする。推測で URL をでっち上げないこと。
+  const candidates = { corporate: [] as string[], recruit: [] as string[], contact: [] as string[], linkedin: [] as string[] };
+  let contact_email: string | null = null;
+  const notes: string[] = [];
 
-JSON のみ:
-{
-  "corporate_url":    "https://...  | null",
-  "recruit_page_url": "https://...  | null",
-  "contact_form_url": "https://...  | null",
-  "contact_email":    "info@... | null",
-  "linkedin_url":     "https://www.linkedin.com/company/... | null",
-  "confidence": 0-1,
-  "note": "判断根拠を 1 文で"
-}`;
-  const parsed = await generateJson<EnrichResult>(prompt, { temperature: 0.1 });
+  // ── Layer 1: Google Custom Search ─────────────────────────────────
+  if (hasGoogleSearch) {
+    try {
+      const [corpHits, recHits, contactHits, linkedinHits] = await Promise.all([
+        googleSearch(`${target.name} 公式サイト`, 5),
+        googleSearch(`${target.name} 採用情報 OR 採用 OR careers OR recruit`, 5),
+        googleSearch(`${target.name} お問い合わせ OR 問い合わせ OR contact`, 5),
+        googleSearch(`site:linkedin.com/company ${target.name}`, 3),
+      ]);
+      const picked = await pickFromSearchResults(target.name, { corpHits, recHits, contactHits, linkedinHits });
+      if (picked.corporate_url)    candidates.corporate.push(picked.corporate_url);
+      if (picked.recruit_page_url) candidates.recruit.push(picked.recruit_page_url);
+      if (picked.contact_form_url) candidates.contact.push(picked.contact_form_url);
+      if (picked.linkedin_url)     candidates.linkedin.push(picked.linkedin_url);
+      notes.push("google-search");
+    } catch (err) { notes.push(`google-search failed: ${(err as Error).message}`); }
+  }
 
-  // HEAD-check each Gemini-suggested URL in parallel. Hallucinated 404s get
-  // nulled out before they reach the DB. Email/note are not URLs → skip check.
-  const [corpOk, recruitOk, formOk, linkedinOk] = await Promise.all([
-    parsed.corporate_url    ? urlExists(parsed.corporate_url)    : Promise.resolve(false),
-    parsed.recruit_page_url ? urlExists(parsed.recruit_page_url) : Promise.resolve(false),
-    parsed.contact_form_url ? urlExists(parsed.contact_form_url) : Promise.resolve(false),
-    parsed.linkedin_url     ? urlExists(parsed.linkedin_url)     : Promise.resolve(false),
+  // ── Layer 2: 2 段階 Gemini ────────────────────────────────────────
+  if (candidates.corporate.length === 0 && hasGemini) {
+    try {
+      const corp = await geminiSuggestCorpUrl(target.name);
+      if (corp) candidates.corporate.push(corp);
+    } catch { /* ignore */ }
+  }
+  const firstVerifiedCorp = await firstValidUrl(candidates.corporate);
+  if (firstVerifiedCorp && hasGemini) {
+    try {
+      const body = await fetchPage(firstVerifiedCorp);
+      const paths = await geminiExtractPathsFromHomepage(target.name, firstVerifiedCorp, body);
+      candidates.recruit.push(...paths.recruit_urls);
+      candidates.contact.push(...paths.contact_urls);
+      if (paths.email && !contact_email) contact_email = paths.email;
+      if (paths.linkedin) candidates.linkedin.push(paths.linkedin);
+      notes.push("site-extract");
+    } catch (err) { notes.push(`site-extract failed: ${(err as Error).message}`); }
+  }
+
+  // ── Layer 3: パターン総当たり ─────────────────────────────────────
+  if (firstVerifiedCorp) {
+    const root = firstVerifiedCorp.replace(/\/+$/, "");
+    const recruitPatterns = ["/recruit/", "/recruit", "/careers/", "/careers", "/career", "/採用情報/", "/採用情報", "/jobs/", "/jobs"];
+    const contactPatterns = ["/contact/", "/contact", "/inquiry/", "/inquiry", "/contact-us/", "/contact-us", "/お問い合わせ/", "/お問い合わせ"];
+    for (const p of recruitPatterns) candidates.recruit.push(root + p);
+    for (const p of contactPatterns) candidates.contact.push(root + p);
+  }
+
+  // ── Layer 4: 単発 Gemini フォールバック ───────────────────────────
+  if (candidates.recruit.length === 0 && candidates.contact.length === 0 && hasGemini) {
+    try {
+      const single = await geminiSingleShotAll(target.name);
+      if (single.corporate_url)    candidates.corporate.push(single.corporate_url);
+      if (single.recruit_page_url) candidates.recruit.push(single.recruit_page_url);
+      if (single.contact_form_url) candidates.contact.push(single.contact_form_url);
+      if (single.linkedin_url)     candidates.linkedin.push(single.linkedin_url);
+      if (single.contact_email && !contact_email) contact_email = single.contact_email;
+      notes.push("single-gemini-fallback");
+    } catch { /* swallow */ }
+  }
+
+  // ── 最終 HEAD 検証 ────────────────────────────────────────────────
+  const [corpFinal, recruitFinal, contactFinal, linkedinFinal] = await Promise.all([
+    firstValidUrl(dedupe(candidates.corporate)),
+    firstValidUrl(dedupe(candidates.recruit)),
+    firstValidUrl(dedupe(candidates.contact)),
+    firstValidUrl(dedupe(candidates.linkedin)),
   ]);
+
   const verified: EnrichResult = {
-    corporate_url:    corpOk     ? parsed.corporate_url    : null,
-    recruit_page_url: recruitOk  ? parsed.recruit_page_url : null,
-    contact_form_url: formOk     ? parsed.contact_form_url : null,
-    linkedin_url:     linkedinOk ? parsed.linkedin_url     : null,
-    contact_email:    parsed.contact_email, // メールは HEAD 不可、Gemini 信頼
-    confidence:       parsed.confidence,
-    note:             parsed.note,
+    corporate_url:    corpFinal,
+    recruit_page_url: recruitFinal,
+    contact_form_url: contactFinal,
+    linkedin_url:     linkedinFinal,
+    contact_email,
+    confidence:
+      (corpFinal ? 0.25 : 0) +
+      (recruitFinal ? 0.35 : 0) +
+      (contactFinal ? 0.25 : 0) +
+      (linkedinFinal ? 0.1 : 0) +
+      (contact_email ? 0.05 : 0),
+    note: notes.join(" | "),
   };
 
   if (target.id) {
@@ -572,6 +635,128 @@ JSON のみ:
     await db.from("ra_companies").update(patch).eq("id", target.id);
   }
   return verified;
+}
+
+// ---------------------------------------------------------------------------
+// enrichOne の補助関数 (Layer 1〜4)
+// ---------------------------------------------------------------------------
+
+function dedupe(arr: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of arr) {
+    if (!x) continue;
+    const key = x.replace(/\/+$/, "").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(x);
+  }
+  return out;
+}
+
+async function firstValidUrl(urls: string[]): Promise<string | null> {
+  for (const u of urls.slice(0, 6)) {
+    if (await urlExists(u)) return u;
+  }
+  return null;
+}
+
+type GoogleHits = {
+  corpHits: import("../_lib/ra-search.js").SearchHit[];
+  recHits: import("../_lib/ra-search.js").SearchHit[];
+  contactHits: import("../_lib/ra-search.js").SearchHit[];
+  linkedinHits: import("../_lib/ra-search.js").SearchHit[];
+};
+
+async function pickFromSearchResults(name: string, hits: GoogleHits): Promise<{
+  corporate_url: string | null;
+  recruit_page_url: string | null;
+  contact_form_url: string | null;
+  linkedin_url: string | null;
+}> {
+  if (!hasGemini) {
+    return {
+      corporate_url:    hits.corpHits[0]?.link ?? null,
+      recruit_page_url: hits.recHits[0]?.link ?? null,
+      contact_form_url: hits.contactHits[0]?.link ?? null,
+      linkedin_url:     hits.linkedinHits[0]?.link ?? null,
+    };
+  }
+  const fmt = (h: import("../_lib/ra-search.js").SearchHit[]) =>
+    h.length === 0 ? "(なし)" : h.map((x, i) => `${i + 1}. ${x.link}\n   ${x.title}\n   ${x.snippet}`).join("\n");
+  const prompt = `日本企業「${name}」について、Google 検索結果から本物の URL を 1 つずつ選んでください。
+転職メディア (Indeed / リクナビ / マイナビ / Wantedly 等) より公式サイトを優先。
+確証が無い項目は null。
+
+# 公式サイト 候補
+${fmt(hits.corpHits)}
+
+# 採用情報 候補
+${fmt(hits.recHits)}
+
+# お問い合わせ 候補
+${fmt(hits.contactHits)}
+
+# LinkedIn 候補
+${fmt(hits.linkedinHits)}
+
+JSON のみ:
+{ "corporate_url": "...|null", "recruit_page_url": "...|null", "contact_form_url": "...|null", "linkedin_url": "...|null" }`;
+  return generateJson(prompt, { temperature: 0.1 });
+}
+
+async function geminiSuggestCorpUrl(name: string): Promise<string | null> {
+  const prompt = `日本企業「${name}」のコーポレートサイト (公式サイト) のトップ URL を 1 つだけ返してください。
+**確証が無いなら null**。推測でドメインをでっち上げないこと。
+
+JSON のみ: { "url": "https://...|null" }`;
+  const r = await generateJson<{ url: string | null }>(prompt, { temperature: 0.1 });
+  return r.url || null;
+}
+
+async function geminiExtractPathsFromHomepage(name: string, corpUrl: string, body: string): Promise<{
+  recruit_urls: string[]; contact_urls: string[]; email: string | null; linkedin: string | null;
+}> {
+  const prompt = `「${name}」のコーポレートサイト ${corpUrl} のトップページから、以下のリンク・情報を**実際に本文に存在するもの**だけ抽出してください。推測で URL を作らないこと。
+
+* 採用ページ (recruit / careers / 採用情報 / 採用案内 等のリンク先)
+* お問い合わせフォーム (contact / 問い合わせ / inquiry)
+* 公開メールアドレス (info@ や recruit@ 等)
+* 公式 LinkedIn (linkedin.com/company/...)
+
+複数候補があれば配列で返す。絶対 URL に整形 (相対パスはコーポレート URL に連結)。
+
+JSON のみ:
+{ "recruit_urls": ["..."], "contact_urls": ["..."], "email": "...|null", "linkedin": "...|null" }
+
+--- ページ本文 ---
+${String(body).slice(0, 15000)}`;
+  const r = await generateJson<{
+    recruit_urls?: string[]; contact_urls?: string[]; email?: string | null; linkedin?: string | null;
+  }>(prompt, { temperature: 0.1 });
+  return {
+    recruit_urls: Array.isArray(r.recruit_urls) ? r.recruit_urls.filter(Boolean) : [],
+    contact_urls: Array.isArray(r.contact_urls) ? r.contact_urls.filter(Boolean) : [],
+    email:        r.email || null,
+    linkedin:     r.linkedin || null,
+  };
+}
+
+async function geminiSingleShotAll(name: string): Promise<EnrichResult> {
+  const prompt = `日本企業「${name}」について、以下 5 種類の URL / 情報を可能な限り推定。
+**確証が無いものは null**。
+
+JSON のみ:
+{
+  "corporate_url":    "https://...|null",
+  "recruit_page_url": "https://...|null",
+  "contact_form_url": "https://...|null",
+  "contact_email":    "info@...|null",
+  "linkedin_url":     "https://www.linkedin.com/company/...|null",
+  "confidence": 0-1,
+  "note": "..."
+}`;
+  return generateJson<EnrichResult>(prompt, { temperature: 0.1 });
 }
 
 /**
