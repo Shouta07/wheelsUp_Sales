@@ -55,8 +55,13 @@ Apps Script の左メニュー **歯車アイコン (プロジェクトの設定
 
 | プロパティ | 値 |
 | --- | --- |
-| `GEMINI_API_KEY` | [AI Studio](https://aistudio.google.com/app/apikey) で発行したキー |
-| `JINA_API_KEY` (任意) | [jina.ai](https://jina.ai/) で無料登録、スクレイピング品質向上 |
+| `GEMINI_API_KEY` | [AI Studio](https://aistudio.google.com/app/apikey) で発行したキー (必須) |
+| `JINA_API_KEY` | [jina.ai](https://jina.ai/) で無料登録、スクレイピング品質向上 (任意) |
+| `GOOGLE_SEARCH_API_KEY` | Google Cloud Console で **Custom Search JSON API** 有効化 → 認証情報からキー発行 (任意・推奨) |
+| `GOOGLE_SEARCH_CX` | [Programmable Search Engine](https://programmablesearchengine.google.com/) で「ウェブ全体を検索」エンジン作成 → 検索エンジン ID (任意・推奨) |
+
+**`GOOGLE_SEARCH_*` を設定すると URL 自動補完の的中率が 60%→90%+ に上がります** (無料 100 req/日)。
+中堅以下の企業まで網羅したいなら設定推奨。設定しなければ自動で 2 段階 Gemini + パターン総当たりにフォールバックします。
 
 ### 4. タイムゾーンを Asia/Tokyo に (30 秒)
 

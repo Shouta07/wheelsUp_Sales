@@ -205,27 +205,204 @@ function runEnrich(limit) {
   return { enriched: enriched, failed: failed };
 }
 
+/**
+ * 4 層フォールバックで企業 URL を高精度に特定する:
+ *   Layer 1: Google Custom Search (4 クエリ) → Gemini が選別  ← GOOGLE_SEARCH_API_KEY / GOOGLE_SEARCH_CX 設定時のみ
+ *   Layer 2: 2 段階 Gemini  (Corp URL → 実 HTML → /recruit /contact 抽出)
+ *   Layer 3: パターン総当たり (/recruit, /careers, /採用, /contact... + HEAD)
+ *   Layer 4: 単発 Gemini (最終フォールバック)
+ * 各 URL は HEAD で検証してから返す。
+ */
 function enrichOne_(name) {
+  var cand = { corporate: [], recruit: [], contact: [], linkedin: [] };
+  var contact_email = null;
+  var notes = [];
+
+  // ── Layer 1: Google Custom Search ─────────────────────────────────
+  if (hasGoogleSearch_()) {
+    try {
+      var corpHits     = googleSearch_(name + ' 公式サイト', 5);
+      var recHits      = googleSearch_(name + ' 採用情報 OR 採用 OR careers OR recruit', 5);
+      var contactHits  = googleSearch_(name + ' お問い合わせ OR 問い合わせ OR contact', 5);
+      var linkedinHits = googleSearch_('site:linkedin.com/company ' + name, 3);
+      var picked = pickFromSearchResults_(name, corpHits, recHits, contactHits, linkedinHits);
+      if (picked.corporate_url)    cand.corporate.push(picked.corporate_url);
+      if (picked.recruit_page_url) cand.recruit.push(picked.recruit_page_url);
+      if (picked.contact_form_url) cand.contact.push(picked.contact_form_url);
+      if (picked.linkedin_url)     cand.linkedin.push(picked.linkedin_url);
+      notes.push('google-search');
+    } catch (e) { notes.push('google-search failed: ' + e.message); }
+  }
+
+  // ── Layer 2: 2 段階 Gemini ────────────────────────────────────────
+  if (cand.corporate.length === 0) {
+    try {
+      var corp = geminiSuggestCorpUrl_(name);
+      if (corp) cand.corporate.push(corp);
+    } catch (e) { /* ignore */ }
+  }
+  var firstCorp = firstValidUrl_(cand.corporate);
+  if (firstCorp) {
+    try {
+      var body = fetchPage_(firstCorp);
+      var paths = geminiExtractPathsFromHomepage_(name, firstCorp, body);
+      paths.recruit_urls.forEach(function (u) { cand.recruit.push(u); });
+      paths.contact_urls.forEach(function (u) { cand.contact.push(u); });
+      if (paths.email && !contact_email) contact_email = paths.email;
+      if (paths.linkedin) cand.linkedin.push(paths.linkedin);
+      notes.push('site-extract');
+    } catch (e) { notes.push('site-extract failed: ' + e.message); }
+  }
+
+  // ── Layer 3: パターン総当たり ─────────────────────────────────────
+  if (firstCorp) {
+    var root = firstCorp.replace(/\/+$/, '');
+    ['/recruit/', '/recruit', '/careers/', '/careers', '/career', '/採用情報/', '/採用情報', '/jobs/', '/jobs']
+      .forEach(function (p) { cand.recruit.push(root + p); });
+    ['/contact/', '/contact', '/inquiry/', '/inquiry', '/contact-us/', '/contact-us', '/お問い合わせ/', '/お問い合わせ']
+      .forEach(function (p) { cand.contact.push(root + p); });
+  }
+
+  // ── Layer 4: 単発 Gemini フォールバック ───────────────────────────
+  if (cand.recruit.length === 0 && cand.contact.length === 0) {
+    try {
+      var s = geminiSingleShotAll_(name);
+      if (s.corporate_url)    cand.corporate.push(s.corporate_url);
+      if (s.recruit_page_url) cand.recruit.push(s.recruit_page_url);
+      if (s.contact_form_url) cand.contact.push(s.contact_form_url);
+      if (s.linkedin_url)     cand.linkedin.push(s.linkedin_url);
+      if (s.contact_email && !contact_email) contact_email = s.contact_email;
+      notes.push('single-gemini-fallback');
+    } catch (e) { /* swallow */ }
+  }
+
+  // ── 最終 HEAD 検証 ────────────────────────────────────────────────
+  return {
+    corporate_url:    firstValidUrl_(dedupeUrls_(cand.corporate)),
+    recruit_page_url: firstValidUrl_(dedupeUrls_(cand.recruit)),
+    contact_form_url: firstValidUrl_(dedupeUrls_(cand.contact)),
+    linkedin_url:     firstValidUrl_(dedupeUrls_(cand.linkedin)),
+    contact_email:    contact_email,
+    note:             notes.join(' | '),
+  };
+}
+
+function dedupeUrls_(arr) {
+  var seen = {}, out = [];
+  for (var i = 0; i < arr.length; i++) {
+    if (!arr[i]) continue;
+    var key = String(arr[i]).replace(/\/+$/, '').toLowerCase();
+    if (seen[key]) continue;
+    seen[key] = true;
+    out.push(arr[i]);
+  }
+  return out;
+}
+
+function firstValidUrl_(urls) {
+  for (var i = 0; i < Math.min(urls.length, 6); i++) {
+    if (urlExists_(urls[i])) return urls[i];
+  }
+  return null;
+}
+
+// =============================================================================
+// GOOGLE CUSTOM SEARCH (Layer 1)
+// =============================================================================
+
+function hasGoogleSearch_() {
+  return Boolean(getProp_('GOOGLE_SEARCH_API_KEY') && getProp_('GOOGLE_SEARCH_CX'));
+}
+
+function googleSearch_(query, limit) {
+  var key = getProp_('GOOGLE_SEARCH_API_KEY');
+  var cx  = getProp_('GOOGLE_SEARCH_CX');
+  if (!key || !cx) return [];
+  var url = 'https://www.googleapis.com/customsearch/v1' +
+    '?key=' + encodeURIComponent(key) +
+    '&cx=' + encodeURIComponent(cx) +
+    '&q=' + encodeURIComponent(query) +
+    '&num=' + Math.min(limit || 5, 10) +
+    '&hl=ja&gl=jp';
+  try {
+    var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() >= 400) return [];
+    var data = JSON.parse(res.getContentText());
+    return (data.items || []).map(function (it) {
+      return { title: it.title || '', link: it.link || '', snippet: it.snippet || '' };
+    }).filter(function (h) { return h.link; });
+  } catch (e) { return []; }
+}
+
+function pickFromSearchResults_(name, corpHits, recHits, contactHits, linkedinHits) {
+  var fmt = function (hs) {
+    if (!hs || hs.length === 0) return '(なし)';
+    return hs.map(function (x, i) {
+      return (i + 1) + '. ' + x.link + '\n   ' + x.title + '\n   ' + x.snippet;
+    }).join('\n');
+  };
+  var prompt =
+    '日本企業「' + name + '」について、Google 検索結果から本物の URL を 1 つずつ選んでください。\n' +
+    '転職メディア (Indeed / リクナビ / マイナビ / Wantedly 等) より公式サイトを優先。確証が無い項目は null。\n\n' +
+    '# 公式サイト 候補\n' + fmt(corpHits) + '\n\n' +
+    '# 採用情報 候補\n' + fmt(recHits) + '\n\n' +
+    '# お問い合わせ 候補\n' + fmt(contactHits) + '\n\n' +
+    '# LinkedIn 候補\n' + fmt(linkedinHits) + '\n\n' +
+    'JSON のみ:\n' +
+    '{ "corporate_url": "...|null", "recruit_page_url": "...|null", "contact_form_url": "...|null", "linkedin_url": "...|null" }';
+  return callGemini_(prompt, { temperature: 0.1 });
+}
+
+// =============================================================================
+// 2-STEP GEMINI (Layer 2)
+// =============================================================================
+
+function geminiSuggestCorpUrl_(name) {
+  var prompt =
+    '日本企業「' + name + '」のコーポレートサイト (公式サイト) のトップ URL を 1 つだけ返してください。\n' +
+    '**確証が無いなら null**。推測でドメインをでっち上げないこと。\n\n' +
+    'JSON のみ: { "url": "https://...|null" }';
+  var r = callGemini_(prompt, { temperature: 0.1 });
+  return (r && r.url) ? r.url : null;
+}
+
+function geminiExtractPathsFromHomepage_(name, corpUrl, body) {
+  var prompt =
+    '「' + name + '」のコーポレートサイト ' + corpUrl + ' のトップページから、以下のリンク・情報を**実際に本文に存在するもの**だけ抽出してください。推測で URL を作らないこと。\n\n' +
+    '* 採用ページ (recruit / careers / 採用情報 / 採用案内 等のリンク先)\n' +
+    '* お問い合わせフォーム (contact / 問い合わせ / inquiry)\n' +
+    '* 公開メールアドレス (info@ や recruit@ 等)\n' +
+    '* 公式 LinkedIn (linkedin.com/company/...)\n\n' +
+    '複数候補があれば配列で返す。絶対 URL に整形 (相対パスはコーポレート URL に連結)。\n\n' +
+    'JSON のみ:\n' +
+    '{ "recruit_urls": ["..."], "contact_urls": ["..."], "email": "...|null", "linkedin": "...|null" }\n\n' +
+    '--- ページ本文 ---\n' + String(body).slice(0, 15000);
+  var r = callGemini_(prompt, { temperature: 0.1 });
+  return {
+    recruit_urls: Array.isArray(r && r.recruit_urls) ? r.recruit_urls.filter(Boolean) : [],
+    contact_urls: Array.isArray(r && r.contact_urls) ? r.contact_urls.filter(Boolean) : [],
+    email:        (r && r.email) || null,
+    linkedin:     (r && r.linkedin) || null,
+  };
+}
+
+// =============================================================================
+// SINGLE-SHOT GEMINI (Layer 4 fallback)
+// =============================================================================
+
+function geminiSingleShotAll_(name) {
   var prompt =
     '日本企業「' + name + '」について、以下 5 種類の URL / 情報を可能な限り推定。\n' +
-    '**確証が無いものは null** にする。推測で URL をでっち上げないこと。\n\n' +
+    '**確証が無いものは null**。\n\n' +
     'JSON のみ:\n' +
     '{\n' +
-    '  "corporate_url":    "https://...  | null",\n' +
-    '  "recruit_page_url": "https://...  | null",\n' +
-    '  "contact_form_url": "https://...  | null",\n' +
-    '  "contact_email":    "info@... | null",\n' +
-    '  "linkedin_url":     "https://www.linkedin.com/company/... | null"\n' +
+    '  "corporate_url":    "https://...|null",\n' +
+    '  "recruit_page_url": "https://...|null",\n' +
+    '  "contact_form_url": "https://...|null",\n' +
+    '  "contact_email":    "info@...|null",\n' +
+    '  "linkedin_url":     "https://www.linkedin.com/company/...|null"\n' +
     '}';
-  var p = callGemini_(prompt, { temperature: 0.1 });
-  // HEAD check each suggested URL — strip out 404s before persisting.
-  return {
-    corporate_url:    p.corporate_url    && urlExists_(p.corporate_url)    ? p.corporate_url    : null,
-    recruit_page_url: p.recruit_page_url && urlExists_(p.recruit_page_url) ? p.recruit_page_url : null,
-    contact_form_url: p.contact_form_url && urlExists_(p.contact_form_url) ? p.contact_form_url : null,
-    contact_email:    p.contact_email || null,
-    linkedin_url:     p.linkedin_url     && urlExists_(p.linkedin_url)     ? p.linkedin_url     : null,
-  };
+  return callGemini_(prompt, { temperature: 0.1 });
 }
 
 // =============================================================================
