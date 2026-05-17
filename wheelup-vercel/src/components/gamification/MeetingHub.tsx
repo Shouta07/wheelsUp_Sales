@@ -198,11 +198,13 @@ export default function MeetingHub() {
         </button>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs - リーダー面談タブはリーダー本人のみに表示 */}
       <div className="flex gap-1 mb-4">
         {([
           { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          { key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 },
+          ...(isLeaderUser
+            ? [{ key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 }]
+            : []),
         ]).map(({ key, label, count }) => (
           <button
             key={key}
