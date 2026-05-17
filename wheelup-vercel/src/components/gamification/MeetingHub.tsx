@@ -153,7 +153,7 @@ export default function MeetingHub() {
   };
 
   const handleRescore = async (id: string) => {
-    await scoreMeeting(id);
+    await scoreMeeting(id, true);
     qc.invalidateQueries({ queryKey: ["meetings"] });
   };
 

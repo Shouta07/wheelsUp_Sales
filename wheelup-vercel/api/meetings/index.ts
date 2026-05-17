@@ -63,22 +63,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     // --- /api/meetings/:id/score ---
     if (sub === "score" && req.method === "POST") {
-      return await scoreMeeting(db, id, res);
+      return await scoreMeeting(db, id, req, res);
     }
     // --- /api/meetings/:id/leader-feedback ---
     if (sub === "leader-feedback" && req.method === "POST") {
       return await addLeaderFeedback(db, id, req, res);
     }
 
-    return res.status(404).json({
-      error: "Not found",
-      debug: {
-        url: req.url,
-        method: req.method,
-        rawPath: req.query.path,
-        segments,
-      },
-    });
+    return res.status(404).json({ error: "Not found" });
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
@@ -352,9 +344,11 @@ function parseBullets(text: string): string[] {
 async function scoreMeeting(
   db: ReturnType<typeof getSupabaseAdmin>,
   id: string,
+  req: VercelRequest,
   res: VercelResponse,
 ) {
-  const result = await scoreMeetingInternal(db, id);
+  const force = req.method === "POST" && (req.body?.force === true || req.query?.force === "1");
+  const result = await scoreMeetingInternal(db, id, { force });
   if ("error" in result) return res.status((result.status as number) || 500).json({ error: result.error });
   return res.json(result);
 }
@@ -362,6 +356,7 @@ async function scoreMeeting(
 async function scoreMeetingInternal(
   db: ReturnType<typeof getSupabaseAdmin>,
   id: string,
+  opts: { force?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { error: "GEMINI_API_KEY not set", status: 500 };
@@ -386,6 +381,12 @@ async function scoreMeetingInternal(
         .join("\n");
     }
   } catch { /* ignore */ }
+
+  // 採点入力ハッシュ。transcript_text と leaderRefs が同一なら Gemini を再呼び出ししない（無料枠保護）。
+  const inputHash = createHash("sha256").update(`${text}\n---\n${leaderRefs}`).digest("hex");
+  if (!opts.force && meeting.score_data && meeting.score_input_hash === inputHash) {
+    return { meeting_id: id, cached: true, ...(meeting.score_data as Record<string, unknown>) };
+  }
 
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
@@ -450,7 +451,73 @@ ${leaderRefs || "（なし）"}
 - learning_resources は弱い軸（点数の低い 2 軸）を中心に 2〜3 件。source_type は基本 "playbook"、source_name は参考リストの face value をそのまま使うか、空なら "リーダー面談記録"。url は決して推測しない（URLを書かない）。
 - evidence は面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。
 - 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2800, responseMimeType: "application/json" },
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 2800,
+        responseMimeType: "application/json",
+        // Schema を強制してパースエラー → リトライ をゼロに。精度と省エネを両立。
+        responseSchema: {
+          type: "object",
+          properties: {
+            scores: {
+              type: "object",
+              properties: {
+                needs: { type: "integer" },
+                proposal: { type: "integer" },
+                trust: { type: "integer" },
+                closing: { type: "integer" },
+                intel: { type: "integer" },
+              },
+              required: ["needs", "proposal", "trust", "closing", "intel"],
+            },
+            total: { type: "integer" },
+            grade: { type: "string" },
+            evidence: {
+              type: "object",
+              properties: {
+                needs: { type: "string" },
+                proposal: { type: "string" },
+                trust: { type: "string" },
+                closing: { type: "string" },
+                intel: { type: "string" },
+              },
+            },
+            strengths: { type: "array", items: { type: "string" } },
+            improvements: { type: "array", items: { type: "string" } },
+            leader_would: { type: "string" },
+            key_moments: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  text: { type: "string" },
+                  axis: { type: "string" },
+                  axis_label: { type: "string" },
+                  relevance: { type: "number" },
+                  speaker: { type: "string" },
+                },
+                required: ["text", "axis"],
+              },
+            },
+            learning_resources: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  axis: { type: "string" },
+                  title: { type: "string" },
+                  description: { type: "string" },
+                  source_type: { type: "string" },
+                  source_name: { type: "string" },
+                  playbook_situation: { type: "string" },
+                },
+                required: ["axis", "title", "description"],
+              },
+            },
+          },
+          required: ["scores", "evidence"],
+        },
+      },
     }),
   });
 
@@ -523,7 +590,7 @@ ${leaderRefs || "（なし）"}
       parsed.learning_resources = [];
     }
 
-    await db.from("meeting_transcripts").update({ score_data: parsed }).eq("id", id);
+    await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
   } else if (parseError) {
     return { error: `スコアJSONのパース失敗: ${parseError}`, raw: raw.slice(0, 500), status: 502 };
   }
@@ -826,7 +893,8 @@ ${leaderExamples || "（事例なし）"}
 建築技術者の転職市場の実態（中堅ゼネコン・ハウスメーカー・デベ・CM の年収帯と動機）を踏まえてください。
 案件情報が無い場合は仮定を明記し、汎用ベストプラクティスを示してください。`;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  // コーチングは出力短文・反復呼出し多めなので、高速・安価な flash-lite を使う。
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
