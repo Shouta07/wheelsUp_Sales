@@ -69,7 +69,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return await addLeaderFeedback(db, id, req, res);
     }
 
-    return res.status(404).json({ error: "Not found" });
+    return res.status(404).json({
+      error: "Not found",
+      debug: {
+        url: req.url,
+        method: req.method,
+        rawPath: req.query.path,
+        segments,
+      },
+    });
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
