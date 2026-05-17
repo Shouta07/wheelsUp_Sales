@@ -6,6 +6,7 @@
     { "source": "/api/jobs/:path*", "destination": "/api/jobs" },
     { "source": "/api/pipedrive/:path*", "destination": "/api/pipedrive" },
     { "source": "/api/lark/:path*", "destination": "/api/lark" },
+    { "source": "/api/meetings", "destination": "/api/meetings" },
     { "source": "/api/meetings/:path*", "destination": "/api/meetings" },
     { "source": "/api/ra/:path*", "destination": "/api/ra" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

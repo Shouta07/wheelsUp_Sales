@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { createHash } from "node:crypto";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 
 /**
@@ -544,13 +545,12 @@ async function addLeaderFeedback(
 
 // 同一ソース面談集合からの再生成を避けるキャッシュキー。
 // 面談IDの並び + 各行の updated_at をハッシュ。1件でも更新されれば自動的に無効化される。
-async function computePlaybookCacheKey(meetings: Array<{ id: string; updated_at?: string | null; recorded_at?: string | null }>): Promise<string> {
+function computePlaybookCacheKey(meetings: Array<{ id: string; updated_at?: string | null; recorded_at?: string | null }>): string {
   const seed = meetings
     .map((m) => `${m.id}:${m.updated_at || m.recorded_at || ""}`)
     .sort()
     .join("|");
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return createHash("sha256").update(seed).digest("hex");
 }
 
 async function extractPlaybook(
@@ -583,7 +583,7 @@ async function extractPlaybook(
     return res.json({ playbook: [], source_meetings: 0, leader_name: leader_name || "全員", message: "リーダー面談がありません。/api/seed でサンプルを投入してください。" });
   }
 
-  const cacheKey = await computePlaybookCacheKey(meetings);
+  const cacheKey = computePlaybookCacheKey(meetings);
 
   // force=true でなければキャッシュヒットチェック
   if (!force) {
