@@ -19,10 +19,11 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const rawPath = req.query.path;
+  const toSegments = (s: string) => s.split("/").map((x) => x.trim()).filter(Boolean);
   const segments: string[] = Array.isArray(rawPath)
-    ? rawPath.flatMap((p) => String(p).split("/")).filter(Boolean)
+    ? rawPath.flatMap((p) => toSegments(String(p)))
     : typeof rawPath === "string" && rawPath
-    ? rawPath.split("/").filter(Boolean)
+    ? toSegments(rawPath)
     : [];
 
   try {
