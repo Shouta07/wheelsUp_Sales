@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createHash } from "node:crypto";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
+import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
@@ -52,9 +53,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sub = segments[1] || "";
 
     if (!sub) {
-      if (req.method === "GET") return await getTranscript(db, id, res);
+      if (req.method === "GET") return await getTranscript(db, id, req, res);
       if (req.method === "PUT") return await updateTranscript(db, id, req, res);
-      if (req.method === "DELETE") return await deleteTranscript(db, id, res);
+      if (req.method === "DELETE") return await deleteTranscript(db, id, req, res);
     }
 
     // --- /api/meetings/:id/summarize ---
@@ -80,6 +81,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
   const { deal_id, candidate_id, consultant_name, is_leader } = req.query;
+  const currentUser = getRequestUser(req);
+
+  // リーダー面談の閲覧はリーダー本人のみ。consultant_name が一致しないリーダーの面談も見せない。
+  if (is_leader === "true") {
+    if (!isLeader(currentUser)) {
+      return res.json({ transcripts: [], total: 0 });
+    }
+    if (consultant_name && typeof consultant_name === "string" && consultant_name !== currentUser) {
+      return res.json({ transcripts: [], total: 0 });
+    }
+  }
+
   let query = db.from("meeting_transcripts").select("*").order("recorded_at", { ascending: false });
   if (deal_id && typeof deal_id === "string") query = query.eq("deal_id", deal_id);
   if (candidate_id && typeof candidate_id === "string") query = query.eq("candidate_id", candidate_id);
@@ -88,11 +101,19 @@ async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: Ver
   if (is_leader === "false") query = query.eq("is_leader", false);
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ transcripts: data || [], total: (data || []).length });
+
+  // 念のためサーバ側でも閲覧不可な面談を弾く (二重防御)。
+  const filtered = (data || []).filter((m) => canReadMeeting(currentUser, m as { consultant_name?: string; is_leader?: boolean }));
+  return res.json({ transcripts: filtered, total: filtered.length });
 }
 
 async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
   const b = req.body;
+  const currentUser = getRequestUser(req);
+  // なりすまし防止: body の consultant_name と is_leader が、ヘッダのユーザーと一致しないと拒否。
+  if (!canWriteMeeting(currentUser, { consultant_name: b.consultant_name, is_leader: b.is_leader })) {
+    return send403(res, "他のメンバーとして書き込みできません");
+  }
   const { data, error } = await db.from("meeting_transcripts").insert({
     deal_id: b.deal_id || null,
     candidate_id: b.candidate_id || null,
@@ -123,14 +144,24 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
   return res.status(201).json({ ...data, auto_scoring: !!(b.transcript_text && b.transcript_text.trim().length > 50) });
 }
 
-async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
+async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
   const { data, error } = await db.from("meeting_transcripts").select("*").eq("id", id).single();
   if (error) return res.status(404).json({ error: "議事録が見つかりません" });
+  const currentUser = getRequestUser(req);
+  if (!canReadMeeting(currentUser, data as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を閲覧する権限がありません");
+  }
   return res.json(data);
 }
 
 async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
   const b = req.body;
+  // 既存レコードを取って書き込み権限を確認 (consultant_name/is_leader を見たい)
+  const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canWriteMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を編集する権限がありません");
+  }
   const updates: Record<string, unknown> = {};
   const fields = ["title", "transcript_text", "summary", "action_items", "key_points", "next_steps", "attendees", "duration_minutes", "deal_id", "candidate_id"];
   for (const f of fields) { if (b[f] !== undefined) updates[f] = b[f]; }
@@ -139,7 +170,12 @@ async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: str
   return res.json(data);
 }
 
-async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
+async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
+  const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canWriteMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を削除する権限がありません");
+  }
   const { error } = await db.from("meeting_transcripts").delete().eq("id", id);
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ deleted: true });
@@ -155,6 +191,11 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
 
   if (!audio_base64) {
     return res.status(400).json({ error: "audio_base64 が必要です" });
+  }
+
+  // 文字起こしも面談作成なので、なりすまし防止のため consultant_name/is_leader はヘッダのユーザーと一致する必要がある。
+  if (!canWriteMeeting(getRequestUser(req), { consultant_name, is_leader })) {
+    return send403(res, "他のメンバーとして書き込みできません");
   }
 
   // base64 文字列のサイズから元バイナリサイズを概算（Vercel ボディ上限 4.5MB ≒ base64 で 6MB）
@@ -347,6 +388,12 @@ async function scoreMeeting(
   req: VercelRequest,
   res: VercelResponse,
 ) {
+  // 採点する＝面談を読める権限が前提
+  const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canReadMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を採点する権限がありません");
+  }
   const force = req.method === "POST" && (req.body?.force === true || req.query?.force === "1");
   const result = await scoreMeetingInternal(db, id, { force });
   if ("error" in result) return res.status((result.status as number) || 500).json({ error: result.error });
@@ -606,6 +653,10 @@ async function addLeaderFeedback(
   req: VercelRequest,
   res: VercelResponse,
 ) {
+  // リーダーフィードバックを書けるのはリーダー本人のみ
+  if (!isLeader(getRequestUser(req))) {
+    return send403(res, "リーダーフィードバックはリーダーのみ追加できます");
+  }
   const { feedback } = req.body || {};
   if (!feedback || typeof feedback !== "string") {
     return res.status(400).json({ error: "feedback (string) is required" });

@@ -1,11 +1,22 @@
 const BASE = "/api";
 
-// サーバ側は service_role で動かしているためブラウザ認証ヘッダは不要。
-// 5人チーム運用なのでユーザー識別は consultant_name フィールドで管理する。
+// 5人の身内チーム運用。認証は無いが「誰として操作しているか」をヘッダで送り、
+// サーバ側で「他人になりすました書き込み」「他人のリーダー面談閲覧」を拒否する。
+function getCurrentUserHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const name = window.localStorage.getItem("wheelsup_current_user");
+  return name ? { "X-User-Name": name } : {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...getCurrentUserHeader(),
+    ...((init?.headers as Record<string, string>) || {}),
+  };
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers,
   });
   if (!res.ok) {
     let detail = `${res.status}`;
