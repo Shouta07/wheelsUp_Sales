@@ -996,9 +996,9 @@ export interface ContextualCoachingResponse {
   };
 }
 
-export async function scoreMeeting(id: string): Promise<MeetingScore> {
+export async function scoreMeeting(id: string, force = false): Promise<MeetingScore> {
   if (DEMO_MODE) return demoScoreMeeting(id);
-  return request(`/meetings/${id}/score`, { method: "POST" });
+  return request(`/meetings/${id}/score`, { method: "POST", body: JSON.stringify({ force }) });
 }
 
 export async function extractPlaybook(
