@@ -1,7 +1,5 @@
 import { useState } from "react";
 import ProspectingHome from "./ProspectingHome";
-import ProspectingReady from "./ProspectingReady";
-import ProspectingCompanies from "./ProspectingCompanies";
 import ProspectingCompanyDetail from "./ProspectingCompanyDetail";
 import ProspectingDiscovery from "./ProspectingDiscovery";
 import ProspectingCandidates from "./ProspectingCandidates";
@@ -10,28 +8,16 @@ import RunToolbar from "./RunToolbar";
 import ProgressPanel from "./ProgressPanel";
 import { isLive } from "../../lib/ra/queries";
 
-type View =
-  | { name: "home" }
-  | { name: "ready" }
-  | { name: "jobs" }
-  | { name: "companies" }
-  | { name: "company"; id: string }
-  | { name: "candidates" }
-  | { name: "discovery" };
-
-const TABS: { key: View["name"]; label: string }[] = [
-  { key: "home",       label: "ダッシュボード" },
-  { key: "ready",      label: "実行待ち" },
-  { key: "jobs",       label: "募集ポジション" },
-  { key: "companies",  label: "企業一覧" },
-  { key: "candidates", label: "候補者" },
-  { key: "discovery",  label: "新規発掘" },
-];
-
+/**
+ * RA 開拓 — タブを廃止して 1 画面に統合 (5/19 ユーザー要望)。
+ *
+ * - 通常は Home (進捗 / フォロー / 今日のアタック / 企業一覧) だけが見える
+ * - 候補者 / 募集ポジション / 新規発掘 は <details> で折りたたみ (開けば一覧)
+ * - 企業名クリックで CompanyDetail に切替 (戻るボタンあり)
+ */
 export default function ProspectingApp() {
-  const [view, setView] = useState<View>({ name: "home" });
+  const [openCompanyId, setOpenCompanyId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const openCompany = (id: string) => setView({ name: "company", id });
   const reload = () => setReloadKey((k) => k + 1);
 
   return (
@@ -53,39 +39,46 @@ export default function ProspectingApp() {
           </span>
         </header>
 
-        <nav className="mb-3 flex flex-wrap gap-1.5">
-          {TABS.map((t) => {
-            const active = view.name === t.key || (t.key === "companies" && view.name === "company");
-            return (
-              <button
-                key={t.key}
-                onClick={() => setView({ name: t.key } as View)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-                  active
-                    ? "bg-[#1CB0F6] text-white"
-                    : "bg-white text-[#4b4b4b] border border-[#e5e5e5] hover:bg-gray-50"
-                }`}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </nav>
-
         <RunToolbar onDone={reload} />
         <ProgressPanel refreshKey={reloadKey} />
 
-        <div key={reloadKey}>
-          {view.name === "home"       && <ProspectingHome onOpenCompany={openCompany} />}
-          {view.name === "ready"      && <ProspectingReady onOpenCompany={openCompany} />}
-          {view.name === "jobs"       && <ProspectingJobs onOpenCompany={openCompany} />}
-          {view.name === "companies"  && <ProspectingCompanies onOpenCompany={openCompany} />}
-          {view.name === "company"    && (
-            <ProspectingCompanyDetail id={view.id} onBack={() => setView({ name: "companies" })} />
-          )}
-          {view.name === "candidates" && <ProspectingCandidates />}
-          {view.name === "discovery"  && <ProspectingDiscovery />}
-        </div>
+        {openCompanyId ? (
+          <ProspectingCompanyDetail
+            id={openCompanyId}
+            onBack={() => setOpenCompanyId(null)}
+          />
+        ) : (
+          <div key={reloadKey} className="space-y-4">
+            <ProspectingHome onOpenCompany={setOpenCompanyId} />
+
+            <details className="rounded-xl border border-gray-200 bg-white shadow-sm">
+              <summary className="px-3 py-2 cursor-pointer text-xs font-black text-[#4b4b4b] bg-gray-50 rounded-t-xl">
+                📋 募集ポジション一覧 (クリックで展開)
+              </summary>
+              <div className="p-3">
+                <ProspectingJobs onOpenCompany={setOpenCompanyId} />
+              </div>
+            </details>
+
+            <details className="rounded-xl border border-gray-200 bg-white shadow-sm">
+              <summary className="px-3 py-2 cursor-pointer text-xs font-black text-[#4b4b4b] bg-gray-50 rounded-t-xl">
+                👥 候補者一覧 (クリックで展開)
+              </summary>
+              <div className="p-3">
+                <ProspectingCandidates />
+              </div>
+            </details>
+
+            <details className="rounded-xl border border-gray-200 bg-white shadow-sm">
+              <summary className="px-3 py-2 cursor-pointer text-xs font-black text-[#4b4b4b] bg-gray-50 rounded-t-xl">
+                🔍 新規発掘 (Gemini 提案企業, クリックで展開)
+              </summary>
+              <div className="p-3">
+                <ProspectingDiscovery />
+              </div>
+            </details>
+          </div>
+        )}
       </div>
     </div>
   );
