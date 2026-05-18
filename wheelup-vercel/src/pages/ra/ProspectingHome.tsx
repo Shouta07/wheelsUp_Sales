@@ -1,140 +1,446 @@
-import { useEffect, useState } from "react";
-import { getMonthlyKPI, listCompanyOverview, listReady } from "../../lib/ra/queries";
-import type { MonthlyKPI } from "../../lib/ra/queries";
-import type { CompanyOverview, ReadyRow } from "../../lib/ra/types";
+import { useEffect, useMemo, useState } from "react";
+import { isLive, listCompaniesEnriched, listReady, APPROACH_STATUSES } from "../../lib/ra/queries";
+import type { ApproachStatus, CompanyEnriched } from "../../lib/ra/queries";
+import type { ReadyRow, Priority } from "../../lib/ra/types";
+import { supabase } from "../../lib/supabase";
+import SendModal from "./SendModal";
 
-const MEETING_GOAL = 5; // 月の新規打ち合わせ設定目標 (2026/5/14 ミーティング決定)
+/**
+ * RA トップ画面 — タブ切替なしで「全部 1 画面で完結」する統合ダッシュボード。
+ *
+ * セクション (上から):
+ *   1. 進捗タイル (5 つ、コンパクト)
+ *   2. ⏰ フォロー対象 (3 日経過後 sent でその後反応なし)
+ *   3. 🎯 今日のアタック対象 (◎○ × 未送信、送信処理ボタン)
+ *   4. 📋 企業一覧 (246 社、フィルタ + アプローチ状況)
+ *
+ * 5/19 ユーザー要望:
+ *   - KPI 削除
+ *   - エラー表示を控えめに
+ *   - 全部 1 画面で見たい (タブ切替なし)
+ */
+
+type FollowUpRow = {
+  company_id: string;
+  job_id: string | null;
+  candidate_id: string | null;
+  company_name: string;
+  job_title: string | null;
+  candidate_name: string | null;
+  occurred_at: string;
+  days_since: number;
+};
 
 export default function ProspectingHome({
   onOpenCompany,
 }: {
   onOpenCompany: (id: string) => void;
 }) {
-  const [companies, setCompanies] = useState<CompanyOverview[]>([]);
+  const [companies, setCompanies] = useState<CompanyEnriched[]>([]);
   const [ready, setReady] = useState<ReadyRow[]>([]);
-  const [kpi, setKpi] = useState<MonthlyKPI | null>(null);
+  const [follows, setFollows] = useState<FollowUpRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [openSend, setOpenSend] = useState<ReadyRow | null>(null);
+  const [sentLocal, setSentLocal] = useState<Record<string, boolean>>({});
+  const [statusFilter, setStatusFilter] = useState<"" | ApproachStatus>("");
+  const [q, setQ] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState<"" | Priority>("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const [co, rd, k] = await Promise.all([
-          listCompanyOverview(),
-          listReady(20),
-          getMonthlyKPI(),
+        const [co, rd, fu] = await Promise.all([
+          listCompaniesEnriched(),
+          listReady(200),
+          listFollowUps(),
         ]);
         if (!alive) return;
         setCompanies(co);
         setReady(rd);
-        setKpi(k);
+        setFollows(fu);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
+
+  // 進捗タイルの集計
+  const stats = useMemo(() => ({
+    total: companies.length,
+    withUrl: companies.filter((c) => c.recruit_page_url).length,
+    crawled: companies.filter((c) => c.last_crawled_at).length,
+    openJobs: companies.reduce((s, c) => s + (c.open_jobs ?? 0), 0),
+    strong: companies.reduce((s, c) => s + (c.strong_matches ?? 0), 0),
+    untouched: companies.filter((c) => c.approach_status === "untouched").length,
+  }), [companies]);
+
+  // 企業フィルタ
+  const filteredCompanies = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return companies.filter((c) => {
+      if (ql && !c.name.toLowerCase().includes(ql)) return false;
+      if (priorityFilter && c.priority !== priorityFilter) return false;
+      if (statusFilter && c.approach_status !== statusFilter) return false;
+      return true;
+    });
+  }, [companies, q, priorityFilter, statusFilter]);
+
+  // ステータス別カウント
+  const statusCounts = useMemo(() => {
+    const c: Record<ApproachStatus, number> = { untouched: 0, sent: 0, replied: 0, meeting: 0, closed: 0 };
+    for (const co of companies) c[co.approach_status] = (c[co.approach_status] ?? 0) + 1;
+    return c;
+  }, [companies]);
+
+  // ready のソート (◎ → ○ → △、スコア降順)
+  const sortedReady = useMemo(() => {
+    return [...ready].sort((a, b) => {
+      const gw = (g: string) => g === "◎" ? 0 : g === "○" ? 1 : 2;
+      if (gw(a.grade) !== gw(b.grade)) return gw(a.grade) - gw(b.grade);
+      return (b.score ?? 0) - (a.score ?? 0);
+    });
+  }, [ready]);
 
   if (loading) return <div className="text-sm text-gray-500">読み込み中…</div>;
 
-  const total = companies.length;
-  const s = companies.filter((c) => c.priority === "S").length;
-  const a = companies.filter((c) => c.priority === "A").length;
-  const openJobs = companies.reduce((acc, c) => acc + (c.open_jobs ?? 0), 0);
-  const strong = companies.reduce((acc, c) => acc + (c.strong_matches ?? 0), 0);
-
-  const goalPct = kpi ? Math.min(100, (kpi.meeting / MEETING_GOAL) * 100) : 0;
-  const monthLabel = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "short" });
-
   return (
-    <div className="space-y-5">
-      {/* 月次 KPI - 辻内さん「月 5 件目標」の進捗 */}
-      <section className="rounded-2xl bg-gradient-to-br from-[#58CC02]/10 to-[#1CB0F6]/10 border border-[#e5e5e5] p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h2 className="text-sm font-black text-[#4b4b4b]">{monthLabel}の KPI</h2>
-            <p className="text-[10px] text-[#afafaf]">月 5 件の新規打ち合わせ設定 (目標)</p>
-          </div>
-          <div className="text-right">
-            <div className="text-xl font-black text-[#4b4b4b] tabular-nums">
-              {kpi?.meeting ?? 0}
-              <span className="text-xs text-[#afafaf]"> / {MEETING_GOAL}</span>
-            </div>
-            <div className="text-[10px] text-[#afafaf]">打ち合わせ確定</div>
-          </div>
-        </div>
-        {/* Progress bar */}
-        <div className="w-full bg-white rounded-full h-2 overflow-hidden">
-          <div
-            className="h-full bg-[#58CC02] transition-all"
-            style={{ width: `${goalPct}%` }}
-          />
-        </div>
-        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          <Kpi label="送信" value={kpi?.sent ?? 0} />
-          <Kpi label="商談化率" value={kpi?.meeting_rate != null ? `${(kpi.meeting_rate * 100).toFixed(1)}%` : "-"} />
-          <Kpi label="◎ 判定" value={kpi?.double_circle_total ?? 0} />
-          <Kpi label="◎ 的中率" value={kpi?.double_circle_hit_rate != null ? `${(kpi.double_circle_hit_rate * 100).toFixed(1)}%` : "-"} />
-        </div>
+    <div className="space-y-4">
+      {/* ─── 1. 進捗タイル (コンパクト) ───────────────── */}
+      <section className="grid grid-cols-3 md:grid-cols-6 gap-2">
+        <Tile label="企業" value={stats.total} color="gray" />
+        <Tile label="URL補完済" value={stats.withUrl} color="gray" />
+        <Tile label="求人(公開)" value={stats.openJobs} color="gray" />
+        <Tile label="◎○マッチ" value={stats.strong} color="green" />
+        <Tile label="実行待ち" value={ready.length} color="blue" />
+        <Tile label="未接触" value={stats.untouched} color="amber" />
       </section>
 
-      {/* カバレッジ系 */}
-      <section className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <Stat label="ターゲット企業" value={total} />
-        <Stat label="S ランク" value={s} />
-        <Stat label="A ランク" value={a} />
-        <Stat label="公開求人" value={openJobs} />
-        <Stat label="◎○ マッチ" value={strong} accent />
-      </section>
-
-      <section className="rounded-xl bg-white border border-gray-200 shadow-sm p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-black text-[#4b4b4b]">実行待ち（直近 20 件）</h2>
-          <span className="text-[10px] font-bold text-[#afafaf]">{ready.length}件</span>
-        </div>
-        {ready.length === 0 ? (
-          <p className="text-xs text-gray-500">
-            まだありません。<code>📥 シード投入</code> → <code>🤖 URL補完</code> → <code>🕸 クロール</code> → <code>🎯 マッチ</code> の順に押してください。
-          </p>
-        ) : (
-          <ul className="divide-y divide-gray-100">
-            {ready.map((r) => (
-              <li key={r.match_id} className="py-2 flex items-center gap-2 text-xs">
-                <span className={`w-5 text-center font-black ${r.grade === "◎" ? "text-green-600" : "text-blue-500"}`}>
-                  {r.grade}
-                </span>
-                <span className="w-10 tabular-nums text-gray-500">{r.score}</span>
-                <button
-                  onClick={() => onOpenCompany(r.company_id)}
-                  className="w-44 truncate text-left font-bold text-[#4b4b4b] hover:underline"
-                >
-                  {r.company_name}
+      {/* ─── 2. ⏰ フォロー対象 ─────────────────────── */}
+      {follows.length > 0 && (
+        <section className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-base">⏰</span>
+            <span className="font-black text-amber-900 text-sm">フォロー対象 ({follows.length} 件)</span>
+            <span className="text-[10px] text-amber-700">3 日以上前に送信、その後反応なし</span>
+          </div>
+          <ul className="space-y-1">
+            {follows.slice(0, 5).map((f, i) => (
+              <li key={i} className="flex items-center gap-2 text-xs">
+                <span className="text-[10px] font-bold text-amber-700 tabular-nums w-12">{f.days_since}日前</span>
+                <button onClick={() => onOpenCompany(f.company_id)} className="font-bold text-[#4b4b4b] hover:underline">
+                  {f.company_name}
                 </button>
-                <span className="flex-1 truncate text-gray-500">{r.job_title}</span>
-                <span className="w-16 text-right text-[10px] text-gray-400">{r.candidate_name}</span>
+                <span className="text-gray-500 truncate flex-1">
+                  {f.candidate_name ? `${f.candidate_name} → ${f.job_title ?? ""}` : f.job_title}
+                </span>
               </li>
             ))}
+            {follows.length > 5 && (
+              <li className="text-[10px] text-amber-700">…他 {follows.length - 5} 件</li>
+            )}
           </ul>
+        </section>
+      )}
+
+      {/* ─── 3. 🎯 今日のアタック対象 ─────────────────── */}
+      <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+          <span className="text-xs font-black text-[#4b4b4b]">
+            🎯 今日のアタック対象 ({sortedReady.length} 件)
+          </span>
+          <span className="text-[10px] text-[#afafaf]">◎○ × 未送信、◎ → ○ → △ の優先順</span>
+        </div>
+        {sortedReady.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-gray-400">
+            {!isLive ? (
+              <>モックモード — 🤖 URL補完 → 🕸 クロール → 🎯 マッチ を回すと並びます</>
+            ) : (
+              <>該当なし。求人クロール → 候補者マッチを実行してください</>
+            )}
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="text-left text-[10px] uppercase text-gray-500">
+              <tr>
+                <th className="px-3 py-1.5">判定</th>
+                <th className="px-3 py-1.5">点数</th>
+                <th className="px-3 py-1.5">企業</th>
+                <th className="px-3 py-1.5">求人</th>
+                <th className="px-3 py-1.5">候補者</th>
+                <th className="px-3 py-1.5">理由 (抜粋)</th>
+                <th className="px-3 py-1.5 text-right">アクション</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedReady.slice(0, 50).map((r) => (
+                <tr key={r.match_id} className="border-t border-gray-100 hover:bg-gray-50/50">
+                  <td className={`px-3 py-1.5 font-black ${r.grade === "◎" ? "text-green-600" : r.grade === "○" ? "text-blue-500" : "text-gray-500"}`}>
+                    {r.grade}
+                  </td>
+                  <td className="px-3 py-1.5 tabular-nums">{r.score}</td>
+                  <td className="px-3 py-1.5">
+                    <button onClick={() => onOpenCompany(r.company_id)} className="font-bold text-[#4b4b4b] hover:underline">
+                      {r.company_name}
+                    </button>
+                    <span className="ml-1.5 inline-flex items-center rounded-full bg-gray-100 px-1.5 text-[9px] text-gray-500">
+                      {r.company_priority}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 max-w-[180px] truncate" title={r.job_title}>
+                    {r.job_url ? <a href={r.job_url} target="_blank" rel="noreferrer" className="hover:underline">{r.job_title}</a> : r.job_title}
+                  </td>
+                  <td className="px-3 py-1.5 text-gray-500">{r.candidate_name}</td>
+                  <td className="px-3 py-1.5 max-w-[260px] text-[10px] text-gray-600 truncate" title={(r.reasons ?? []).join(" / ")}>
+                    {(r.reasons ?? []).slice(0, 2).join(" / ")}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    {sentLocal[r.match_id] ? (
+                      <span className="text-[10px] text-green-600 font-bold">✓ 送信記録済</span>
+                    ) : (
+                      <button
+                        onClick={() => setOpenSend(r)}
+                        className="px-2.5 py-1 rounded-lg text-[10px] font-black bg-[#58CC02] text-white hover:bg-[#46a302]"
+                        style={{ borderBottom: "2px solid #46a302" }}
+                      >
+                        ✉️ 送信処理
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {sortedReady.length > 50 && (
+          <div className="px-3 py-2 text-[10px] text-center text-[#afafaf] border-t border-gray-100">
+            {sortedReady.length - 50} 件を非表示中
+          </div>
         )}
       </section>
+
+      {/* ─── 4. 📋 企業一覧 ──────────────────────────── */}
+      <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-black text-[#4b4b4b]">
+              📋 企業一覧 ({filteredCompanies.length} / {companies.length} 件)
+            </span>
+          </div>
+
+          {/* フィルタ行 */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="企業名で絞り込み"
+              className="rounded-lg border border-gray-200 px-2 py-1 text-xs w-40"
+            />
+            <select
+              value={priorityFilter}
+              onChange={(e) => setPriorityFilter(e.target.value as "" | Priority)}
+              className="rounded-lg border border-gray-200 px-2 py-1 text-xs"
+            >
+              <option value="">優先度すべて</option>
+              <option value="S">S</option><option value="A">A</option><option value="B">B</option><option value="C">C</option>
+            </select>
+            <div className="flex gap-1 ml-1">
+              <FilterChip active={statusFilter === ""} onClick={() => setStatusFilter("")} label="すべて" count={companies.length} />
+              {APPROACH_STATUSES.map((s) => (
+                <FilterChip
+                  key={s.key}
+                  active={statusFilter === s.key}
+                  onClick={() => setStatusFilter(statusFilter === s.key ? "" : s.key)}
+                  label={s.label}
+                  count={statusCounts[s.key] ?? 0}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 text-left text-[10px] uppercase text-gray-500">
+            <tr>
+              <th className="px-2 py-1.5 w-10">優先</th>
+              <th className="px-2 py-1.5">企業</th>
+              <th className="px-2 py-1.5">カテゴリ</th>
+              <th className="px-2 py-1.5">アプローチ</th>
+              <th className="px-2 py-1.5 text-right">送信</th>
+              <th className="px-2 py-1.5 text-right">返信</th>
+              <th className="px-2 py-1.5 text-right">商談</th>
+              <th className="px-2 py-1.5">最終</th>
+              <th className="px-2 py-1.5 text-right">求人</th>
+              <th className="px-2 py-1.5 text-right">◎○</th>
+              <th className="px-2 py-1.5">送信先</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredCompanies.slice(0, 100).map((c) => {
+              const form = c.contact_paths.find((p) => p.kind === "form");
+              const email = c.contact_paths.find((p) => p.kind === "email");
+              const statusDef = APPROACH_STATUSES.find((s) => s.key === c.approach_status)!;
+              const counts = c.activity_counts;
+              return (
+                <tr key={c.id} className="border-t border-gray-100">
+                  <td className="px-2 py-1.5 font-bold">{c.priority}</td>
+                  <td className="px-2 py-1.5">
+                    <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
+                      {c.name}
+                    </button>
+                  </td>
+                  <td className="px-2 py-1.5 text-gray-500">{c.category ?? "-"}</td>
+                  <td className="px-2 py-1.5">
+                    <span className={`text-[10px] font-bold ${statusDef.color}`}>● {statusDef.label}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.sent)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.replied)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.meeting)}</td>
+                  <td className="px-2 py-1.5 text-[10px] text-gray-500 whitespace-nowrap">
+                    {c.last_activity_at ? formatAgo(c.last_activity_at) : "-"}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{c.open_jobs}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{c.strong_matches}</td>
+                  <td className="px-2 py-1.5 text-[10px]">
+                    <div className="flex gap-1">
+                      {form && (
+                        <a href={form.url} target="_blank" rel="noreferrer" className="px-1.5 py-0.5 rounded-full bg-[#1CB0F6] text-white font-bold">📝</a>
+                      )}
+                      {email && (
+                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer" className="px-1.5 py-0.5 rounded-full bg-[#58CC02] text-white font-bold">✉</a>
+                      )}
+                      {!form && !email && c.recruit_page_url && (
+                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="text-gray-400 hover:underline">採用P</a>
+                      )}
+                      {!form && !email && !c.recruit_page_url && (
+                        <span className="text-gray-300">未</span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filteredCompanies.length > 100 && (
+          <div className="px-3 py-2 text-[10px] text-center text-[#afafaf] border-t border-gray-100">
+            {filteredCompanies.length - 100} 件を非表示中 — フィルタで絞り込んでください
+          </div>
+        )}
+      </section>
+
+      {openSend && (
+        <SendModal
+          row={openSend}
+          onClose={() => setOpenSend(null)}
+          onSent={() => {
+            setSentLocal((s) => ({ ...s, [openSend.match_id]: true }));
+            setOpenSend(null);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+// ─── ヘルパ ──────────────────────────────────────────────
+
+function Tile({ label, value, color }: { label: string; value: number; color: "gray" | "green" | "blue" | "amber" }) {
+  const bg = {
+    gray:  "bg-gray-50 border-gray-200",
+    green: "bg-green-50 border-green-200 ring-1 ring-green-300",
+    blue:  "bg-blue-50 border-blue-200 ring-1 ring-blue-300",
+    amber: "bg-amber-50 border-amber-200",
+  }[color];
   return (
-    <div className={`rounded-xl border border-gray-200 bg-white p-3 ${accent ? "ring-2 ring-[#58CC02]/30" : ""}`}>
-      <div className="text-[10px] font-bold text-[#afafaf] uppercase">{label}</div>
-      <div className="mt-0.5 text-2xl font-black tabular-nums text-[#4b4b4b]">{value}</div>
+    <div className={`rounded-xl border p-2 ${bg}`}>
+      <div className="text-[9px] font-bold text-[#afafaf] uppercase truncate">{label}</div>
+      <div className="text-2xl font-black tabular-nums text-[#4b4b4b] leading-none mt-0.5">{value}</div>
     </div>
   );
 }
 
-function Kpi({ label, value }: { label: string; value: string | number }) {
+function FilterChip({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count: number }) {
   return (
-    <div className="rounded-lg bg-white p-2">
-      <div className="text-[10px] font-bold text-[#afafaf]">{label}</div>
-      <div className="text-base font-black text-[#4b4b4b] tabular-nums">{value}</div>
-    </div>
+    <button
+      onClick={onClick}
+      className={`px-2 py-1 rounded-full text-[10px] font-bold ${
+        active ? "bg-[#1CB0F6] text-white" : "bg-white border border-[#e5e5e5] text-[#4b4b4b] hover:bg-gray-50"
+      }`}
+    >
+      {label} {count}
+    </button>
   );
+}
+
+function numOrDash(n: number | undefined): string {
+  return n && n > 0 ? String(n) : "-";
+}
+
+function formatAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "数秒前";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}時間前`;
+  if (diff < 86_400_000 * 30) return `${Math.floor(diff / 86_400_000)}日前`;
+  return new Date(iso).toLocaleDateString("ja-JP");
+}
+
+async function listFollowUps(): Promise<FollowUpRow[]> {
+  if (!isLive) return [];
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: acts } = await supabase
+    .from("ra_activities")
+    .select("company_id,job_id,candidate_id,kind,occurred_at")
+    .gte("occurred_at", cutoff)
+    .order("occurred_at", { ascending: false })
+    .limit(2000);
+  if (!acts) return [];
+
+  type Key = string;
+  const latestByKey = new Map<Key, { kind: string; occurred_at: string }>();
+  for (const a of acts as Array<{ company_id: string | null; job_id: string | null; candidate_id: string | null; kind: string; occurred_at: string }>) {
+    const k = `${a.company_id ?? ""}|${a.job_id ?? ""}|${a.candidate_id ?? ""}`;
+    if (!latestByKey.has(k)) latestByKey.set(k, { kind: a.kind, occurred_at: a.occurred_at });
+  }
+
+  const threshold = 3 * 24 * 60 * 60 * 1000;
+  const followKeys: { company_id: string; job_id: string | null; candidate_id: string | null; occurred_at: string; days: number }[] = [];
+  for (const [k, v] of latestByKey) {
+    if (v.kind !== "sent") continue;
+    const [companyId, jobId, candId] = k.split("|");
+    const age = Date.now() - new Date(v.occurred_at).getTime();
+    if (age >= threshold && companyId) {
+      followKeys.push({ company_id: companyId, job_id: jobId || null, candidate_id: candId || null, occurred_at: v.occurred_at, days: Math.floor(age / (24 * 60 * 60 * 1000)) });
+    }
+  }
+
+  const companyIds = Array.from(new Set(followKeys.map((f) => f.company_id)));
+  const jobIds = Array.from(new Set(followKeys.map((f) => f.job_id).filter(Boolean) as string[]));
+  const candIds = Array.from(new Set(followKeys.map((f) => f.candidate_id).filter(Boolean) as string[]));
+
+  const [companiesRes, jobsRes, candsRes] = await Promise.all([
+    companyIds.length > 0 ? supabase.from("ra_companies").select("id,name").in("id", companyIds) : Promise.resolve({ data: [] }),
+    jobIds.length     > 0 ? supabase.from("ra_jobs").select("id,title").in("id", jobIds)         : Promise.resolve({ data: [] }),
+    candIds.length    > 0 ? supabase.from("ra_candidates").select("id,name").in("id", candIds)    : Promise.resolve({ data: [] }),
+  ]);
+  const compById = new Map((companiesRes.data ?? []).map((r: { id: string; name: string }) => [r.id, r.name]));
+  const jobById  = new Map((jobsRes.data ?? []).map((r: { id: string; title: string }) => [r.id, r.title]));
+  const candById = new Map((candsRes.data ?? []).map((r: { id: string; name: string }) => [r.id, r.name]));
+
+  return followKeys
+    .map((f) => ({
+      company_id: f.company_id,
+      job_id: f.job_id,
+      candidate_id: f.candidate_id,
+      company_name: compById.get(f.company_id) ?? "(unknown)",
+      job_title: f.job_id ? (jobById.get(f.job_id) ?? null) : null,
+      candidate_name: f.candidate_id ? (candById.get(f.candidate_id) ?? null) : null,
+      occurred_at: f.occurred_at,
+      days_since: f.days,
+    }))
+    .sort((a, b) => b.days_since - a.days_since);
 }
