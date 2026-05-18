@@ -17,5 +17,10 @@
         { "key": "Cache-Control", "value": "no-store" }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/meetings/index.ts": {
+      "includeFiles": "api/_data/**"
+    }
+  }
 }
