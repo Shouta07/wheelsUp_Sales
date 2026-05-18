@@ -9,6 +9,7 @@ import {
   summarizeMeeting,
   addLeaderFeedback,
   scoreMeeting,
+  manualScoreMeeting,
   deleteMeeting,
   type MeetingTranscript,
   type MeetingScore,
@@ -113,6 +114,8 @@ export default function MeetingHub() {
   // 採点中の面談ID。null なら誰も採点していない。1 件ずつ採点する制約をフロントで強制する。
   const [scoringId, setScoringId] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  // Gemini クォータ枯渇 / 過負荷を検出した場合に UI に持続表示するためのフラグ。
+  const [aiUnavailable, setAiUnavailable] = useState<null | "quota" | "overloaded">(null);
 
   const handleRescore = async (id: string) => {
     if (scoringId) return; // 他の採点中はクリック無視 (運用面のクォータ保護)
@@ -122,7 +125,13 @@ export default function MeetingHub() {
     setScoringId(id);
     try {
       await scoreMeeting(id, force);
+      setAiUnavailable(null); // 成功したらバナー解除
       qc.invalidateQueries({ queryKey: ["meetings"] });
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      if (msg.includes("クォータ") || msg.includes("429") || msg.includes("quota")) setAiUnavailable("quota");
+      else if (msg.includes("混雑") || msg.includes("503") || msg.includes("UNAVAILABLE")) setAiUnavailable("overloaded");
+      throw err; // 既存のエラー表示は維持
     } finally {
       setScoringId(null);
     }
@@ -181,6 +190,17 @@ export default function MeetingHub() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
           </div>
           <span className="text-base font-extrabold text-[#4b4b4b]">面談ライブラリ</span>
+          {/* Gemini 利用可否バッジ */}
+          {aiUnavailable === "quota" && (
+            <span className="text-[9px] font-extrabold text-duo-red px-2 py-0.5 rounded-full bg-duo-red/10 border border-duo-red/30" title="Gemini 無料枠枯渇。明日 17 時頃にリセット予定。小林の手動採点は使えます">
+              🔋 AI 採点休止中
+            </span>
+          )}
+          {aiUnavailable === "overloaded" && (
+            <span className="text-[9px] font-extrabold text-duo-orange px-2 py-0.5 rounded-full bg-duo-orange/10 border border-duo-orange/30" title="Gemini 過負荷。数分で復旧見込み">
+              ⏳ AI 一時的に混雑
+            </span>
+          )}
         </div>
         <button
           onClick={() => setShowUpload(!showUpload)}
@@ -397,6 +417,7 @@ function MeetingEntry({
   const [fbSaving, setFbSaving] = useState(false);
   const [rescoreError, setRescoreError] = useState<string | null>(null);
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
+  const [manualOpen, setManualOpen] = useState(false);
   const transcriptDetailsRef = useRef<HTMLDetailsElement>(null);
   const transcriptPreRef = useRef<HTMLPreElement>(null);
   const rescoring = isScoringThis;
@@ -533,6 +554,16 @@ function MeetingEntry({
                 再採点中...
               </span>
             )}
+            {/* 小林専用: AI を使わず手動採点。クォータ枯渇時の救済 */}
+            {isLeaderUser && m.transcript_text && (
+              <button
+                onClick={() => setManualOpen(!manualOpen)}
+                className="text-[10px] font-extrabold text-duo-purple px-3 py-1.5 rounded-xl bg-duo-purple/10 hover:bg-duo-purple/20 transition-colors"
+                title="AI を使わず小林本人が直接スコアを入力"
+              >
+                ✏️ {score?._source === "manual_leader" ? "手動編集" : "手動採点"}
+              </button>
+            )}
             {canDelete && (
               <button
                 onClick={() => onDelete(m.id, m.title)}
@@ -547,6 +578,19 @@ function MeetingEntry({
             <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
               <p className="text-[11px] font-bold text-duo-red leading-snug">{rescoreError}</p>
             </div>
+          )}
+
+          {/* 手動採点フォーム (小林専用) */}
+          {isLeaderUser && manualOpen && (
+            <ManualScoreForm
+              meetingId={m.id}
+              initial={score}
+              onSaved={() => {
+                setManualOpen(false);
+                onFeedbackSaved();
+              }}
+              onCancel={() => setManualOpen(false)}
+            />
           )}
 
           {/* 流し込んだ議事録本文 (折りたたみ・キーモーメントクリックで該当箇所に自動スクロール) */}
@@ -701,6 +745,120 @@ const DIMS = [
   { key: "closing", label: "前進", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
+
+// 小林専用の手動採点フォーム。Gemini を使わず 5 軸スコアを直接 DB 保存。
+function ManualScoreForm({
+  meetingId,
+  initial,
+  onSaved,
+  onCancel,
+}: {
+  meetingId: string;
+  initial: MeetingScore | null | undefined;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [scores, setScores] = useState({
+    needs: initial?.scores?.needs ?? 5,
+    proposal: initial?.scores?.proposal ?? 5,
+    trust: initial?.scores?.trust ?? 5,
+    closing: initial?.scores?.closing ?? 5,
+    intel: initial?.scores?.intel ?? 5,
+  });
+  const [evidence, setEvidence] = useState({
+    needs: initial?.evidence?.needs ?? "",
+    proposal: initial?.evidence?.proposal ?? "",
+    trust: initial?.evidence?.trust ?? "",
+    closing: initial?.evidence?.closing ?? "",
+    intel: initial?.evidence?.intel ?? "",
+  });
+  const [improvements, setImprovements] = useState((initial?.improvements ?? []).join("\n"));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await manualScoreMeeting(meetingId, {
+        scores,
+        evidence,
+        improvements: improvements.split("\n").map((s) => s.trim()).filter(Boolean),
+      });
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="rounded-xl bg-duo-purple/5 border-2 border-duo-purple/30 p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-extrabold text-duo-purple">✏️ 小林手動採点 (AI 不使用)</p>
+        <button onClick={onCancel} className="text-[10px] font-bold text-[#777] hover:text-[#4b4b4b]">キャンセル</button>
+      </div>
+      <p className="text-[10px] font-bold text-[#777]">Gemini クォータ枯渇時や AI 採点を上書きしたい時に使用。即座に DB 保存されます。</p>
+
+      {/* スコア入力 */}
+      <div className="space-y-2">
+        {DIMS.map(({ key, label, color }) => (
+          <div key={key} className="flex items-start gap-2">
+            <div className="w-20 shrink-0">
+              <div className="text-[11px] font-extrabold" style={{ color }}>{label}</div>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={scores[key as keyof typeof scores]}
+                onChange={(e) => setScores({ ...scores, [key]: Math.max(0, Math.min(10, parseInt(e.target.value || "0", 10))) })}
+                className="w-16 text-center text-sm font-extrabold border-2 border-[#e5e5e5] rounded-lg px-1 py-0.5 focus:border-duo-purple focus:outline-none"
+              />
+              <div className="text-[9px] font-bold text-[#aaa] mt-0.5">/ 10</div>
+            </div>
+            <textarea
+              value={evidence[key as keyof typeof evidence]}
+              onChange={(e) => setEvidence({ ...evidence, [key]: e.target.value })}
+              placeholder={`${label}の根拠 (任意・100字以内)`}
+              rows={2}
+              maxLength={300}
+              className="flex-1 text-[10px] font-bold border-2 border-[#e5e5e5] rounded-lg px-2 py-1 focus:border-duo-purple focus:outline-none resize-none"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* 改善ポイント */}
+      <div>
+        <div className="text-[11px] font-extrabold text-[#4b4b4b] mb-1">改善ポイント (1 行 1 件・任意)</div>
+        <textarea
+          value={improvements}
+          onChange={(e) => setImprovements(e.target.value)}
+          placeholder="例:&#10;クロージングで期限を切れていない&#10;他社状況をもっと聞き出すべき"
+          rows={3}
+          className="w-full text-[10px] font-bold border-2 border-[#e5e5e5] rounded-lg px-2 py-1 focus:border-duo-purple focus:outline-none resize-none"
+        />
+      </div>
+
+      {/* 合計表示 */}
+      <div className="text-[10px] font-bold text-[#777]">
+        合計: {Object.values(scores).reduce((s, v) => s + v, 0)} / 50
+      </div>
+
+      {error && (
+        <div className="text-[10px] font-bold text-duo-red bg-duo-red/10 p-2 rounded-lg">{error}</div>
+      )}
+
+      <button
+        onClick={save}
+        disabled={saving}
+        className="btn-duo btn-duo-blue w-full !py-2 !text-xs disabled:opacity-40"
+      >
+        {saving ? "保存中..." : "💾 採点を保存"}
+      </button>
+    </div>
+  );
+}
 
 // "午前10:05" / "午後06:23" / "18:23" を 0:00 起点の分に換算。失敗時 null。
 function timestampToMinutes(raw: string): number | null {
