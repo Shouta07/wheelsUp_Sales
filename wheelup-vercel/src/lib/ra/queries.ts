@@ -256,7 +256,9 @@ export async function listOpenJobsWithContact(): Promise<JobWithCompany[]> {
 //      URL を知ってる人しかアクセスしないので運用上は許容範囲。
 //      公開する時は Supabase Auth ベースに切り替える。
 
-const CLIENT_SECRET = (import.meta.env.VITE_CRON_SECRET as string | undefined) ?? "";
+// trim() で前後のホワイトスペース (タブ/改行/空白) を除去。
+// Vercel env への貼り付け時にタブ等が紛れ込むケースが多々あるための防御。
+const CLIENT_SECRET = ((import.meta.env.VITE_CRON_SECRET as string | undefined) ?? "").trim();
 
 async function authParts(): Promise<{ headers: Record<string, string>; querySuffix: string }> {
   // Supabase ログイン優先

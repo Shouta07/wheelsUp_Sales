@@ -32,9 +32,11 @@ export const config = { maxDuration: 60 };
 type DB = ReturnType<typeof getSupabaseAdmin>;
 
 async function authorize(req: VercelRequest, db: DB): Promise<{ ok: true } | { ok: false; status: number; body: object }> {
-  const secret = process.env.CRON_SECRET;
-  const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-  const querySecret = typeof req.query.secret === "string" ? req.query.secret : "";
+  // すべての値で trim() を実行。Vercel env / curl での貼り付け時に
+  // 前後にタブや改行が混入するケースに対する防御。
+  const secret = (process.env.CRON_SECRET ?? "").trim();
+  const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+  const querySecret = (typeof req.query.secret === "string" ? req.query.secret : "").trim();
 
   // 1) Shared-secret path (cron / curl).
   if (secret && (querySecret === secret || bearer === secret)) return { ok: true };
