@@ -23,6 +23,10 @@ export default function ProspectingApp() {
   return (
     <div className="min-h-screen bg-[#f7f7f7]">
       <div className="mx-auto max-w-5xl px-4 py-6">
+        {/* DEPLOY-CHECK 2026-05-18 15:30 — もしこの赤帯が見えなければ Vercel デプロイ失敗 */}
+        <div className="mb-3 rounded-md bg-red-600 text-white text-xs font-bold px-3 py-1.5 text-center">
+          🚧 DEPLOY-CHECK 2026-05-18 — この赤帯が見えればデプロイ成功 / 見えなければ Vercel ダッシュボードを要確認
+        </div>
         <header className="mb-4 flex items-end justify-between">
           <div>
             <h1 className="text-xl font-black text-[#4b4b4b]">RA 新規開拓</h1>
