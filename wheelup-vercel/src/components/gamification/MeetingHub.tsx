@@ -257,6 +257,44 @@ export default function MeetingHub() {
         </div>
       )}
 
+      {/* リーダータブで小林本人がいる時、生データ再シードボタン (1 回限りの管理操作) */}
+      {isLeaderUser && tab === "leader" && (
+        <div className="mb-3 rounded-2xl border-2 border-dashed border-[#cc7800] bg-[#fff7ed] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-extrabold text-[#4b4b4b]">⚙️ リーダー面談 15 件を再シード</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                既存のリーダー面談を全削除して、アップロード済みの 15 件で置き換えます (1 回限りの管理操作)。
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!window.confirm("既存のリーダー面談を全削除して 15 件で置き換えます。よろしいですか？")) return;
+                try {
+                  const res = await fetch("/api/meetings/reseed-leader", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "X-User-Name": encodeURIComponent(currentUser || ""),
+                    },
+                  });
+                  const json = await res.json();
+                  if (!res.ok) throw new Error(json.error || `${res.status}`);
+                  window.alert(`再シード完了: 削除 ${json.deleted} 件 / 投入 ${json.inserted} 件`);
+                  qc.invalidateQueries({ queryKey: ["meetings"] });
+                } catch (err) {
+                  window.alert(`再シード失敗: ${(err as Error).message}`);
+                }
+              }}
+              className="btn-duo !px-3 !py-2 !text-[10px] shrink-0 text-white"
+              style={{ backgroundColor: "#cc7800", borderBottomColor: "#a55f00" }}
+            >
+              再シード実行
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* リーダータブで小林本人がいる時、未採点のリーダー面談を一括採点するボタン */}
       {isLeaderUser && tab === "leader" && (() => {
         const unscored = (leaderMeetings?.transcripts || []).filter(
