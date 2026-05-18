@@ -1,4 +1,5 @@
 import { useGamification } from "../gamification/GamificationProvider";
+import { IS_DEMO_MODE } from "../api/client";
 import MeetingHub from "../components/gamification/MeetingHub";
 import SkillRadar from "../components/gamification/SkillRadar";
 import NotificationFeed from "../components/gamification/NotificationFeed";
@@ -20,9 +21,22 @@ export default function Home() {
             {currentUser ? `${currentUser}さん` : "面談フィードバック"}
           </h1>
           <p className="text-xs font-bold text-[#afafaf] mt-0.5">
-            面談を入れるだけ。AIが自動で採点して、リーダーと比較します
+            面談を保存して「▶ AI 採点する」を押すと、AIがスコアと改善ポイントを返します
           </p>
         </div>
+
+        {IS_DEMO_MODE && (
+          <div className="mb-4 rounded-2xl border-2 border-[#fbbf24] bg-[#fffbeb] px-4 py-3">
+            <p className="text-xs font-extrabold text-[#92400e]">
+              ⚠️ デモモード（VITE_SUPABASE_URL 未設定）
+            </p>
+            <p className="text-[11px] font-bold text-[#92400e] mt-0.5 leading-snug">
+              保存・採点はブラウザ内のみで永続化されません。本番運用には Vercel の環境変数に
+              VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY、サーバ側に SUPABASE_URL /
+              SUPABASE_SERVICE_ROLE_KEY / GEMINI_API_KEY を設定してください。
+            </p>
+          </div>
+        )}
 
         {/* 2-column: Meetings (main) + Gamification (side) */}
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">

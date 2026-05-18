@@ -116,6 +116,70 @@ export async function listDiscovery(): Promise<DiscoveryRow[]> {
   return (data ?? []) as DiscoveryRow[];
 }
 
+/**
+ * 月次 KPI — 「月 5 件の打ち合わせ設定」目標 (2026/5/14 ミーティング) に直結する数値。
+ *   sent     : 今月の送信件数 (kind='sent')
+ *   meeting  : 今月の打ち合わせ確定 (kind='meeting')
+ *   closed   : 今月の成約 (kind='closed')
+ *   meeting_rate: meeting / sent
+ *   double_circle_hit_rate: 「◎判定 → meeting/closed まで進んだ割合」
+ */
+export type MonthlyKPI = {
+  sent: number;
+  meeting: number;
+  closed: number;
+  meeting_rate: number | null;
+  double_circle_total: number;
+  double_circle_hit: number;
+  double_circle_hit_rate: number | null;
+};
+
+export async function getMonthlyKPI(): Promise<MonthlyKPI> {
+  if (!isLive) {
+    return { sent: 0, meeting: 0, closed: 0, meeting_rate: null,
+             double_circle_total: 0, double_circle_hit: 0, double_circle_hit_rate: null };
+  }
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  // Activities since the 1st of this month.
+  const { data: acts } = await supabase
+    .from("ra_activities")
+    .select("kind,job_id,candidate_id")
+    .gte("occurred_at", monthStart)
+    .limit(5000);
+  const list = acts ?? [];
+
+  const sent    = list.filter((a) => a.kind === "sent").length;
+  const meeting = list.filter((a) => a.kind === "meeting").length;
+  const closed  = list.filter((a) => a.kind === "closed").length;
+
+  // ◎の的中率 — 今月作られた ◎ matches のうち、後で meeting/closed が起きた割合。
+  // (job_id, candidate_id) ペアで突合する。
+  const { data: dblCircles } = await supabase
+    .from("ra_matches")
+    .select("job_id,candidate_id")
+    .eq("grade", "◎")
+    .gte("created_at", monthStart)
+    .limit(5000);
+  const dblList = dblCircles ?? [];
+
+  const hitKeys = new Set(
+    list
+      .filter((a) => a.kind === "meeting" || a.kind === "closed")
+      .map((a) => `${a.job_id ?? ""}|${a.candidate_id ?? ""}`),
+  );
+  const hit = dblList.filter((m) => hitKeys.has(`${m.job_id}|${m.candidate_id}`)).length;
+
+  return {
+    sent, meeting, closed,
+    meeting_rate: sent > 0 ? meeting / sent : null,
+    double_circle_total: dblList.length,
+    double_circle_hit: hit,
+    double_circle_hit_rate: dblList.length > 0 ? hit / dblList.length : null,
+  };
+}
+
 export async function listCandidates(includeInactive = true): Promise<Candidate[]> {
   if (!isLive) return fetchMockCandidates();
   let q = supabase.from("ra_candidates").select("*").order("is_active", { ascending: false }).order("code", { ascending: true });
@@ -233,9 +297,6 @@ export const api = {
   approveDiscovery: (id: string, opts: { reject?: boolean; priority?: string } = {}) =>
     call<{ ok: true; status: string; company_id?: string }>("approve-discovery", { body: { id, ...opts } }),
 
-  draftEmail: (match_id: string) =>
-    call<{ ok: true; subject: string; body: string }>("draft", { body: { match_id } }),
-
   updateCompany: (patch: { id: string } & Record<string, unknown>) =>
     call<{ ok: true; company: Company }>("update-company", { body: patch }),
 
@@ -245,14 +306,8 @@ export const api = {
   addCandidate: (input: { code: string; name: string; headline?: string; profile?: Record<string, unknown>; is_active?: boolean }) =>
     call<{ ok: true; candidate: Candidate }>("add-candidate", { body: input }),
 
-  pipedriveMatch: (company_id: string) =>
-    call<{
-      ok: true; ra_name: string;
-      matches: Array<{ id: string; name: string; pipedrive_org_id?: number; won_deals_count?: number; open_deals_count?: number; people_count?: number }>;
-    }>(`pipedrive-match?company_id=${encodeURIComponent(company_id)}`, { method: "GET" }),
-
   // Triggers
-  run: (kind: "crawl" | "match" | "discover" | "import", params: Record<string, string | number> = {}) => {
+  run: (kind: "crawl" | "match" | "discover" | "import" | "enrich", params: Record<string, string | number> = {}) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return call<Record<string, unknown>>(`${kind}${qs ? `?${qs}` : ""}`);
   },

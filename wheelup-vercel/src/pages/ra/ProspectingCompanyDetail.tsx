@@ -24,7 +24,6 @@ export default function ProspectingCompanyDetail({
   const [reloadKey, setReloadKey] = useState(0);
   const [showEdit, setShowEdit] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
-  const [pipedrive, setPipedrive] = useState<Awaited<ReturnType<typeof api.pipedriveMatch>>["matches"] | null>(null);
   const [enrichBusy, setEnrichBusy] = useState(false);
   const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
 
@@ -34,12 +33,6 @@ export default function ProspectingCompanyDetail({
     getCompanyDetail(id).then((d) => { if (alive) setDetail(d as Detail | null); }).finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [id, reloadKey]);
-
-  useEffect(() => {
-    let alive = true;
-    api.pipedriveMatch(id).then((r) => { if (alive) setPipedrive(r.matches); }).catch(() => setPipedrive([]));
-    return () => { alive = false; };
-  }, [id]);
 
   async function autoFill() {
     setEnrichBusy(true); setEnrichMsg(null);
@@ -138,21 +131,6 @@ export default function ProspectingCompanyDetail({
           )}
         </Card>
       </section>
-
-      {pipedrive && pipedrive.length > 0 && (
-        <Card title="既存 Pipedrive (面談FB側) との突合">
-          <ul className="text-xs space-y-1">
-            {pipedrive.map((m) => (
-              <li key={m.id} className="flex items-center gap-3">
-                <span className="font-bold">{m.name}</span>
-                {m.pipedrive_org_id != null && <span className="text-[10px] text-gray-400">org#{m.pipedrive_org_id}</span>}
-                <span className="text-[10px] text-gray-500">won={m.won_deals_count ?? 0} / open={m.open_deals_count ?? 0} / people={m.people_count ?? 0}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2 text-[10px] text-[#afafaf]">同名 (寄せ字含む) の会社が既存テーブルにあれば、過去の打診履歴を参照できます</p>
-        </Card>
-      )}
 
       <Card title="マッチ判定（◎ ○ △ ×）">
         {matches.length === 0 ? (

@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { api } from "../../lib/ra/queries";
 
-type Kind = "crawl" | "match" | "discover" | "import";
+type Kind = "crawl" | "match" | "discover" | "import" | "enrich";
 const KINDS: { key: Kind; label: string; emoji: string; params?: Record<string, string | number> }[] = [
   { key: "import",   label: "シード投入",     emoji: "📥" },
-  { key: "crawl",    label: "求人クロール",   emoji: "🕸",  params: { limit: 20 } },
-  { key: "match",    label: "候補者マッチ",   emoji: "🎯", params: { limit: 20 } },
+  { key: "enrich",   label: "URL自動補完",    emoji: "🤖", params: { limit: 20 } },
+  { key: "crawl",    label: "求人クロール",   emoji: "🕸",  params: { limit: 25 } },
+  { key: "match",    label: "候補者マッチ",   emoji: "🎯", params: { limit: 25 } },
   { key: "discover", label: "新規企業発掘",   emoji: "🔍", params: { count: 10 } },
 ];
 

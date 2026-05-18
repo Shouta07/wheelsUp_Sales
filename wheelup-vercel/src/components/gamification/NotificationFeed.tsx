@@ -143,8 +143,8 @@ function generateNotifications(
     notifications.push({
       id: "unscored",
       icon: "⏳",
-      text: `${unscored.length}件の面談が採点待ち`,
-      subtext: "まもなく自動採点が完了します",
+      text: `${unscored.length}件の面談が未採点`,
+      subtext: "面談ライブラリから「▶ AI 採点する」を押すと採点します",
       color: "#1CB0F6",
       timestamp: new Date(),
     });
@@ -234,7 +234,7 @@ export default function NotificationFeed() {
           <span className="text-base font-extrabold text-[#4b4b4b]">フィード</span>
         </div>
         <div className="rounded-2xl bg-[#f7f7f7] p-4 text-center">
-          <p className="text-xs font-bold text-[#afafaf]">面談を登録すると、自動で採点されてここに結果が届きます</p>
+          <p className="text-xs font-bold text-[#afafaf]">面談を登録して「▶ AI 採点する」を押すと、ここに結果が届きます</p>
         </div>
       </div>
     );
