@@ -1,14 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/ra/queries";
 
 type Kind = "crawl" | "match" | "discover" | "import" | "enrich";
 type Spec = { key: Kind; label: string; emoji: string; params?: Record<string, string | number>; expected: string };
 
-// limit を Gemini free tier 10 RPM × Vercel 60s 関数枠に合わせて控えめに。
-//   enrich 3 社 ≈ 15s
-//   crawl  2 社 ≈ 15-20s
-//   match  2 求人 × 4 候補者 = 8 calls ≈ 30-40s
-// 何回か押せば 246 社全部に行き渡る、を許容する設計。
 const KINDS: Spec[] = [
   { key: "import",   label: "シード投入",   emoji: "📥", expected: "246社+4候補者の投入" },
   { key: "enrich",   label: "URL自動補完",  emoji: "🤖", params: { limit: 3 }, expected: "3社のURLをGemini推定" },
@@ -19,10 +14,78 @@ const KINDS: Spec[] = [
 
 type RunResult = { kind: Kind; ok: boolean; summary: string; ts: Date };
 
+function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)); }
+
 export default function RunToolbar({ onDone }: { onDone?: () => void }) {
   const [busy, setBusy] = useState<Kind | null>(null);
   const [history, setHistory] = useState<RunResult[]>([]);
 
+  // ─── 全自動モード ───────────────────────────────────────
+  const [autoMode, setAutoMode] = useState(false);
+  const [autoStatus, setAutoStatus] = useState<string>("");
+  const [autoCycle, setAutoCycle] = useState(0);
+  const cancelRef = useRef(false);
+
+  // 全自動モード: enrich → 待機 → crawl → 待機 → match → 待機 → 繰り返し
+  useEffect(() => {
+    if (!autoMode) {
+      cancelRef.current = true;
+      setAutoStatus("");
+      return;
+    }
+    cancelRef.current = false;
+
+    async function runStage(kind: Kind, params: Record<string, string | number>, label: string, cycleNum: number) {
+      if (cancelRef.current) return;
+      setAutoStatus(`サイクル ${cycleNum}: ${label} 実行中…`);
+      try {
+        const r = await api.run(kind, params);
+        const errCount = Array.isArray((r as { errors?: unknown[] }).errors) ? (r as { errors: unknown[] }).errors.length : 0;
+        const summary = Object.entries(r)
+          .filter(([k, v]) => !["ok", "errors"].includes(k) && (typeof v === "number" || typeof v === "string"))
+          .map(([k, v]) => `${k}=${v}`).join(" ");
+        pushHistory({ kind, ok: errCount === 0, summary: `[auto] ${summary}${errCount > 0 ? ` ⚠${errCount}` : ""}`, ts: new Date() });
+        onDone?.();
+      } catch (e) {
+        pushHistory({ kind, ok: false, summary: `[auto] ${(e as Error).message.slice(0, 100)}`, ts: new Date() });
+      }
+    }
+
+    async function loop() {
+      let cycle = 0;
+      while (!cancelRef.current) {
+        cycle += 1;
+        setAutoCycle(cycle);
+
+        await runStage("enrich", { limit: 3 }, "URL 補完", cycle);
+        if (cancelRef.current) break;
+        await waitWithCountdown("次まで", 25);
+
+        await runStage("crawl", { limit: 2 }, "求人クロール", cycle);
+        if (cancelRef.current) break;
+        await waitWithCountdown("次まで", 25);
+
+        await runStage("match", { limit: 2 }, "候補者マッチ", cycle);
+        if (cancelRef.current) break;
+        await waitWithCountdown("次サイクルまで", 30);
+      }
+      setAutoStatus("停止しました");
+    }
+
+    async function waitWithCountdown(label: string, seconds: number) {
+      for (let s = seconds; s > 0; s--) {
+        if (cancelRef.current) return;
+        setAutoStatus(`${label} ${s}秒`);
+        await sleep(1000);
+      }
+    }
+
+    loop();
+
+    return () => { cancelRef.current = true; };
+  }, [autoMode, onDone]);
+
+  // ─── 単発ボタン ─────────────────────────────────────────
   async function run(spec: Spec) {
     setBusy(spec.key);
     const startedAt = Date.now();
@@ -37,7 +100,7 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
       const errCount = Array.isArray((r as { errors?: unknown[] }).errors) ? (r as { errors: unknown[] }).errors.length : 0;
       pushHistory({
         kind: spec.key,
-        ok: true,
+        ok: errCount === 0,
         summary: `${summary}${errCount > 0 ? ` / ⚠️ ${errCount}件のエラー` : ""} (${elapsed}s)`,
         ts: new Date(),
       });
@@ -56,26 +119,60 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
   }
 
   function pushHistory(r: RunResult) {
-    setHistory((arr) => [r, ...arr].slice(0, 6));
+    setHistory((arr) => [r, ...arr].slice(0, 8));
   }
 
   return (
     <div className="rounded-xl bg-white border border-[#e5e5e5] p-3 mb-3">
-      {/* ボタン群 */}
+      {/* 全自動モード行 (最上段) */}
+      <div className="mb-3 pb-3 border-b border-dashed border-[#e5e5e5]">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setAutoMode((v) => !v)}
+            disabled={busy !== null}
+            className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+              autoMode
+                ? "bg-red-500 text-white hover:bg-red-600"
+                : "bg-[#58CC02] text-white hover:bg-[#46a302]"
+            }`}
+            style={{ borderBottom: autoMode ? "3px solid #b91c1c" : "3px solid #46a302" }}
+          >
+            {autoMode ? "■ 全自動モード 停止" : "▶ 🤖 全自動モード 開始"}
+          </button>
+          {autoMode && (
+            <>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                <span className="text-[10px] font-bold text-green-700">running</span>
+              </span>
+              <span className="text-[10px] text-[#4b4b4b] tabular-nums">
+                {autoStatus} / cycle {autoCycle}
+              </span>
+            </>
+          )}
+          {!autoMode && (
+            <span className="text-[10px] text-[#afafaf]">
+              押下で enrich → クロール → マッチ を自動ループ (1サイクル ~90秒)
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* 単発ボタン群 */}
       <div className="flex flex-wrap items-center gap-2">
         {KINDS.map((t) => {
           const isBusy = busy === t.key;
-          const otherBusy = busy !== null && busy !== t.key;
+          const disabled = busy !== null || autoMode;
           return (
             <button
               key={t.key}
               onClick={() => run(t)}
-              disabled={busy !== null}
+              disabled={disabled}
               title={t.expected}
               className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${
                 isBusy
                   ? "bg-yellow-50 border-yellow-300 text-yellow-700"
-                  : otherBusy
+                  : disabled
                   ? "bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed"
                   : "bg-white border-[#e5e5e5] text-[#4b4b4b] hover:bg-gray-50"
               }`}
@@ -97,12 +194,17 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
             完了まで 10-40 秒 / 他のボタンは無効化中
           </span>
         )}
+        {autoMode && !busy && (
+          <span className="ml-2 text-[10px] text-[#afafaf]">
+            全自動モード中は単発ボタンを無効化
+          </span>
+        )}
       </div>
 
-      {/* 実行履歴 (最大 6 件、最新が上) */}
+      {/* 実行履歴 (最大 8 件、最新が上) */}
       {history.length > 0 && (
         <div className="mt-3 border-t border-[#e5e5e5] pt-2 space-y-1">
-          <div className="text-[10px] font-bold text-[#afafaf] mb-1">あなたが今回押したアクションの結果</div>
+          <div className="text-[10px] font-bold text-[#afafaf] mb-1">直近の結果 (新しい順)</div>
           {history.map((h, i) => (
             <div key={i} className="flex items-start gap-2 text-[10px]">
               <span className={`px-1.5 py-0.5 rounded font-bold tabular-nums ${
@@ -117,9 +219,8 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
         </div>
       )}
 
-      {/* ヘルプ行 */}
       <div className="mt-2 pt-2 border-t border-dashed border-[#e5e5e5] text-[10px] text-[#afafaf]">
-        💡 Gemini 無料枠 10 RPM 制限あり。ボタンは <strong>30秒くらい間隔を空けて</strong> 押すと安定。
+        💡 Gemini 無料枠 10 RPM 制限あり。全自動モードは制限内で安全に回る設計 (~5 RPM)。
       </div>
     </div>
   );
