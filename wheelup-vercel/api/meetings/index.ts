@@ -419,7 +419,10 @@ async function scoreMeetingInternal(
     return { meeting_id: id, cached: true, ...(meeting.score_data as Record<string, unknown>) };
   }
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  // 採点は gemini-2.5-flash-lite を使う。
+  // - 構造化出力 (responseSchema) の遵守が gemini-2.5-flash より素直
+  // - 出力品質も採点用途では十分
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -484,7 +487,7 @@ ${leaderRefs || "（なし）"}
 - 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
       generationConfig: {
         temperature: 0.3,
-        maxOutputTokens: 2800,
+        maxOutputTokens: 4096,
         responseMimeType: "application/json",
         // Schema を強制してパースエラー → リトライ をゼロに。精度と省エネを両立。
         responseSchema: {
@@ -567,12 +570,19 @@ ${leaderRefs || "（なし）"}
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
+  // LLM が出力する JSON にしばしば混入する不可視/全角文字を ASCII 相当に正規化。
+  // “” はカーリーダブル、‘’ はカーリーシングル、﻿ は BOM、　 は全角スペース。
+  const normalizeJson = (s: string) =>
+    s
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/﻿/g, "")
+      .replace(/　/g, " ");
+
   let parsed: Record<string, unknown> = {};
   let parseError: string | null = null;
   try {
-    // responseSchema を強制しているので原則そのまま JSON.parse できるはず。
-    // まずは raw を直接試し、失敗したらコードフェンス剥がし → {} 抽出 の順で復旧。
-    const trimmed = raw.trim();
+    const trimmed = normalizeJson(raw.trim());
     try {
       parsed = JSON.parse(trimmed);
     } catch {
