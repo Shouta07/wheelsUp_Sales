@@ -984,6 +984,9 @@ export interface MeetingScore {
   leader_would: string;
   learning_resources?: LearningResource[];
   key_moments?: KeyMoment[];
+  _source?: "manual_leader" | "ai";
+  _scored_by?: string;
+  _scored_at?: string;
 }
 
 export interface PlaybookEntry {
@@ -1011,6 +1014,18 @@ export interface ContextualCoachingResponse {
 export async function scoreMeeting(id: string, force = false): Promise<MeetingScore> {
   if (DEMO_MODE) return demoScoreMeeting(id);
   return request(`/meetings/${id}/score`, { method: "POST", body: JSON.stringify({ force }) });
+}
+
+// 小林が手動採点 (AI を使わずに DB に直接書き込む)。リーダー専用。
+export async function manualScoreMeeting(
+  id: string,
+  data: {
+    scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
+    evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
+    improvements?: string[];
+  },
+): Promise<MeetingScore> {
+  return request(`/meetings/${id}/manual-score`, { method: "POST", body: JSON.stringify(data) });
 }
 
 export async function extractPlaybook(

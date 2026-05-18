@@ -74,6 +74,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (sub === "score" && req.method === "POST") {
       return await scoreMeeting(db, id, req, res);
     }
+    // --- /api/meetings/:id/manual-score (リーダー専用、AI を使わず直接保存) ---
+    if (sub === "manual-score" && req.method === "POST") {
+      return await manualScoreMeeting(db, id, req, res);
+    }
     // --- /api/meetings/:id/leader-feedback ---
     if (sub === "leader-feedback" && req.method === "POST") {
       return await addLeaderFeedback(db, id, req, res);
@@ -420,6 +424,59 @@ function parseBullets(text: string): string[] {
 }
 
 /* ========== Meeting Quality Score ========== */
+
+// リーダーが Gemini を使わず手動で 5 軸スコアを入力。AI クォータが切れた時の代替。
+async function manualScoreMeeting(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "手動採点はリーダー (小林) のみ実行可能です");
+
+  const { scores, evidence, improvements } = (req.body || {}) as {
+    scores?: Record<string, number>;
+    evidence?: Record<string, string>;
+    improvements?: string[];
+  };
+  if (!scores || typeof scores !== "object") return res.status(400).json({ error: "scores が必要です" });
+
+  const axes = ["needs", "proposal", "trust", "closing", "intel"] as const;
+  const cleanScores: Record<string, number> = {};
+  for (const a of axes) {
+    const v = scores[a];
+    if (typeof v !== "number" || v < 0 || v > 10) return res.status(400).json({ error: `scores.${a} は 0-10 の整数で必須` });
+    cleanScores[a] = Math.round(v);
+  }
+  const total = axes.reduce((s, a) => s + cleanScores[a], 0);
+  const grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 25 ? "B" : total >= 15 ? "C" : "D";
+
+  const cleanEvidence: Record<string, string> = {};
+  if (evidence && typeof evidence === "object") {
+    for (const a of axes) if (typeof evidence[a] === "string") cleanEvidence[a] = evidence[a].slice(0, 300);
+  }
+
+  const score_data = {
+    scores: cleanScores,
+    total,
+    grade,
+    evidence: cleanEvidence,
+    improvements: Array.isArray(improvements) ? improvements.slice(0, 5).map((s) => String(s).slice(0, 200)) : [],
+    learning_resources: pickLearningResources(cleanScores),
+    key_moments: [],
+    _source: "manual_leader",
+    _scored_by: user,
+    _scored_at: new Date().toISOString(),
+  };
+
+  const { error } = await db.from("meeting_transcripts")
+    .update({ score_data, score_input_hash: null })  // hash null で次回の AI 採点が走るようにする
+    .eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.json({ meeting_id: id, ...score_data });
+}
 
 async function scoreMeeting(
   db: ReturnType<typeof getSupabaseAdmin>,
