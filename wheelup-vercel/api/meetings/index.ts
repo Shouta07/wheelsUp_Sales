@@ -131,17 +131,8 @@ async function createTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
     recorded_at: b.recorded_at || new Date().toISOString(),
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
-
-  // Auto-score if transcript has text content
-  if (b.transcript_text && b.transcript_text.trim().length > 50) {
-    scoreMeetingInternal(db, data.id).then((scoreResult) => {
-      if (!("error" in scoreResult)) {
-        console.log(`Auto-scored meeting ${data.id}: grade=${scoreResult.grade}`);
-      }
-    }).catch(() => {});
-  }
-
-  return res.status(201).json({ ...data, auto_scoring: !!(b.transcript_text && b.transcript_text.trim().length > 50) });
+  // 自動採点は行わない (運用面のクォータ制御のためユーザー操作で 1 件ずつ採点する設計)
+  return res.status(201).json({ ...data, auto_scoring: false });
 }
 
 async function getTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
@@ -277,18 +268,11 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   }).select().single();
 
   if (error) return res.status(500).json({ error: error.message });
-
-  // Auto-score: fire scoring in background, don't block response
-  scoreMeetingInternal(db, data.id).then((scoreResult) => {
-    if (!("error" in scoreResult)) {
-      console.log(`Auto-scored meeting ${data.id}: grade=${scoreResult.grade}`);
-    }
-  }).catch(() => {});
-
+  // 自動採点は行わない (運用面のクォータ制御のためユーザー操作で 1 件ずつ採点する設計)
   return res.json({
     transcript: data,
     raw_gemini_output: fullText,
-    auto_scoring: true,
+    auto_scoring: false,
   });
 }
 
