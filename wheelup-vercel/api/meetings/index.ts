@@ -570,6 +570,12 @@ ${leaderRefs || "（なし）"}
 
   if (!geminiRes.ok) {
     const errText = await geminiRes.text().catch(() => "");
+    if (geminiRes.status === 429) {
+      return {
+        error: "Gemini API のクォータ上限に到達しました。1〜2 分待って再試行するか、Google AI Studio で利用状況を確認してください (https://aistudio.google.com/app/apikey)。",
+        status: 429,
+      };
+    }
     return { error: `Gemini API error: ${errText.slice(0, 200)}`, status: 502 };
   }
 
