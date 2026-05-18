@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
@@ -48,6 +51,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/coach ---
     if (segments[0] === "coach" && req.method === "POST") {
       return await contextualCoach(db, req, res);
+    }
+    // --- /api/meetings/reseed-leader ---
+    if (segments[0] === "reseed-leader" && req.method === "POST") {
+      return await reseedLeaderMeetings(db, req, res);
     }
     // --- /api/meetings/:id ---
     const id = segments[0];
@@ -171,6 +178,53 @@ async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: str
   const { error } = await db.from("meeting_transcripts").delete().eq("id", id);
   if (error) return res.status(500).json({ error: error.message });
   return res.json({ deleted: true });
+}
+
+// 小林本人のみ実行可能。既存のリーダー面談を全削除し、api/_data/leader-meetings-seed.json の 15 件で再投入する。
+// シードデータが ~1MB あるため、必要な時だけ fs で読む (毎リクエストのバンドル肥大化を避ける)。
+async function reseedLeaderMeetings(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const user = getRequestUser(req);
+  if (user !== "小林") return send403(res, "リーダー再シードは小林本人のみ実行可能です");
+
+  // シードファイルを実行時に読み込む
+  let seedRows: Array<{ title: string; candidate: string; recorded_at: string; transcript_text: string }>;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const seedPath = join(here, "../_data/leader-meetings-seed.json");
+    seedRows = JSON.parse(readFileSync(seedPath, "utf-8"));
+  } catch (e) {
+    return res.status(500).json({ error: `シードファイル読み込み失敗: ${(e as Error).message}` });
+  }
+
+  // 既存リーダー面談を全削除 (consultant_name=小林 AND is_leader=true)
+  const { error: delErr, count: deletedCount } = await db
+    .from("meeting_transcripts")
+    .delete({ count: "exact" })
+    .eq("consultant_name", "小林")
+    .eq("is_leader", true);
+  if (delErr) return res.status(500).json({ error: `削除失敗: ${delErr.message}` });
+
+  // 新規 15 件を挿入
+  const rows = seedRows.map((r) => ({
+    consultant_name: "小林",
+    is_leader: true,
+    title: r.title,
+    transcript_text: r.transcript_text,
+    source: "manual",
+    recorded_at: r.recorded_at,
+  }));
+  const { data: inserted, error: insErr } = await db
+    .from("meeting_transcripts")
+    .insert(rows)
+    .select("id, title");
+  if (insErr) return res.status(500).json({ error: `挿入失敗: ${insErr.message}` });
+
+  return res.json({
+    deleted: deletedCount ?? 0,
+    inserted: inserted?.length ?? 0,
+    titles: inserted?.map((r) => r.title) ?? [],
+    note: "リーダータブから「一括採点する」を押すと Gemini で順次採点されます。",
+  });
 }
 
 /* ========== Gemini Transcription ========== */
