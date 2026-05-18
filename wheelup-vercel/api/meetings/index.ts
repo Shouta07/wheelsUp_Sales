@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createHash } from "node:crypto";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
+import { pickLearningResources } from "../_lib/learning-resources.js";
 
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
@@ -400,7 +401,6 @@ async function scoreMeetingInternal(
 
   // リーダー (=小林) の過去面談を「教師データ」として注入。
   // これにより Gemini の汎用判断ではなく "小林流の採点基準" でスコアリングされる。
-  // 議事録本文を 800 字まで載せて、リーダーが各軸でどう動いているかを示す。
   let leaderRefs = "";
   try {
     const { data: leaderRows } = await db.from("meeting_transcripts")
@@ -422,8 +422,24 @@ async function scoreMeetingInternal(
     }
   } catch { /* ignore */ }
 
-  // 採点入力ハッシュ。transcript_text と leaderRefs が同一なら Gemini を再呼び出ししない（無料枠保護）。
-  const inputHash = createHash("sha256").update(`${text}\n---\n${leaderRefs}`).digest("hex");
+  // リーダーが過去に他メンバー面談に残したコメント (leader_feedback) を学習材料として注入。
+  // "リーダーはこの場面でこう指導している" を AI が踏まえて採点・改善案を出せるようにする。
+  let leaderCoaching = "";
+  try {
+    const { data: feedbackRows } = await db.from("meeting_transcripts")
+      .select("title, leader_feedback")
+      .not("leader_feedback", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(5);
+    if (feedbackRows && feedbackRows.length > 0) {
+      leaderCoaching = feedbackRows
+        .map((r, i) => `${i + 1}. 「${r.title}」へのリーダーコメント: ${(r.leader_feedback as string)?.slice(0, 200)}`)
+        .join("\n");
+    }
+  } catch { /* ignore */ }
+
+  // 採点入力ハッシュ。transcript_text + leaderRefs + leaderCoaching が同一なら Gemini を再呼び出ししない。
+  const inputHash = createHash("sha256").update(`${text}\n---\n${leaderRefs}\n---\n${leaderCoaching}`).digest("hex");
   if (!opts.force && meeting.score_data && meeting.score_input_hash === inputHash) {
     return { meeting_id: id, cached: true, ...(meeting.score_data as Record<string, unknown>) };
   }
@@ -472,6 +488,7 @@ async function scoreMeetingInternal(
 ## 採点の基準 = リーダー (小林) の面談 (これに近いほど高得点)
 ${leaderRefs || "（リーダー面談データなし。汎用ベストプラクティスで採点）"}
 
+${leaderCoaching ? `## リーダーが過去に残した指導コメント (採点・改善案でこの方針に揃えること)\n${leaderCoaching}\n` : ""}
 ## 採点対象 (メンバーの面談・最大4000字):
 ${text.slice(0, 4000)}
 
@@ -486,7 +503,8 @@ ${text.slice(0, 4000)}
 1. **同じ文を絶対に繰り返さない**。1 観察 = 1 度だけ書く。
 2. evidence は各軸 1 文・60 字以内で簡潔に書く。
 3. improvements は 2 件・各 50 字以内。
-4. JSON 1 オブジェクトのみ。前置きも結語も禁止。
+4. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
+5. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
 ## JSON 形式:
 {
@@ -498,7 +516,10 @@ ${text.slice(0, 4000)}
     "closing": "...",
     "intel": "..."
   },
-  "improvements": ["改善点1", "改善点2"]
+  "improvements": ["改善点1", "改善点2"],
+  "key_moments": [
+    { "text": "面談記録からの実際の発言", "axis": "needs", "speaker": "コンサル" }
+  ]
 }` }] }],
       generationConfig: {
         temperature: 0.5,
@@ -533,6 +554,18 @@ ${text.slice(0, 4000)}
               required: ["needs", "proposal", "trust", "closing", "intel"],
             },
             improvements: { type: "array", items: { type: "string" } },
+            key_moments: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  text: { type: "string" },
+                  axis: { type: "string" },
+                  speaker: { type: "string" },
+                },
+                required: ["text", "axis"],
+              },
+            },
           },
           required: ["scores"],
         },
@@ -639,6 +672,9 @@ ${text.slice(0, 4000)}
     if (!parsed.grade) {
       parsed.grade = total >= 40 ? "S" : total >= 35 ? "A" : total >= 25 ? "B" : total >= 15 ? "C" : "D";
     }
+
+    // 弱い軸 2 つに合わせた静的学習リソース (Gemini に URL を出させずハルシネーション回避)。
+    parsed.learning_resources = pickLearningResources(s);
 
     // key_moments / learning_resources のサニタイズ（型不整合を吸う）
     const km = (parsed as { key_moments?: unknown }).key_moments;
