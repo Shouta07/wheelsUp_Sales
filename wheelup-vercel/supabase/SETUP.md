@@ -22,6 +22,8 @@ Supabase ダッシュボード → 左メニュー「SQL Editor」で、以下�
 2. `supabase/migration_001_leader_feedback.sql`（リーダーコメント欄）
 3. `supabase/migration_002_ra_system.sql`（RA 開拓モード用）
 4. `supabase/migration_003_playbook_cache.sql`（プレイブック生成のキャッシュ）
+5. `supabase/migration_004_score_cache.sql`（採点キャッシュ用ハッシュ列）
+6. `supabase/migration_005_hardening.sql`（本番運用向けインデックス・PK再設計・トリガー追加）
 
 それぞれの内容を SQL Editor にコピー＆ペーストして「Run」。
 全部 `create table if not exists` / `add column if not exists` で書いているため、何度実行しても安全。

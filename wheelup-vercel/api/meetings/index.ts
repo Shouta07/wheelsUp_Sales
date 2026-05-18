@@ -780,7 +780,7 @@ ${transcriptSummaries.slice(0, 8000)}
     playbook = [];
   }
 
-  // 生成成功時のみキャッシュに upsert
+  // 生成成功時のみキャッシュに upsert (migration_005 で PK が id (UUID) になったので、conflict key を明示)
   if (playbook.length > 0) {
     try {
       await db.from("meeting_playbook_cache").upsert({
@@ -789,7 +789,7 @@ ${transcriptSummaries.slice(0, 8000)}
         playbook,
         source_meeting_count: meetings.length,
         generated_at: new Date().toISOString(),
-      });
+      }, { onConflict: "leader_name" });
     } catch { /* テーブル未作成でも生成自体は成功させる */ }
   }
 
