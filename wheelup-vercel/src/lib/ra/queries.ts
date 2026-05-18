@@ -180,6 +180,72 @@ export async function getMonthlyKPI(): Promise<MonthlyKPI> {
   };
 }
 
+// =============================================================================
+// PROGRESS / ACTIVITY PANELS
+// 「自分が押したボタンの結果」と「DBが今どうなってるか」を見せるための簡易クエリ群。
+// =============================================================================
+
+export type ProgressCounts = {
+  companies: number;
+  with_url: number;
+  crawled: number;
+  open_jobs: number;
+  matches_total: number;
+  strong_matches: number;     // ◎○
+  ready: number;              // ◎○ かつ未送信
+  sent_this_month: number;
+};
+
+export async function getProgressCounts(): Promise<ProgressCounts> {
+  if (!isLive) {
+    return {
+      companies: 0, with_url: 0, crawled: 0, open_jobs: 0,
+      matches_total: 0, strong_matches: 0, ready: 0, sent_this_month: 0,
+    };
+  }
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const [c1, c2, c3, c4, c5, c6, c7, c8] = await Promise.all([
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }),
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }).not("recruit_page_url", "is", null),
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }).not("last_crawled_at", "is", null),
+    supabase.from("ra_jobs").select("id", { count: "exact", head: true }).eq("is_open", true),
+    supabase.from("ra_matches").select("id", { count: "exact", head: true }),
+    supabase.from("ra_matches").select("id", { count: "exact", head: true }).in("grade", ["◎", "○"]),
+    supabase.from("ra_ready_to_execute").select("match_id", { count: "exact", head: true }),
+    supabase.from("ra_activities").select("id", { count: "exact", head: true }).eq("kind", "sent").gte("occurred_at", monthStart),
+  ]);
+  return {
+    companies:        c1.count ?? 0,
+    with_url:         c2.count ?? 0,
+    crawled:          c3.count ?? 0,
+    open_jobs:        c4.count ?? 0,
+    matches_total:    c5.count ?? 0,
+    strong_matches:   c6.count ?? 0,
+    ready:            c7.count ?? 0,
+    sent_this_month:  c8.count ?? 0,
+  };
+}
+
+export type CrawlRunRow = {
+  id: string;
+  kind: string;
+  started_at: string | null;
+  finished_at: string | null;
+  ok: boolean | null;
+  stats: Record<string, unknown> | null;
+  error: string | null;
+};
+
+export async function listRecentRuns(limit = 5): Promise<CrawlRunRow[]> {
+  if (!isLive) return [];
+  const { data } = await supabase
+    .from("ra_crawl_runs")
+    .select("id,kind,started_at,finished_at,ok,stats,error")
+    .order("finished_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  return (data ?? []) as CrawlRunRow[];
+}
+
 export async function listCandidates(includeInactive = true): Promise<Candidate[]> {
   if (!isLive) return fetchMockCandidates();
   let q = supabase.from("ra_candidates").select("*").order("is_active", { ascending: false }).order("code", { ascending: true });
@@ -189,16 +255,81 @@ export async function listCandidates(includeInactive = true): Promise<Candidate[
   return (data ?? []) as Candidate[];
 }
 
-// Companies enriched with contact_paths (separate fetch, merged in memory).
-export async function listCompaniesEnriched(): Promise<Array<CompanyOverview & { contact_paths: ContactPath[] }>> {
+// Companies enriched with contact_paths + activity counts.
+// 「どの会社にどこまで進んだか」を一覧で見るための拡張。
+
+export type ApproachStatus = "untouched" | "sent" | "replied" | "meeting" | "closed";
+export const APPROACH_STATUSES: Array<{ key: ApproachStatus; label: string; color: string }> = [
+  { key: "untouched", label: "未接触", color: "text-gray-400" },
+  { key: "sent",      label: "送信済", color: "text-blue-600" },
+  { key: "replied",   label: "返信あり", color: "text-yellow-600" },
+  { key: "meeting",   label: "商談中", color: "text-green-600" },
+  { key: "closed",    label: "成約済", color: "text-purple-600" },
+];
+
+export type CompanyEnriched = CompanyOverview & {
+  contact_paths: ContactPath[];
+  activity_counts: Record<string, number>;   // {sent: 3, replied: 1, ...}
+  last_activity_at: string | null;
+  last_activity_kind: string | null;
+  approach_status: ApproachStatus;
+};
+
+/** approach の進捗をカウントから判定。closed > meeting > replied > sent > untouched の優先順位。 */
+function deriveStatus(counts: Record<string, number>): ApproachStatus {
+  if ((counts.closed ?? 0) > 0)  return "closed";
+  if ((counts.meeting ?? 0) > 0) return "meeting";
+  if ((counts.replied ?? 0) > 0) return "replied";
+  if ((counts.sent ?? 0) > 0)    return "sent";
+  return "untouched";
+}
+
+export async function listCompaniesEnriched(): Promise<CompanyEnriched[]> {
   const ovs = await listCompanyOverview();
-  if (!isLive) return ovs.map((o) => ({ ...o, contact_paths: [] }));
-  const { data } = await supabase.from("ra_companies").select("id,contact_paths").limit(2000);
-  const byId = new Map<string, ContactPath[]>();
-  for (const r of (data ?? []) as Array<{ id: string; contact_paths: ContactPath[] }>) {
-    byId.set(r.id, Array.isArray(r.contact_paths) ? r.contact_paths : []);
+  const empty: CompanyEnriched[] = ovs.map((o) => ({
+    ...o, contact_paths: [], activity_counts: {}, last_activity_at: null,
+    last_activity_kind: null, approach_status: "untouched" as ApproachStatus,
+  }));
+  if (!isLive) return empty;
+
+  // contact_paths を会社ごとに pull
+  const { data: paths } = await supabase.from("ra_companies").select("id,contact_paths").limit(2000);
+  const pathsById = new Map<string, ContactPath[]>();
+  for (const r of (paths ?? []) as Array<{ id: string; contact_paths: ContactPath[] }>) {
+    pathsById.set(r.id, Array.isArray(r.contact_paths) ? r.contact_paths : []);
   }
-  return ovs.map((o) => ({ ...o, contact_paths: byId.get(o.id) ?? [] }));
+
+  // 活動ログを company_id 単位で集計 (kind 別カウント + 最終接触)
+  const { data: acts } = await supabase
+    .from("ra_activities")
+    .select("company_id,kind,occurred_at")
+    .order("occurred_at", { ascending: false })
+    .limit(10000);
+
+  const countsById = new Map<string, Record<string, number>>();
+  const lastById = new Map<string, { at: string; kind: string }>();
+  for (const a of (acts ?? []) as Array<{ company_id: string | null; kind: string; occurred_at: string }>) {
+    if (!a.company_id) continue;
+    const c = countsById.get(a.company_id) ?? {};
+    c[a.kind] = (c[a.kind] ?? 0) + 1;
+    countsById.set(a.company_id, c);
+    if (!lastById.has(a.company_id)) {
+      lastById.set(a.company_id, { at: a.occurred_at, kind: a.kind });
+    }
+  }
+
+  return ovs.map((o) => {
+    const counts = countsById.get(o.id) ?? {};
+    const last = lastById.get(o.id);
+    return {
+      ...o,
+      contact_paths:      pathsById.get(o.id) ?? [],
+      activity_counts:    counts,
+      last_activity_at:   last?.at ?? null,
+      last_activity_kind: last?.kind ?? null,
+      approach_status:    deriveStatus(counts),
+    };
+  });
 }
 
 // Open jobs × company × best-match-candidate, flattened. Powers the "募集ポジション一覧".
