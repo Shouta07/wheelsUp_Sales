@@ -5,7 +5,6 @@ import ProspectingDiscovery from "./ProspectingDiscovery";
 import ProspectingCandidates from "./ProspectingCandidates";
 import ProspectingJobs from "./ProspectingJobs";
 import RunToolbar from "./RunToolbar";
-import ProgressPanel from "./ProgressPanel";
 import { isLive } from "../../lib/ra/queries";
 
 /**
@@ -40,7 +39,6 @@ export default function ProspectingApp() {
         </header>
 
         <RunToolbar onDone={reload} />
-        <ProgressPanel refreshKey={reloadKey} />
 
         {openCompanyId ? (
           <ProspectingCompanyDetail
