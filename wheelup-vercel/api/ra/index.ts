@@ -18,8 +18,6 @@
  *       OR a valid Supabase user session token (Authorization: Bearer <jwt>).
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
@@ -119,12 +117,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 // /api/ra/import
 // ---------------------------------------------------------------------------
-async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
-  // Vercel bundles files referenced via path.join — we put the seed under public/ra/
-  // and ALSO under api/_data/ to ensure they're included in the function bundle.
-  const dataDir = path.join(process.cwd(), "api", "_data");
+async function importSeed(db: DB, req: VercelRequest, res: VercelResponse) {
+  // Vercel の serverless function は /var/task/ で実行され、api/_data/ の生ファイルは
+  // バンドルに含まれないことがある (Vercel が非 .js/.ts を bundling 対象にしない)。
+  // そこで /ra/companies_seed.csv は public/ra/ に既に存在し HTTP 200 で配信できているので、
+  // 同じドメインから fetch して読む方式に切り替える。
+  const host = req.headers.host;
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? "https";
+  const base = `${proto}://${host}`;
 
-  const csv = await readFile(path.join(dataDir, "companies_seed.csv"), "utf8");
+  const csvRes = await fetch(`${base}/ra/companies_seed.csv`);
+  if (!csvRes.ok) throw new Error(`fetch companies_seed.csv: ${csvRes.status}`);
+  const csv = await csvRes.text();
   const rows = parseCsv(csv);
   const companies = rows.map((r) => ({
     name: r.name,
@@ -143,7 +147,9 @@ async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
     .select("id");
   if (e1) throw new Error(`upsert ra_companies: ${e1.message}`);
 
-  const candJson = await readFile(path.join(dataDir, "candidates_seed.json"), "utf8");
+  const candRes = await fetch(`${base}/ra/candidates_seed.json`);
+  if (!candRes.ok) throw new Error(`fetch candidates_seed.json: ${candRes.status}`);
+  const candJson = await candRes.text();
   const cands = (JSON.parse(candJson) as Array<{
     code: string; name: string; headline?: string; profile: Record<string, unknown>;
   }>).map((c) => ({
