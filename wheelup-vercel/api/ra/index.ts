@@ -214,7 +214,7 @@ async function runCrawl(db: DB, opts: { limit: number; companyId: string | null 
   const stats = { crawled: 0, newJobs: 0, updatedJobs: 0, errors: 0 };
   const errors: string[] = [];
 
-  await mapWithConcurrency(companies ?? [], 2, async (c) => {
+  await mapWithConcurrency(companies ?? [], 1, async (c) => {
     try {
       const body = await fetchPage(c.recruit_page_url as string);
       const extracted = await extractJobs(c.name as string, body);
@@ -314,7 +314,7 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const pairs: Array<{ j: typeof jobs extends Array<infer J> | null ? J : never; c: typeof candidates extends Array<infer C> | null ? C : never }> = [];
   for (const j of jobs ?? []) for (const c of candidates ?? []) pairs.push({ j, c });
 
-  await mapWithConcurrency(pairs, 2, async ({ j, c }) => {
+  await mapWithConcurrency(pairs, 1, async ({ j, c }) => {
     try {
       const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
       if (existing && existing.length > 0) { stats.skipped += 1; return; }
@@ -811,7 +811,7 @@ async function runEnrich(db: DB, opts: { limit: number }) {
   let enriched = 0, failed = 0;
   const errors: string[] = [];
 
-  await mapWithConcurrency(companies ?? [], 2, async (c) => {
+  await mapWithConcurrency(companies ?? [], 1, async (c) => {
     try {
       await enrichOne(db, { id: c.id as string, name: c.name as string });
       enriched += 1;
@@ -876,7 +876,7 @@ async function addCompanies(db: DB, req: VercelRequest, res: VercelResponse) {
   // Fire-and-forget so the UI gets a fast response. Up to 20 in parallel(5).
   if (hasGemini && data) {
     const targets = data.filter((d) => !d.recruit_page_url).slice(0, 20);
-    void mapWithConcurrency(targets, 2, async (c) => {
+    void mapWithConcurrency(targets, 1, async (c) => {
       try { await enrichOne(db, { id: c.id as string, name: c.name as string }); } catch { /* swallowed */ }
     });
   }
