@@ -457,15 +457,16 @@ async function scoreMeetingInternal(
   // これにより Gemini の汎用判断ではなく "小林流の採点基準" でスコアリングされる。
   let leaderRefs = "";
   try {
+    // 5 件のリーダー面談を取得し、各議事録の本文を 6000 字まで参照 (Gemini 100万 tokens 余裕)。
     const { data: leaderRows } = await db.from("meeting_transcripts")
       .select("title, transcript_text, score_data")
       .eq("is_leader", true)
       .order("recorded_at", { ascending: false })
-      .limit(3);
+      .limit(5);
     if (leaderRows && leaderRows.length > 0) {
       leaderRefs = leaderRows
         .map((r, i) => {
-          const body = ((r.transcript_text as string) || "").slice(0, 800);
+          const body = ((r.transcript_text as string) || "").slice(0, 6000);
           const score = r.score_data as { scores?: Record<string, number>; total?: number } | null;
           const scoreLine = score?.scores
             ? `[リーダー自己採点: needs ${score.scores.needs} / proposal ${score.scores.proposal} / trust ${score.scores.trust} / closing ${score.scores.closing} / intel ${score.scores.intel}]`
@@ -543,8 +544,8 @@ async function scoreMeetingInternal(
 ${leaderRefs || "（リーダー面談データなし。汎用ベストプラクティスで採点）"}
 
 ${leaderCoaching ? `## リーダーが過去に残した指導コメント (採点・改善案でこの方針に揃えること)\n${leaderCoaching}\n` : ""}
-## 採点対象 (メンバーの面談・最大4000字):
-${text.slice(0, 4000)}
+## 採点対象 (メンバーの面談・最大25000字):
+${text.slice(0, 25000)}
 
 ## 採点軸 (各 10 点満点・整数。リーダー面談での同軸の動きと比較して評価):
 - needs: 候補者/企業の本音・課題を引き出せたか (リーダーは深掘り質問を 3 層以上重ねる)
