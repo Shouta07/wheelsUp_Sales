@@ -62,18 +62,26 @@ export default function ProgressPanel({ refreshKey = 0 }: { refreshKey?: number 
           <p className="text-[10px] text-[#afafaf]">まだ実行履歴がありません</p>
         ) : (
           <ul className="space-y-0.5">
-            {runs.map((r) => (
-              <li key={r.id} className="flex items-center gap-2 text-[10px]">
-                <span className={`px-1.5 py-0.5 rounded font-bold ${
-                  r.ok === false ? "bg-red-100 text-red-700"
-                  : r.ok === true ? "bg-green-100 text-green-700"
-                  : "bg-gray-100 text-gray-500"
-                }`}>{r.kind}</span>
-                <span className="text-[#afafaf] tabular-nums">{formatAgo(r.finished_at)}</span>
-                <span className="flex-1 truncate text-gray-600">{summarizeStats(r.stats)}</span>
-                {r.error && <span className="text-red-600 truncate max-w-xs">⚠ {r.error.slice(0, 80)}</span>}
-              </li>
-            ))}
+            {runs.map((r) => {
+              // エラーメッセージは控えめに: 件数だけ目立たせて詳細は title (tooltip) に
+              const errCount = countErrors(r.error);
+              return (
+                <li key={r.id} className="flex items-center gap-2 text-[10px]">
+                  <span className={`px-1.5 py-0.5 rounded font-bold ${
+                    r.ok === false ? "bg-amber-100 text-amber-700"
+                    : r.ok === true ? "bg-green-100 text-green-700"
+                    : "bg-gray-100 text-gray-500"
+                  }`}>{r.kind}</span>
+                  <span className="text-[#afafaf] tabular-nums">{formatAgo(r.finished_at)}</span>
+                  <span className="flex-1 truncate text-gray-600">{summarizeStats(r.stats)}</span>
+                  {errCount > 0 && (
+                    <span className="text-amber-600 text-[10px]" title={r.error ?? ""}>
+                      ⚠ {errCount}件スキップ
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -101,6 +109,12 @@ function formatAgo(iso: string | null): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}時間前`;
   return new Date(t).toLocaleDateString("ja-JP");
+}
+
+function countErrors(error: string | null): number {
+  if (!error) return 0;
+  // ra_crawl_runs.error は " | " 区切りでエラーリストを保存する設計
+  return error.split(" | ").filter((s) => s.trim().length > 0).length;
 }
 
 function summarizeStats(stats: Record<string, unknown> | null): string {
