@@ -510,13 +510,15 @@ ${leaderRefs || "（なし）"}
 }
 
 要件 (簡潔さ優先):
+- **絶対に同じ文・同じフレーズを 2 回繰り返さない**。1 つの発言・観察は 1 度だけ書く。
 - key_moments は **2〜3 件のみ**、最重要の転換点だけ。各 text は 60 字以内。axis_label は省略可。
 - learning_resources は弱い軸を中心に **1〜2 件**。description は 80 字以内。url は書かない。
-- evidence は各軸 60 字以内で簡潔に。
+- evidence は各軸 60 字以内で簡潔に。1 文で完結させる。
 - strengths / improvements は **各 2 件、各 50 字以内**。leader_would は 100 字以内。
 - 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
       generationConfig: {
-        temperature: 0.3,
+        temperature: 0.5,
+        topP: 0.9,
         maxOutputTokens: 2048,
         responseMimeType: "application/json",
         // Schema を強制してパースエラー → リトライ をゼロに。精度と省エネを両立。
@@ -630,20 +632,46 @@ ${leaderRefs || "（なし）"}
       .replace(/｝/g, "}")
       .replace(/．/g, ".");
 
+  // Gemini が同じフレーズを無限ループした場合、truncate された JSON を救うサルベージ機構。
+  // 失敗時に少なくとも scores オブジェクトだけは正規表現で抜き出して採点だけは成立させる。
+  const salvageScores = (s: string): Record<string, unknown> | null => {
+    const m = s.match(/"scores"\s*:\s*\{([^}]+)\}/);
+    if (!m) return null;
+    const scoresBody = m[1];
+    const scoreObj: Record<string, number> = {};
+    const re = /"(needs|proposal|trust|closing|intel)"\s*:\s*(\d+)/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = re.exec(scoresBody)) !== null) scoreObj[mm[1]] = parseInt(mm[2], 10);
+    if (Object.keys(scoreObj).length !== 5) return null;
+    return { scores: scoreObj, _salvaged: true };
+  };
+
   let parsed: Record<string, unknown> = {};
   let parseError: string | null = null;
   try {
-    // responseSchema を強制しているので原則そのまま JSON.parse できるはず。
-    // まずは raw を直接試し、失敗したらコードフェンス剥がし → {} 抽出 の順で復旧。
-    // LLM が混入するカーリー引用符/BOM/全角スペースは事前に正規化。
     const trimmed = normalizeJson(raw.trim());
     try {
       parsed = JSON.parse(trimmed);
     } catch {
       const cleaned = trimmed.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-      else throw new Error("JSON が含まれていません");
+      if (jsonMatch) {
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch (e2) {
+          // 完全な JSON は復旧できなくても、scores だけサルベージ可能ならそれで成立させる
+          const salvaged = salvageScores(jsonMatch[0]);
+          if (salvaged) {
+            parsed = salvaged;
+          } else {
+            throw e2;
+          }
+        }
+      } else {
+        const salvaged = salvageScores(cleaned);
+        if (salvaged) parsed = salvaged;
+        else throw new Error("JSON が含まれていません");
+      }
     }
   } catch (e) {
     parseError = (e as Error).message;
