@@ -10,6 +10,7 @@ import {
   addLeaderFeedback,
   scoreMeeting,
   manualScoreMeeting,
+  saveMeetingOutcome,
   deleteMeeting,
   type MeetingTranscript,
   type MeetingScore,
@@ -580,6 +581,9 @@ function MeetingEntry({
             </div>
           )}
 
+          {/* アウトカム記録 (CVR 分析の基礎データ) */}
+          <OutcomeButtons meeting={m} onSaved={onFeedbackSaved} />
+
           {/* 手動採点フォーム (小林専用) */}
           {isLeaderUser && manualOpen && (
             <ManualScoreForm
@@ -745,6 +749,78 @@ const DIMS = [
   { key: "closing", label: "前進", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
+
+// 面談アウトカム (CVR 分析の基礎データ) 入力ボタン。
+function OutcomeButtons({ meeting, onSaved }: { meeting: MeetingTranscript; onSaved: () => void }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const outcome = meeting.outcome || {};
+  const isLost = outcome.lost === true;
+  const [lostReason, setLostReason] = useState(outcome.lost_reason || "");
+
+  const save = async (patch: Partial<NonNullable<MeetingTranscript["outcome"]>>) => {
+    setSaving(Object.keys(patch)[0]);
+    try {
+      const merged = { ...outcome, ...patch };
+      await saveMeetingOutcome(meeting.id, {
+        next_meeting: merged.next_meeting,
+        applied: merged.applied,
+        hired: merged.hired,
+        lost: merged.lost,
+        lost_reason: merged.lost_reason || undefined,
+      });
+      onSaved();
+    } catch (err) {
+      window.alert(`保存失敗: ${(err as Error).message}`);
+    }
+    setSaving(null);
+  };
+
+  const Btn = ({ flag, label, emoji, color }: { flag: keyof NonNullable<MeetingTranscript["outcome"]>; label: string; emoji: string; color: string }) => {
+    const active = outcome[flag] === true;
+    return (
+      <button
+        onClick={() => save({ [flag]: !active })}
+        disabled={saving !== null}
+        className={`text-[10px] font-extrabold px-2.5 py-1.5 rounded-xl transition-all disabled:opacity-40 ${
+          active ? "text-white" : "text-[#777] bg-[#f0f0f0] hover:bg-[#e5e5e5]"
+        }`}
+        style={active ? { backgroundColor: color } : undefined}
+      >
+        {emoji} {label} {active ? "✓" : ""}
+      </button>
+    );
+  };
+
+  return (
+    <div className="rounded-xl bg-[#f7f7f7] border border-[#e5e5e5] p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider">📊 この面談の結果 (CVR 計測用)</span>
+        {outcome.recorded_at && (
+          <span className="text-[9px] font-bold text-[#aaa]">記録: {new Date(outcome.recorded_at).toLocaleDateString("ja-JP")}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        <Btn flag="next_meeting" label="次回予約取れた" emoji="📅" color="#1CB0F6" />
+        <Btn flag="applied" label="求人応募に進んだ" emoji="📨" color="#58CC02" />
+        <Btn flag="hired" label="採用決定" emoji="🎉" color="#FFC800" />
+        <Btn flag="lost" label="不成立" emoji="❌" color="#FF4B4B" />
+      </div>
+      {isLost && (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={lostReason}
+            onChange={(e) => setLostReason(e.target.value)}
+            onBlur={() => lostReason !== (outcome.lost_reason || "") && save({ lost_reason: lostReason })}
+            placeholder="不成立の理由 (任意・後で集計に使う)"
+            className="flex-1 text-[10px] font-bold border-2 border-[#e5e5e5] rounded-lg px-2 py-1 focus:border-duo-red focus:outline-none"
+            maxLength={500}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 小林専用の手動採点フォーム。Gemini を使わず 5 軸スコアを直接 DB 保存。
 function ManualScoreForm({

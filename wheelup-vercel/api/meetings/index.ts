@@ -78,6 +78,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (sub === "manual-score" && req.method === "POST") {
       return await manualScoreMeeting(db, id, req, res);
     }
+    // --- /api/meetings/:id/outcome (面談結果記録、CVR 分析の基礎データ) ---
+    if (sub === "outcome" && req.method === "POST") {
+      return await saveOutcome(db, id, req, res);
+    }
+    // --- /api/meetings/:id/restore (論理削除の取り消し) ---
+    if (sub === "restore" && req.method === "POST") {
+      return await restoreTranscript(db, id, req, res);
+    }
+    // --- /api/meetings/:id/history (採点履歴一覧) ---
+    if (sub === "history" && req.method === "GET") {
+      return await getScoreHistory(db, id, req, res);
+    }
     // --- /api/meetings/:id/leader-feedback ---
     if (sub === "leader-feedback" && req.method === "POST") {
       return await addLeaderFeedback(db, id, req, res);
@@ -105,7 +117,8 @@ async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: Ver
     }
   }
 
-  let query = db.from("meeting_transcripts").select("*").order("recorded_at", { ascending: false });
+  // 論理削除されたものは除外 (deleted_at が null のものだけ)
+  let query = db.from("meeting_transcripts").select("*").is("deleted_at", null).order("recorded_at", { ascending: false });
   if (deal_id && typeof deal_id === "string") query = query.eq("deal_id", deal_id);
   if (candidate_id && typeof candidate_id === "string") query = query.eq("candidate_id", candidate_id);
   if (consultant_name && typeof consultant_name === "string") query = query.eq("consultant_name", consultant_name);
@@ -173,15 +186,91 @@ async function updateTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: str
   return res.json(data);
 }
 
+// 論理削除: deleted_at に現在時刻をセットするだけ。物理削除はしない。
+// 復元したい場合は別エンドポイント /restore で対応。
 async function deleteTranscript(db: ReturnType<typeof getSupabaseAdmin>, id: string, req: VercelRequest, res: VercelResponse) {
   const { data: existing } = await db.from("meeting_transcripts").select("consultant_name, is_leader").eq("id", id).single();
   if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
   if (!canWriteMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
     return send403(res, "この面談を削除する権限がありません");
   }
-  const { error } = await db.from("meeting_transcripts").delete().eq("id", id);
+  // 物理削除ではなく論理削除 (deleted_at にタイムスタンプ)。復元可能。
+  const { error } = await db.from("meeting_transcripts")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", id);
   if (error) return res.status(500).json({ error: error.message });
-  return res.json({ deleted: true });
+  return res.json({ deleted: true, soft: true });
+}
+
+// 面談アウトカム (CVR 分析の基礎データ) を記録。本人または閲覧権限のあるユーザーが入力可能。
+async function saveOutcome(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { data: existing } = await db.from("meeting_transcripts")
+    .select("consultant_name, is_leader, outcome")
+    .eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canReadMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談の結果を記録する権限がありません");
+  }
+  const b = (req.body || {}) as Record<string, unknown>;
+  const outcome = {
+    next_meeting: Boolean(b.next_meeting),
+    applied: Boolean(b.applied),
+    hired: Boolean(b.hired),
+    lost: Boolean(b.lost),
+    lost_reason: typeof b.lost_reason === "string" ? b.lost_reason.slice(0, 500) : null,
+    recorded_at: new Date().toISOString(),
+    recorded_by: getRequestUser(req),
+  };
+  const { error } = await db.from("meeting_transcripts").update({ outcome }).eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ outcome });
+}
+
+// 論理削除の取り消し (deleted_at を null に戻す)。
+async function restoreTranscript(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { data: existing } = await db.from("meeting_transcripts")
+    .select("consultant_name, is_leader")
+    .eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canWriteMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を復元する権限がありません");
+  }
+  const { error } = await db.from("meeting_transcripts").update({ deleted_at: null }).eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ restored: true });
+}
+
+// 採点履歴を返す (DB が無い時はエラーじゃなく空配列)。
+async function getScoreHistory(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { data: existing } = await db.from("meeting_transcripts")
+    .select("consultant_name, is_leader")
+    .eq("id", id).single();
+  if (!existing) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canReadMeeting(getRequestUser(req), existing as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談の履歴を閲覧する権限がありません");
+  }
+  const { data, error } = await db.from("score_history")
+    .select("id, score_data, source, scored_by, scored_at")
+    .eq("meeting_id", id)
+    .order("scored_at", { ascending: false })
+    .limit(20);
+  if (error) return res.json({ history: [] }); // テーブル未作成等は空配列で返す
+  return res.json({ history: data || [] });
 }
 
 // 小林本人のみ実行可能。既存のリーダー面談を全削除し、api/_data/leader-meetings-seed.json の 15 件で再投入する。
@@ -200,12 +289,13 @@ async function reseedLeaderMeetings(db: ReturnType<typeof getSupabaseAdmin>, req
     return res.status(500).json({ error: `シードファイル読み込み失敗: ${(e as Error).message}` });
   }
 
-  // 既存リーダー面談を全削除 (consultant_name=小林 AND is_leader=true)
+  // 既存リーダー面談を「論理削除」(deleted_at にマーク)。物理削除はせず、復元可能な状態で隔離。
   const { error: delErr, count: deletedCount } = await db
     .from("meeting_transcripts")
-    .delete({ count: "exact" })
+    .update({ deleted_at: new Date().toISOString() }, { count: "exact" })
     .eq("consultant_name", "小林")
-    .eq("is_leader", true);
+    .eq("is_leader", true)
+    .is("deleted_at", null);
   if (delErr) return res.status(500).json({ error: `削除失敗: ${delErr.message}` });
 
   // 新規 15 件を挿入
@@ -470,6 +560,23 @@ async function manualScoreMeeting(
     _scored_at: new Date().toISOString(),
   };
 
+  // 旧スコアがあれば履歴に退避 (面談タイトル・コンサル名もスナップショット保存)
+  const { data: prevRow } = await db.from("meeting_transcripts")
+    .select("score_data, title, consultant_name")
+    .eq("id", id).single();
+  if (prevRow?.score_data) {
+    try {
+      await db.from("score_history").insert({
+        meeting_id: id,
+        meeting_title: prevRow.title,
+        consultant_name: prevRow.consultant_name,
+        score_data: prevRow.score_data,
+        source: (prevRow.score_data as { _source?: string })._source || "ai",
+        scored_by: (prevRow.score_data as { _scored_by?: string })._scored_by || null,
+      });
+    } catch { /* 履歴失敗でも本処理は続行 */ }
+  }
+
   const { error } = await db.from("meeting_transcripts")
     .update({ score_data, score_input_hash: null })  // hash null で次回の AI 採点が走るようにする
     .eq("id", id);
@@ -514,10 +621,11 @@ async function scoreMeetingInternal(
   // これにより Gemini の汎用判断ではなく "小林流の採点基準" でスコアリングされる。
   let leaderRefs = "";
   try {
-    // 5 件のリーダー面談を取得し、各議事録の本文を 6000 字まで参照 (Gemini 100万 tokens 余裕)。
+    // 5 件のリーダー面談を取得 (論理削除されたものは除外)。各議事録の本文を 6000 字まで参照。
     const { data: leaderRows } = await db.from("meeting_transcripts")
       .select("title, transcript_text, score_data")
       .eq("is_leader", true)
+      .is("deleted_at", null)
       .order("recorded_at", { ascending: false })
       .limit(5);
     if (leaderRows && leaderRows.length > 0) {
@@ -541,6 +649,7 @@ async function scoreMeetingInternal(
     const { data: feedbackRows } = await db.from("meeting_transcripts")
       .select("title, leader_feedback")
       .not("leader_feedback", "is", null)
+      .is("deleted_at", null)
       .order("updated_at", { ascending: false })
       .limit(5);
     if (feedbackRows && feedbackRows.length > 0) {
@@ -898,6 +1007,19 @@ ${text.slice(0, 25000)}
       parsed.learning_resources = [];
     }
 
+    // 旧スコアを score_history に退避してから更新 (成長推移を残す・面談メタも snapshot)
+    if (meeting.score_data) {
+      try {
+        await db.from("score_history").insert({
+          meeting_id: id,
+          meeting_title: (meeting as { title?: string }).title,
+          consultant_name: (meeting as { consultant_name?: string }).consultant_name,
+          score_data: meeting.score_data,
+          source: (meeting.score_data as { _source?: string })._source || "ai",
+          scored_by: (meeting.score_data as { _scored_by?: string })._scored_by || null,
+        });
+      } catch { /* テーブル未作成でも採点自体は成功させる */ }
+    }
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
   } else if (parseError) {
     // 原因切り分けのため Gemini の生レスポンス先頭を error 文字列に含める (フロントが raw を捨てるため)
@@ -961,9 +1083,11 @@ async function extractPlaybook(
   const cacheLeaderKey = leader_name || "__all__";
 
   // リーダー面談を抽出。leader_name 指定があれば consultant_name で絞り、無ければ is_leader=true のみ
+  // (論理削除されたものは除外)
   let query = db.from("meeting_transcripts")
     .select("*")
     .eq("is_leader", true)
+    .is("deleted_at", null)
     .order("recorded_at", { ascending: false })
     .limit(maxMeetings || 20);
 
@@ -1145,6 +1269,7 @@ async function contextualCoach(
     const { data: leaderRows } = await db.from("meeting_transcripts")
       .select("title, transcript_text, summary")
       .eq("is_leader", true)
+      .is("deleted_at", null)
       .order("recorded_at", { ascending: false })
       .limit(5);
     if (leaderRows && leaderRows.length > 0) {

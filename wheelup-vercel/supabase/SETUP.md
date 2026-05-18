@@ -24,6 +24,7 @@ Supabase ダッシュボード → 左メニュー「SQL Editor」で、以下�
 4. `supabase/migration_003_playbook_cache.sql`（プレイブック生成のキャッシュ）
 5. `supabase/migration_004_score_cache.sql`（採点キャッシュ用ハッシュ列）
 6. `supabase/migration_005_hardening.sql`（本番運用向けインデックス・PK再設計・トリガー追加）
+7. `supabase/migration_006_outcome_history.sql`（CVR 改善エンジン・採点履歴・論理削除）
 
 それぞれの内容を SQL Editor にコピー＆ペーストして「Run」。
 全部 `create table if not exists` / `add column if not exists` で書いているため、何度実行しても安全。
