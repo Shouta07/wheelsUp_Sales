@@ -606,13 +606,28 @@ ${leaderRefs || "（なし）"}
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
   // LLM が出力する JSON にしばしば混入する不可視/全角文字を ASCII 相当に正規化。
-  // “” はカーリーダブル、‘’ はカーリーシングル、﻿ は BOM、　 は全角スペース。
+  // - “” → "       (カーリーダブル引用符)
+  // - ‘’ → '       (カーリーシングル引用符)
+  // - ﻿  → 削除     (BOM)
+  // - 　 → " "     (全角スペース)
+  // - ，：；（）［］｛｝．→ ASCII (全角 JSON 構文文字)
+  //   ※ 「、」「。」「「」」「『』」は文字列内容なので変換しない
   const normalizeJson = (s: string) =>
     s
       .replace(/[“”]/g, '"')
       .replace(/[‘’]/g, "'")
       .replace(/﻿/g, "")
-      .replace(/　/g, " ");
+      .replace(/　/g, " ")
+      .replace(/，/g, ",")
+      .replace(/：/g, ":")
+      .replace(/；/g, ";")
+      .replace(/（/g, "(")
+      .replace(/）/g, ")")
+      .replace(/［/g, "[")
+      .replace(/］/g, "]")
+      .replace(/｛/g, "{")
+      .replace(/｝/g, "}")
+      .replace(/．/g, ".");
 
   let parsed: Record<string, unknown> = {};
   let parseError: string | null = null;
