@@ -398,18 +398,27 @@ async function scoreMeetingInternal(
   const text = (meeting.transcript_text as string) || (meeting.summary as string) || "";
   if (!text) return { error: "テキストがありません", status: 400 };
 
-  // リーダーの面談タイトルを学習リソースの素材として注入（URL ハルシネーション回避）
+  // リーダー (=小林) の過去面談を「教師データ」として注入。
+  // これにより Gemini の汎用判断ではなく "小林流の採点基準" でスコアリングされる。
+  // 議事録本文を 800 字まで載せて、リーダーが各軸でどう動いているかを示す。
   let leaderRefs = "";
   try {
     const { data: leaderRows } = await db.from("meeting_transcripts")
-      .select("title, summary")
+      .select("title, transcript_text, score_data")
       .eq("is_leader", true)
       .order("recorded_at", { ascending: false })
-      .limit(5);
+      .limit(3);
     if (leaderRows && leaderRows.length > 0) {
       leaderRefs = leaderRows
-        .map((r, i) => `${i + 1}. 「${r.title}」 ${(r.summary as string)?.slice(0, 80) || ""}`)
-        .join("\n");
+        .map((r, i) => {
+          const body = ((r.transcript_text as string) || "").slice(0, 800);
+          const score = r.score_data as { scores?: Record<string, number>; total?: number } | null;
+          const scoreLine = score?.scores
+            ? `[リーダー自己採点: needs ${score.scores.needs} / proposal ${score.scores.proposal} / trust ${score.scores.trust} / closing ${score.scores.closing} / intel ${score.scores.intel}]`
+            : "";
+          return `--- リーダー面談例 ${i + 1}: 「${r.title}」 ${scoreLine}\n${body}`;
+        })
+        .join("\n\n");
     }
   } catch { /* ignore */ }
 
@@ -458,17 +467,20 @@ async function scoreMeetingInternal(
   };
 
   const requestBody = JSON.stringify({
-      contents: [{ parts: [{ text: `建築技術者専門の人材紹介の面談を 5 軸で採点してください。各軸 0〜10 点の整数。
+      contents: [{ parts: [{ text: `建築技術者専門の人材紹介で、リーダー (小林) の面談スタイルを基準に、メンバーの面談を 5 軸で採点してください。各軸 0〜10 点の整数。
 
-## 面談記録 (最大4000字):
+## 採点の基準 = リーダー (小林) の面談 (これに近いほど高得点)
+${leaderRefs || "（リーダー面談データなし。汎用ベストプラクティスで採点）"}
+
+## 採点対象 (メンバーの面談・最大4000字):
 ${text.slice(0, 4000)}
 
-## 採点軸 (各 10 点満点・整数):
-- needs: 候補者/企業の本音・課題を引き出せたか
-- proposal: 具体的求人/候補者を提示し、マッチ理由を説明できたか
-- trust: 業界知識で専門家としての信頼を得られたか
-- closing: 期限付きの次アクション/コミットを得られたか
-- intel: 他社状況・温度感・意思決定者を聞き出せたか
+## 採点軸 (各 10 点満点・整数。リーダー面談での同軸の動きと比較して評価):
+- needs: 候補者/企業の本音・課題を引き出せたか (リーダーは深掘り質問を 3 層以上重ねる)
+- proposal: 具体的求人/候補者を提示し、マッチ理由を説明できたか (リーダーは企業名を出す)
+- trust: 業界知識で専門家としての信頼を得られたか (リーダーは市場の実態を正直に伝える)
+- closing: 期限付きの次アクション/コミットを得られたか (リーダーは具体日付を切る)
+- intel: 他社状況・温度感・意思決定者を聞き出せたか (リーダーは他社エージェントの利用状況まで確認する)
 
 ## 厳守ルール:
 1. **同じ文を絶対に繰り返さない**。1 観察 = 1 度だけ書く。
