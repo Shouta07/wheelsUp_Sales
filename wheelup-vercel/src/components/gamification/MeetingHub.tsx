@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
@@ -6,7 +6,6 @@ import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
 import {
   fetchMeetings,
   createMeeting,
-  transcribeAudio,
   summarizeMeeting,
   addLeaderFeedback,
   scoreMeeting,
@@ -16,7 +15,6 @@ import {
   type KeyMoment,
 } from "../../api/client";
 
-const AUDIO_MAX_BYTES = 4 * 1024 * 1024;
 const todayInputValue = () => {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -26,7 +24,6 @@ const todayInputValue = () => {
 export default function MeetingHub() {
   const { currentUser } = useGamification();
   const qc = useQueryClient();
-  const fileRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<"mine" | "leader">("mine");
   const [uploading, setUploading] = useState(false);
   const [textInput, setTextInput] = useState("");
@@ -76,49 +73,6 @@ export default function MeetingHub() {
     prevScoredRef.current = scoredIds;
   }, [myMeetings]);
 
-  const fileToBase64 = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        const idx = result.indexOf(",");
-        resolve(idx >= 0 ? result.slice(idx + 1) : result);
-      };
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
-  const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > AUDIO_MAX_BYTES) {
-      setErrorMsg(
-        `音声ファイルが大きすぎます (${(file.size / 1024 / 1024).toFixed(1)}MB)。${(AUDIO_MAX_BYTES / 1024 / 1024).toFixed(0)}MB 以下に分割するか、低ビットレートで再エンコードしてください。`,
-      );
-      if (fileRef.current) fileRef.current.value = "";
-      return;
-    }
-    setUploading(true);
-    setErrorMsg(null);
-    try {
-      const base64 = await fileToBase64(file);
-      await transcribeAudio({
-        audio_base64: base64,
-        mime_type: file.type || "audio/webm",
-        title: titleInput || `${currentUser} 面談録音`,
-        consultant_name: currentUser,
-        is_leader: isLeaderUser,
-        recorded_at: dateInput ? new Date(`${dateInput}T09:00:00`).toISOString() : undefined,
-      });
-      qc.invalidateQueries({ queryKey: ["meetings"] });
-      setTitleInput("");
-      // 採点はユーザーが「▶ AI 採点する」を押した時のみ走る (運用面のクォータ制御のため)
-    } catch (err) {
-      setErrorMsg(`録音の保存に失敗しました: ${(err as Error).message}`);
-    }
-    setUploading(false);
-    if (fileRef.current) fileRef.current.value = "";
-  };
 
   const handleTextSave = async () => {
     if (!textInput.trim()) return;
@@ -150,6 +104,7 @@ export default function MeetingHub() {
 
   // 採点中の面談ID。null なら誰も採点していない。1 件ずつ採点する制約をフロントで強制する。
   const [scoringId, setScoringId] = useState<string | null>(null);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
 
   const handleRescore = async (id: string) => {
     if (scoringId) return; // 他の採点中はクリック無視 (運用面のクォータ保護)
@@ -163,6 +118,27 @@ export default function MeetingHub() {
     } finally {
       setScoringId(null);
     }
+  };
+
+  // リーダー面談を順次再採点。RPM 上限を踏まえ 5 秒間隔で実行 (15 RPM の安全マージン)。
+  const bulkRescoreLeader = async (ids: string[]) => {
+    if (scoringId || bulkProgress) return;
+    setBulkProgress({ done: 0, total: ids.length });
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      setScoringId(id);
+      try {
+        await scoreMeeting(id, false);
+      } catch (err) {
+        console.error(`bulk rescore ${id} failed:`, err);
+      }
+      setScoringId(null);
+      setBulkProgress({ done: i + 1, total: ids.length });
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+      // 次の採点まで 5 秒待つ (Gemini RPM 保護)
+      if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 5000));
+    }
+    setBulkProgress(null);
   };
 
   const handleDelete = async (id: string, title: string) => {
@@ -255,35 +231,20 @@ export default function MeetingHub() {
               今日に戻す
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="text-center">
-              <input ref={fileRef} type="file" accept="audio/*,video/*" className="hidden" onChange={handleAudioUpload} />
-              <button
-                onClick={() => fileRef.current?.click()}
-                disabled={uploading}
-                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-4 hover:border-duo-blue hover:bg-duo-blue/5 transition-colors"
-              >
-                <span className="text-2xl block mb-1">🎙️</span>
-                <span className="text-xs font-bold text-[#777]">
-                  {uploading ? "Geminiで分析中..." : "録音・録画ファイル"}
-                </span>
-              </button>
-            </div>
-            <div className="text-center">
-              <textarea
-                value={textInput}
-                onChange={(e) => setTextInput(e.target.value)}
-                placeholder="議事録テキストを貼り付け..."
-                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-20 focus:border-duo-blue focus:outline-none resize-none"
-              />
-              <button
-                onClick={handleTextSave}
-                disabled={!textInput.trim() || uploading}
-                className="btn-duo btn-duo-blue !px-4 !py-1.5 !text-[10px] mt-1 w-full disabled:opacity-40"
-              >
-                テキスト保存
-              </button>
-            </div>
+          <div>
+            <textarea
+              value={textInput}
+              onChange={(e) => setTextInput(e.target.value)}
+              placeholder="議事録テキストを貼り付け..."
+              className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-32 focus:border-duo-blue focus:outline-none resize-none"
+            />
+            <button
+              onClick={handleTextSave}
+              disabled={!textInput.trim() || uploading}
+              className="btn-duo btn-duo-blue !px-4 !py-2 !text-xs mt-2 w-full disabled:opacity-40"
+            >
+              {uploading ? "保存中..." : "テキスト保存"}
+            </button>
           </div>
           <p className="text-[10px] font-bold text-[#afafaf] text-center">
             {isLeaderUser ? "👑 リーダーの面談として保存されます" : `📝 ${currentUser}の面談として保存されます`}
@@ -295,6 +256,38 @@ export default function MeetingHub() {
           )}
         </div>
       )}
+
+      {/* リーダータブで小林本人がいる時、未採点のリーダー面談を一括採点するボタン */}
+      {isLeaderUser && tab === "leader" && (() => {
+        const unscored = (leaderMeetings?.transcripts || []).filter(
+          (m) => m.transcript_text && !m.score_data,
+        );
+        if (unscored.length === 0) return null;
+        return (
+          <div className="mb-3 rounded-2xl border-2 border-duo-orange bg-duo-orange/5 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-extrabold text-[#4b4b4b]">
+                  👑 未採点のリーダー面談 {unscored.length} 件
+                </p>
+                <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                  AI 採点してチームの教師データを整えます (1 件 ~20 秒、合計 {Math.ceil(unscored.length * 25 / 60)} 分目安)
+                </p>
+              </div>
+              <button
+                onClick={() => bulkRescoreLeader(unscored.map((m) => m.id))}
+                disabled={!!scoringId}
+                className="btn-duo !px-4 !py-2 !text-[11px] shrink-0 text-white disabled:opacity-40"
+                style={{ backgroundColor: "#FF9600", borderBottomColor: "#cc7800" }}
+              >
+                {bulkProgress
+                  ? `${bulkProgress.done} / ${bulkProgress.total} 採点中...`
+                  : "一括採点する"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Meeting list */}
       <div className="space-y-3">
@@ -480,6 +473,18 @@ function MeetingEntry({
             <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
               <p className="text-[11px] font-bold text-duo-red leading-snug">{rescoreError}</p>
             </div>
+          )}
+
+          {/* 流し込んだ議事録本文 (折りたたみ) */}
+          {m.transcript_text && (
+            <details className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3">
+              <summary className="cursor-pointer text-[10px] font-extrabold text-[#777] uppercase tracking-wider select-none">
+                📝 流し込んだ議事録 ({m.transcript_text.length.toLocaleString()} 字)
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap text-[11px] font-bold text-[#4b4b4b] leading-relaxed max-h-96 overflow-y-auto">
+                {m.transcript_text}
+              </pre>
+            </details>
           )}
 
           {/* Summary */}
