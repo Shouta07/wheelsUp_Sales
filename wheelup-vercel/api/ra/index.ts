@@ -50,7 +50,31 @@ async function authorize(req: VercelRequest, db: DB): Promise<{ ok: true } | { o
       // fall through to 401
     }
   }
-  return { ok: false, status: 401, body: { error: "unauthorized" } };
+
+  // 失敗時、ハマったときに切り分けやすいよう reason を返す。
+  // セキュリティ上、シークレット自体は絶対に返さない。先頭・末尾の数文字と長さだけ。
+  const obs = (s: string | undefined | null) => {
+    if (!s) return null;
+    const len = s.length;
+    if (len <= 8) return { len, head: "***", tail: "***" };
+    return { len, head: s.slice(0, 4), tail: s.slice(-4) };
+  };
+  const reason =
+    !secret              ? "CRON_SECRET env not set on server" :
+    !bearer && !querySecret ? "no credential sent (need Authorization: Bearer or ?secret=)" :
+                              "credential present but does not match CRON_SECRET";
+  return {
+    ok: false, status: 401,
+    body: {
+      error: "unauthorized",
+      reason,
+      hints: {
+        env_secret: obs(secret ?? ""),       // null = env 未設定
+        sent_bearer: obs(bearer),            // null = ヘッダ無し
+        sent_query:  obs(querySecret),       // null = ?secret 無し
+      },
+    },
+  };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
