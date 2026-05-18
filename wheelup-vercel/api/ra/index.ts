@@ -265,24 +265,39 @@ type ExtractedJob = {
 
 async function extractJobs(companyName: string, body: string): Promise<ExtractedJob[]> {
   if (!hasGemini) return [];
+  // Few-shot で精度を上げる。日本企業の採用ページに頻出するパターンを 2 例提示。
   const prompt = `You are reading the careers page of "${companyName}" (a Japanese firm in the FM/PM/建築設備/施設管理/ゼネコン space). Extract every currently-open job listing in the text below.
 
 Return STRICT JSON:
 {
   "jobs": [
     {
-      "title": "string",
-      "description": "string (short)",
-      "requirements": "string (1-3 sentences)",
-      "employment_type": "正社員 | 契約 | null",
-      "location": "string | null",
-      "salary_range": "string | null",
-      "url": "string | null"
+      "title": "string (正式な役職名)",
+      "description": "string (業務概要を 1-2 文で)",
+      "requirements": "string (必須要件 1-3 文)",
+      "employment_type": "正社員 | 契約 | 業務委託 | null",
+      "location": "string (都道府県/市区町村 | null)",
+      "salary_range": "string (例 '600-900万円' | null)",
+      "url": "string (求人詳細URLがあれば | null)"
     }
   ]
 }
 
-If you can't find concrete openings, return {"jobs": []}.
+# 例 1 (典型的な施設管理求人):
+{ "jobs": [
+  { "title": "ビル設備管理スタッフ", "description": "オフィスビルの空調・電気・給排水設備の日常点検および軽微な修繕対応。", "requirements": "第二種電気工事士 / 危険物乙4 のいずれか保有、設備管理経験3年以上", "employment_type": "正社員", "location": "東京都港区", "salary_range": "400-550万円", "url": null }
+]}
+
+# 例 2 (一覧ページで詳細リンクのみのとき):
+{ "jobs": [
+  { "title": "プロパティマネージャー", "description": "オフィス・商業施設のテナント折衝・収益最大化提案。", "requirements": "宅建士、不動産業界経験5年以上", "employment_type": "正社員", "location": "東京", "salary_range": null, "url": "https://example.co.jp/recruit/pm-2026" }
+]}
+
+# ルール:
+- 「説明会」「インターン」「学生向け」「過去募集」は除外 — 中途で現役の求人のみ
+- 同じタイトルが複数現れたら 1 つにまとめる
+- 確証が持てない場合は null にする (推測しない)
+- 求人が見当たらないときは {"jobs": []}
 
 --- PAGE TEXT ---
 ${body.slice(0, 20000)}`;
@@ -313,8 +328,16 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const errors: string[] = [];
 
   // Cartesian product of jobs × candidates, then run in parallel pool.
+  // 60s Vercel timeout + Gemini 10 RPM 制限 内に収めるため 20 ペアで打切る
+  // (jobs=20×candidates=4=80 を放置するとタイムアウト確実)
+  const PAIR_CAP = 20;
   const pairs: Array<{ j: typeof jobs extends Array<infer J> | null ? J : never; c: typeof candidates extends Array<infer C> | null ? C : never }> = [];
-  for (const j of jobs ?? []) for (const c of candidates ?? []) pairs.push({ j, c });
+  outer: for (const j of jobs ?? []) {
+    for (const c of candidates ?? []) {
+      pairs.push({ j, c });
+      if (pairs.length >= PAIR_CAP) break outer;
+    }
+  }
 
   await mapWithConcurrency(pairs, 1, async ({ j, c }) => {
     try {
@@ -399,9 +422,19 @@ JSON のみ:
   const parsed = await generateJson<{ suggestions: { name: string; category?: string; reason?: string; hint_url?: string }[] }>(prompt, { temperature: 0.4 });
   const suggestions = parsed.suggestions ?? [];
 
-  const seen = new Set(knownNames);
-  const toInsert = suggestions
-    .filter((s) => s.name && !seen.has(s.name))
+  // 既知企業との照合は正規化キーで: 「株式会社/(株)」「 」「・」「-」を除去して小文字化
+  // 「株式会社X」と「X 株式会社」、「X コーポレーション」と「Xコーポレーション」を同一視
+  const seenKeys = new Set(knownNames.map(normalizeCompanyName));
+  const dedupSuggestions: typeof suggestions = [];
+  const dedupKeys = new Set<string>();
+  for (const s of suggestions) {
+    if (!s.name) continue;
+    const k = normalizeCompanyName(s.name);
+    if (!k || seenKeys.has(k) || dedupKeys.has(k)) continue;
+    dedupKeys.add(k);
+    dedupSuggestions.push(s);
+  }
+  const toInsert = dedupSuggestions
     .map((s) => ({
       name: s.name, reason: s.reason ?? null, hint_url: s.hint_url ?? null,
       category: s.category ?? null, status: "pending", raw: s,
@@ -676,6 +709,16 @@ async function enrichOne(db: DB, target: { id: string | null; name: string }): P
 // ---------------------------------------------------------------------------
 // enrichOne の補助関数 (Layer 1〜4)
 // ---------------------------------------------------------------------------
+
+// 企業名の正規化キー — discover の重複排除に使う
+// 「株式会社/(株)/有限会社/(有)」「全角/半角スペース」「・/-/—」を除去して NFKC + 小文字化
+function normalizeCompanyName(name: string): string {
+  return name
+    .normalize("NFKC")
+    .replace(/株式会社|有限会社|合同会社|\(株\)|（株）|\(有\)|（有\)|株\.|有\./g, "")
+    .replace(/[\s　\-—・]/g, "")
+    .toLowerCase();
+}
 
 function dedupe(arr: string[]): string[] {
   const seen = new Set<string>();
