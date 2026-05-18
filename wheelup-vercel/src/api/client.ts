@@ -5,7 +5,8 @@ const BASE = "/api";
 function getCurrentUserHeader(): Record<string, string> {
   if (typeof window === "undefined") return {};
   const name = window.localStorage.getItem("wheelsup_current_user");
-  return name ? { "X-User-Name": name } : {};
+  // HTTP ヘッダは ISO-8859-1 のみ。日本語名は encodeURIComponent でエスケープしてから送る。
+  return name ? { "X-User-Name": encodeURIComponent(name) } : {};
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
