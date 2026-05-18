@@ -8,8 +8,15 @@ const VALID_USERS = new Set(["小林", "西村", "辻内", "安藤", "村上"]);
 
 export function getRequestUser(req: VercelRequest): string | null {
   const raw = req.headers["x-user-name"];
-  const name = Array.isArray(raw) ? raw[0] : raw;
-  if (!name || typeof name !== "string") return null;
+  const encoded = Array.isArray(raw) ? raw[0] : raw;
+  if (!encoded || typeof encoded !== "string") return null;
+  // フロント側で encodeURIComponent しているのでデコード (日本語名のため)
+  let name: string;
+  try {
+    name = decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
   return VALID_USERS.has(name) ? name : null;
 }
 
