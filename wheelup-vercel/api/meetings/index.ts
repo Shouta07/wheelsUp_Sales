@@ -419,27 +419,40 @@ async function scoreMeetingInternal(
     return { meeting_id: id, cached: true, ...(meeting.score_data as Record<string, unknown>) };
   }
 
-  // 採点は gemini-2.5-flash-lite を使う。
-  // - 構造化出力 (responseSchema) の遵守が gemini-2.5-flash より素直
-  // - 出力品質も採点用途では十分
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
+  // マルチモデル・フォールバック:
+  // - 一番軽い flash-lite (無料枠に優しい) から試す
+  // - 429/503 で失敗したら flash → 2.0-flash と切り替えて再試行
+  // - 全モデルで失敗したら最終エラーを返す
+  // - GEMINI_SCORING_MODEL 環境変数で先頭モデルを上書き可能
+  const fallbackModels = (process.env.GEMINI_SCORING_MODEL
+    ? [process.env.GEMINI_SCORING_MODEL, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
+    : ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
+  ).filter((m, i, arr) => arr.indexOf(m) === i); // 重複除去
 
-  // 503 UNAVAILABLE (Gemini 側の一時過負荷) は短い待機で復旧することが多いので最大 2 回まで自動再試行。
-  const callGemini = async (): Promise<Response> => {
+  const callGemini = async (): Promise<{ res: Response; model: string }> => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     let lastRes: Response | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      lastRes = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: requestBody,
-      });
-      if (lastRes.ok) return lastRes;
-      // 過負荷系のみ再試行 (503/500)。429 はクォータなので即座にエラー返す。
-      if (lastRes.status !== 503 && lastRes.status !== 500) return lastRes;
-      if (attempt < 2) await sleep(1500 * (attempt + 1)); // 1.5s, 3s
+    let lastModel = fallbackModels[0];
+    for (const model of fallbackModels) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      // 各モデルで最大 2 回まで内部リトライ (503 は短時間で復旧することが多い)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        lastRes = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody,
+        });
+        lastModel = model;
+        if (lastRes.ok) return { res: lastRes, model };
+        // 過負荷 (503/500) は短い待機で再試行
+        if ((lastRes.status === 503 || lastRes.status === 500) && attempt === 0) {
+          await sleep(1500);
+          continue;
+        }
+        break; // 429 等、または 2 回目失敗なら次のモデルへ
+      }
     }
-    return lastRes as Response;
+    return { res: lastRes as Response, model: lastModel };
   };
 
   const requestBody = JSON.stringify({
@@ -570,18 +583,23 @@ ${leaderRefs || "（なし）"}
       },
   });
 
-  const geminiRes = await callGemini();
+  const { res: geminiRes, model: usedModel } = await callGemini();
 
   if (!geminiRes.ok) {
     const errText = await geminiRes.text().catch(() => "");
     if (geminiRes.status === 429) {
-      // Google の生メッセージをそのまま出す。原因が "quota" なのか "billing" なのか "API not enabled" なのか区別するため。
       return {
-        error: `[Gemini 429] ${errText.slice(0, 800)}`,
+        error: `全モデルでクォータ上限に到達 (最終試行: ${usedModel})。数分待って再試行するか、Google AI Studio で利用状況を確認してください。`,
         status: 429,
       };
     }
-    return { error: `Gemini API error: ${errText.slice(0, 200)}`, status: 502 };
+    if (geminiRes.status === 503) {
+      return {
+        error: `Gemini が現在混雑中で全モデル (flash-lite / flash / 2.0-flash) が応答していません。数分後にもう一度お試しください。`,
+        status: 503,
+      };
+    }
+    return { error: `Gemini API error (${usedModel}): ${errText.slice(0, 200)}`, status: 502 };
   }
 
   const geminiData = await geminiRes.json();
