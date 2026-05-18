@@ -461,7 +461,7 @@ async function scoreMeetingInternal(
 **必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
 
 ## 面談記録:
-${text.slice(0, 6000)}
+${text.slice(0, 4000)}
 
 ## 参考: リーダーの過去面談（学習リソース推薦時に source_name として引用してよい）:
 ${leaderRefs || "（なし）"}
@@ -509,14 +509,15 @@ ${leaderRefs || "（なし）"}
   ]
 }
 
-要件:
-- key_moments は 4〜6 件、面談中の主要な転換点（強みでも弱みでも）を時系列順で。axis は needs/proposal/trust/closing/intel のいずれか、axis_label は日本語ラベル、relevance は 0〜1。speaker は判別できれば「候補者」「企業」「コンサル」、不明なら省略。timestamp や seconds は不明なら省略（推測しない）。
-- learning_resources は弱い軸（点数の低い 2 軸）を中心に 2〜3 件。source_type は基本 "playbook"、source_name は参考リストの face value をそのまま使うか、空なら "リーダー面談記録"。url は決して推測しない（URLを書かない）。
-- evidence は面談記録から直接引用するか、「〜ができていない」という事実ベースの指摘にしてください。
+要件 (簡潔さ優先):
+- key_moments は **2〜3 件のみ**、最重要の転換点だけ。各 text は 60 字以内。axis_label は省略可。
+- learning_resources は弱い軸を中心に **1〜2 件**。description は 80 字以内。url は書かない。
+- evidence は各軸 60 字以内で簡潔に。
+- strengths / improvements は **各 2 件、各 50 字以内**。leader_would は 100 字以内。
 - 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
       generationConfig: {
         temperature: 0.3,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 2048,
         responseMimeType: "application/json",
         // Schema を強制してパースエラー → リトライ をゼロに。精度と省エネを両立。
         responseSchema: {
