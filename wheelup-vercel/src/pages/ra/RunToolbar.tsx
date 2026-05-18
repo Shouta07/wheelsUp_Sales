@@ -19,6 +19,7 @@ function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms));
 export default function RunToolbar({ onDone }: { onDone?: () => void }) {
   const [busy, setBusy] = useState<Kind | null>(null);
   const [history, setHistory] = useState<RunResult[]>([]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // ─── 全自動モード ───────────────────────────────────────
   const [autoMode, setAutoMode] = useState(false);
@@ -123,83 +124,81 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
   }
 
   return (
-    <div className="rounded-xl bg-white border border-[#e5e5e5] p-3 mb-3">
-      {/* 全自動モード行 (最上段) */}
-      <div className="mb-3 pb-3 border-b border-dashed border-[#e5e5e5]">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setAutoMode((v) => !v)}
-            disabled={busy !== null}
-            className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-              autoMode
-                ? "bg-red-500 text-white hover:bg-red-600"
-                : "bg-[#58CC02] text-white hover:bg-[#46a302]"
-            }`}
-            style={{ borderBottom: autoMode ? "3px solid #b91c1c" : "3px solid #46a302" }}
-          >
-            {autoMode ? "■ 全自動モード 停止" : "▶ 🤖 全自動モード 開始"}
-          </button>
-          {autoMode && (
-            <>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-[10px] font-bold text-green-700">running</span>
-              </span>
-              <span className="text-[10px] text-[#4b4b4b] tabular-nums">
-                {autoStatus} / cycle {autoCycle}
-              </span>
-            </>
-          )}
-          {!autoMode && (
-            <span className="text-[10px] text-[#afafaf]">
-              押下で enrich → クロール → マッチ を自動ループ (1サイクル ~90秒)
+    <div className="rounded-xl bg-white border border-[#e5e5e5] p-4 mb-3">
+      {/* 🎯 メインアクション: 全自動モード だけを大きく目立たせる */}
+      <div className="flex flex-col items-center gap-2">
+        <button
+          onClick={() => setAutoMode((v) => !v)}
+          disabled={busy !== null}
+          className={`px-6 py-3 rounded-2xl text-base font-black transition-all shadow-sm ${
+            autoMode
+              ? "bg-red-500 text-white hover:bg-red-600"
+              : "bg-[#58CC02] text-white hover:bg-[#46a302]"
+          }`}
+          style={{ borderBottom: autoMode ? "4px solid #b91c1c" : "4px solid #46a302" }}
+        >
+          {autoMode ? "■ 自動収集を停止" : "▶ 自動でデータを集める"}
+        </button>
+        {autoMode ? (
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs font-bold text-green-700">running</span>
+            <span className="text-xs text-[#4b4b4b] tabular-nums">
+              {autoStatus} / cycle {autoCycle}
             </span>
-          )}
-        </div>
+          </div>
+        ) : (
+          <p className="text-[11px] text-[#afafaf] text-center">
+            URL補完 → 求人クロール → 候補者マッチ を自動ループで回します<br />
+            (1サイクル ~90秒、Gemini無料枠 ~5RPM)
+          </p>
+        )}
       </div>
 
-      {/* 単発ボタン群 */}
-      <div className="flex flex-wrap items-center gap-2">
-        {KINDS.map((t) => {
-          const isBusy = busy === t.key;
-          const disabled = busy !== null || autoMode;
-          return (
-            <button
-              key={t.key}
-              onClick={() => run(t)}
-              disabled={disabled}
-              title={t.expected}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${
-                isBusy
-                  ? "bg-yellow-50 border-yellow-300 text-yellow-700"
-                  : disabled
-                  ? "bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed"
-                  : "bg-white border-[#e5e5e5] text-[#4b4b4b] hover:bg-gray-50"
-              }`}
-              style={{ borderBottom: isBusy ? "2px solid #d97706" : undefined }}
-            >
-              {isBusy ? (
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-block w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-                  実行中…
-                </span>
-              ) : (
-                <>{t.emoji} {t.label}</>
-              )}
-            </button>
-          );
-        })}
-        {busy && (
-          <span className="ml-2 text-[10px] text-[#afafaf]">
-            完了まで 10-40 秒 / 他のボタンは無効化中
-          </span>
-        )}
-        {autoMode && !busy && (
-          <span className="ml-2 text-[10px] text-[#afafaf]">
-            全自動モード中は単発ボタンを無効化
-          </span>
-        )}
-      </div>
+      {/* 詳細操作 (折りたたみ) */}
+      <details
+        open={advancedOpen}
+        onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
+        className="mt-3 pt-3 border-t border-dashed border-[#e5e5e5]"
+      >
+        <summary className="cursor-pointer text-[11px] font-bold text-[#afafaf] hover:text-[#4b4b4b]">
+          {advancedOpen ? "▼" : "▶"} 個別実行 (デバッグ・初回投入用)
+        </summary>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {KINDS.map((t) => {
+            const isBusy = busy === t.key;
+            const disabled = busy !== null || autoMode;
+            return (
+              <button
+                key={t.key}
+                onClick={() => run(t)}
+                disabled={disabled}
+                title={t.expected}
+                className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${
+                  isBusy
+                    ? "bg-yellow-50 border-yellow-300 text-yellow-700"
+                    : disabled
+                    ? "bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed"
+                    : "bg-white border-[#e5e5e5] text-[#4b4b4b] hover:bg-gray-50"
+                }`}
+                style={{ borderBottom: isBusy ? "2px solid #d97706" : undefined }}
+              >
+                {isBusy ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                    実行中…
+                  </span>
+                ) : (
+                  <>{t.emoji} {t.label}</>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[10px] text-[#afafaf]">
+          通常は「自動でデータを集める」だけで OK。これらは限定的に動かしたい時用。
+        </p>
+      </details>
 
       {/* 実行履歴 (最大 8 件、最新が上) */}
       {history.length > 0 && (
@@ -219,9 +218,6 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
         </div>
       )}
 
-      <div className="mt-2 pt-2 border-t border-dashed border-[#e5e5e5] text-[10px] text-[#afafaf]">
-        💡 Gemini 無料枠 10 RPM 制限あり。全自動モードは制限内で安全に回る設計 (~5 RPM)。
-      </div>
     </div>
   );
 }
