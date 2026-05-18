@@ -877,6 +877,16 @@ export interface MeetingTranscript {
   created_at: string;
   updated_at: string;
   leader_feedback?: string;
+  outcome?: {
+    next_meeting?: boolean;
+    applied?: boolean;
+    hired?: boolean;
+    lost?: boolean;
+    lost_reason?: string | null;
+    recorded_at?: string;
+    recorded_by?: string;
+  } | null;
+  deleted_at?: string | null;
 }
 
 /* ---------- Meeting API (with demo fallback) ---------- */
@@ -1014,6 +1024,24 @@ export interface ContextualCoachingResponse {
 export async function scoreMeeting(id: string, force = false): Promise<MeetingScore> {
   if (DEMO_MODE) return demoScoreMeeting(id);
   return request(`/meetings/${id}/score`, { method: "POST", body: JSON.stringify({ force }) });
+}
+
+// 面談アウトカム (この面談から応募/採用に進んだか) を記録。CVR 分析の基礎データ。
+export async function saveMeetingOutcome(
+  id: string,
+  data: { next_meeting?: boolean; applied?: boolean; hired?: boolean; lost?: boolean; lost_reason?: string },
+): Promise<{ outcome: Record<string, unknown> }> {
+  return request(`/meetings/${id}/outcome`, { method: "POST", body: JSON.stringify(data) });
+}
+
+// 論理削除された面談を復元
+export async function restoreMeeting(id: string): Promise<{ restored: boolean }> {
+  return request(`/meetings/${id}/restore`, { method: "POST" });
+}
+
+// 採点履歴を取得 (成長推移トラッキング)
+export async function getScoreHistory(id: string): Promise<{ history: Array<{ id: string; score_data: MeetingScore; source: string; scored_at: string }> }> {
+  return request(`/meetings/${id}/history`);
 }
 
 // 小林が手動採点 (AI を使わずに DB に直接書き込む)。リーダー専用。

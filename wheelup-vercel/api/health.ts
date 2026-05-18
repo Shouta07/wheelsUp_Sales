@@ -48,8 +48,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const db = getSupabaseAdmin();
     const { error, count } = await db
       .from("meeting_transcripts")
+      .select("id", { count: "exact", head: true })
+      .is("deleted_at", null);
+    checks.meeting_transcripts = error ? `error: ${error.message}` : `ok (${count ?? 0} active rows)`;
+
+    // ゴミ箱 (論理削除) の件数
+    const { count: trashedCount } = await db
+      .from("meeting_transcripts")
+      .select("id", { count: "exact", head: true })
+      .not("deleted_at", "is", null);
+    checks.trashed_meetings = `${trashedCount ?? 0} rows (復元可能)`;
+
+    // 採点履歴
+    const { count: historyCount } = await db
+      .from("score_history")
       .select("id", { count: "exact", head: true });
-    checks.meeting_transcripts = error ? `error: ${error.message}` : `ok (${count ?? 0} rows)`;
+    checks.score_history = `${historyCount ?? 0} snapshots`;
   } catch (e) {
     checks.meeting_transcripts = `FAIL: ${(e as Error).message}`;
   }
