@@ -201,7 +201,7 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
   const mimeType = mime_type || "audio/webm";
 
   // Gemini API で文字起こし
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
@@ -288,7 +288,7 @@ async function summarize(db: ReturnType<typeof getSupabaseAdmin>, id: string, re
   const text = transcript.transcript_text as string;
   if (!text) return res.status(400).json({ error: "文字起こしテキストがありません" });
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
@@ -419,7 +419,7 @@ async function scoreMeetingInternal(
     return { meeting_id: id, cached: true, ...(meeting.score_data as Record<string, unknown>) };
   }
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -735,7 +735,7 @@ async function extractPlaybook(
     return `[面談${i + 1}] ${m.title}\n${body}`;
   }).join("\n\n");
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const geminiRes = await fetch(geminiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
