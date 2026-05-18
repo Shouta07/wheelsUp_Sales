@@ -620,9 +620,11 @@ ${text.slice(0, 25000)}
   },
   "improvements": ["改善点1", "改善点2"],
   "key_moments": [
-    { "text": "面談記録からの実際の発言", "axis": "needs", "speaker": "コンサル" }
+    { "text": "面談記録からの実際の発言", "axis": "needs", "speaker": "コンサル", "timestamp": "午後06:23" }
   ]
-}` }] }],
+}
+
+注: timestamp は議事録の該当発言の直前にある括弧内の時刻 (例: 午前10:05 / 午後06:23) をそのまま記載。後でユーザーが議事録該当箇所にジャンプするのに使う。` }] }],
       generationConfig: {
         temperature: 0.5,
         topP: 0.9,
@@ -664,6 +666,7 @@ ${text.slice(0, 25000)}
                   text: { type: "string" },
                   axis: { type: "string" },
                   speaker: { type: "string" },
+                  timestamp: { type: "string" },
                 },
                 required: ["text", "axis"],
               },

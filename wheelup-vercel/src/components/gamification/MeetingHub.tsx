@@ -15,6 +15,14 @@ import {
   type KeyMoment,
 } from "../../api/client";
 
+const escapeHtml = (s: string) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
 const todayInputValue = () => {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -388,9 +396,37 @@ function MeetingEntry({
   const [fbText, setFbText] = useState("");
   const [fbSaving, setFbSaving] = useState(false);
   const [rescoreError, setRescoreError] = useState<string | null>(null);
+  const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
+  const transcriptDetailsRef = useRef<HTMLDetailsElement>(null);
+  const transcriptPreRef = useRef<HTMLPreElement>(null);
   const rescoring = isScoringThis;
   const score = m.score_data;
   const canDelete = isLeaderUser || (m.consultant_name && m.consultant_name === currentUser);
+
+  // キーモーメントクリック時の議事録ジャンプ。details を開き、該当テキストを <mark> で囲んでスクロール。
+  const jumpToTranscript = (snippet: string, fullText: string) => {
+    const cleanSnippet = snippet.replace(/^「|」$/g, "").trim();
+    if (!cleanSnippet) return;
+    // 議事録から該当箇所を探す (40字までで部分一致)
+    const probe = cleanSnippet.slice(0, 40);
+    const idx = fullText.indexOf(probe);
+    if (idx < 0) {
+      // 完全一致しなくても details だけ開く
+      if (transcriptDetailsRef.current) transcriptDetailsRef.current.open = true;
+      setHighlightedTranscript(escapeHtml(fullText));
+      return;
+    }
+    const before = escapeHtml(fullText.slice(0, idx));
+    const matched = escapeHtml(fullText.slice(idx, idx + cleanSnippet.length));
+    const after = escapeHtml(fullText.slice(idx + cleanSnippet.length));
+    setHighlightedTranscript(`${before}<mark id="km-jump" style="background:#fde68a;padding:1px 2px;border-radius:3px;">${matched}</mark>${after}`);
+    if (transcriptDetailsRef.current) transcriptDetailsRef.current.open = true;
+    // 次のフレームでスクロール (DOM 更新後)
+    requestAnimationFrame(() => {
+      const mark = transcriptPreRef.current?.querySelector("#km-jump");
+      mark?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  };
 
   const handleRescoreClick = async () => {
     if (isScoringOther) return;
@@ -513,15 +549,18 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* 流し込んだ議事録本文 (折りたたみ) */}
+          {/* 流し込んだ議事録本文 (折りたたみ・キーモーメントクリックで該当箇所に自動スクロール) */}
           {m.transcript_text && (
-            <details className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3">
+            <details
+              ref={transcriptDetailsRef}
+              className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3"
+            >
               <summary className="cursor-pointer text-[10px] font-extrabold text-[#777] uppercase tracking-wider select-none">
                 📝 流し込んだ議事録 ({m.transcript_text.length.toLocaleString()} 字)
               </summary>
-              <pre className="mt-2 whitespace-pre-wrap text-[11px] font-bold text-[#4b4b4b] leading-relaxed max-h-96 overflow-y-auto">
-                {m.transcript_text}
-              </pre>
+              <pre ref={transcriptPreRef} className="mt-2 whitespace-pre-wrap text-[11px] font-bold text-[#4b4b4b] leading-relaxed max-h-96 overflow-y-auto" dangerouslySetInnerHTML={{
+                __html: highlightedTranscript || escapeHtml(m.transcript_text),
+              }} />
             </details>
           )}
 
@@ -564,7 +603,7 @@ function MeetingEntry({
 
           {/* Key Moments Timeline (ダイジェストプレイバック) */}
           {score?.key_moments && score.key_moments.length > 0 && (
-            <DigestTimeline moments={score.key_moments} />
+            <DigestTimeline moments={score.key_moments} onJumpToTranscript={(text) => jumpToTranscript(text, m.transcript_text || "")} />
           )}
 
           {/* Learning Resources (学習リソース) */}
@@ -663,17 +702,43 @@ const DIMS = [
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
 
-function DigestTimeline({ moments }: { moments: KeyMoment[] }) {
+// "午前10:05" / "午後06:23" / "18:23" を 0:00 起点の分に換算。失敗時 null。
+function timestampToMinutes(raw: string): number | null {
+  const s = raw.trim();
+  const pmMatch = s.match(/午後\s*(\d{1,2}):(\d{2})/);
+  if (pmMatch) {
+    const h = parseInt(pmMatch[1], 10);
+    return ((h === 12 ? 12 : h + 12) * 60) + parseInt(pmMatch[2], 10);
+  }
+  const amMatch = s.match(/午前\s*(\d{1,2}):(\d{2})/);
+  if (amMatch) {
+    const h = parseInt(amMatch[1], 10);
+    return ((h === 12 ? 0 : h) * 60) + parseInt(amMatch[2], 10);
+  }
+  const plain = s.match(/(\d{1,2}):(\d{2})/);
+  if (plain) return parseInt(plain[1], 10) * 60 + parseInt(plain[2], 10);
+  return null;
+}
+
+function DigestTimeline({ moments, onJumpToTranscript }: { moments: KeyMoment[]; onJumpToTranscript?: (text: string) => void }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const hasTimestamps = moments.some((m) => m.seconds != null);
-  const maxSec = hasTimestamps ? Math.max(...moments.filter((m) => m.seconds != null).map((m) => m.seconds!), 1) : 0;
+  // 議事録の timestamp 文字列を絶対分に換算 → 0 起点の相対秒に正規化。
+  const minutes = moments.map((m) => (m.timestamp ? timestampToMinutes(m.timestamp) : null));
+  const validMinutes = minutes.filter((n): n is number => n != null);
+  const baseMinute = validMinutes.length > 0 ? Math.min(...validMinutes) : 0;
+  const relativeSeconds = minutes.map((n) => (n != null ? (n - baseMinute) * 60 : null));
+  const hasTimestamps = relativeSeconds.some((n) => n != null);
+  const maxSec = hasTimestamps ? Math.max(...relativeSeconds.filter((n): n is number => n != null), 1) : 0;
 
   const handleDotClick = (idx: number) => {
     setSelectedIdx(idx === selectedIdx ? null : idx);
     const el = listRef.current?.querySelector(`[data-moment="${idx}"]`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    // 議事録セクションへのジャンプ要求 (親が議事録 details を開いて該当箇所にスクロール)
+    const m = moments[idx];
+    if (m?.text && onJumpToTranscript) onJumpToTranscript(m.text);
   };
 
   return (
@@ -690,14 +755,15 @@ function DigestTimeline({ moments }: { moments: KeyMoment[] }) {
             <span>{Math.floor(maxSec / 60)}:{String(maxSec % 60).padStart(2, "0")}</span>
           </div>
           <div className="relative h-6 bg-[#fef3c7] rounded-full border border-[#fde68a]">
-            {moments.filter((m) => m.seconds != null).map((m, idx) => {
-              const origIdx = moments.indexOf(m);
-              const left = (m.seconds! / maxSec) * 100;
+            {moments.map((m, origIdx) => {
+              const sec = relativeSeconds[origIdx];
+              if (sec == null) return null;
+              const left = (sec / maxSec) * 100;
               const dim = DIMS.find((d) => d.key === m.axis);
               const isActive = selectedIdx === origIdx;
               return (
                 <button
-                  key={idx}
+                  key={origIdx}
                   onClick={() => handleDotClick(origIdx)}
                   className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-200"
                   style={{ left: `${Math.min(Math.max(left, 3), 97)}%` }}
