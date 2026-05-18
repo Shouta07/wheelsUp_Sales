@@ -555,8 +555,9 @@ ${leaderRefs || "（なし）"}
   if (!geminiRes.ok) {
     const errText = await geminiRes.text().catch(() => "");
     if (geminiRes.status === 429) {
+      // Google の生メッセージをそのまま出す。原因が "quota" なのか "billing" なのか "API not enabled" なのか区別するため。
       return {
-        error: "Gemini API のクォータ上限に到達しました。1〜2 分待って再試行するか、Google AI Studio で利用状況を確認してください (https://aistudio.google.com/app/apikey)。",
+        error: `[Gemini 429] ${errText.slice(0, 800)}`,
         status: 429,
       };
     }
