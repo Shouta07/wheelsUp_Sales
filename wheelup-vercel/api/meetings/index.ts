@@ -423,10 +423,26 @@ async function scoreMeetingInternal(
   // - 構造化出力 (responseSchema) の遵守が gemini-2.5-flash より素直
   // - 出力品質も採点用途では十分
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
-  const geminiRes = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+
+  // 503 UNAVAILABLE (Gemini 側の一時過負荷) は短い待機で復旧することが多いので最大 2 回まで自動再試行。
+  const callGemini = async (): Promise<Response> => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let lastRes: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      lastRes = await fetch(geminiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
+      });
+      if (lastRes.ok) return lastRes;
+      // 過負荷系のみ再試行 (503/500)。429 はクォータなので即座にエラー返す。
+      if (lastRes.status !== 503 && lastRes.status !== 500) return lastRes;
+      if (attempt < 2) await sleep(1500 * (attempt + 1)); // 1.5s, 3s
+    }
+    return lastRes as Response;
+  };
+
+  const requestBody = JSON.stringify({
       contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
 以下の面談記録を5つの観点で10点満点で採点し、ダイジェスト用キーモーメントと学習リソースまで含めて返してください。
 **必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
@@ -552,8 +568,9 @@ ${leaderRefs || "（なし）"}
           required: ["scores", "evidence"],
         },
       },
-    }),
   });
+
+  const geminiRes = await callGemini();
 
   if (!geminiRes.ok) {
     const errText = await geminiRes.text().catch(() => "");
