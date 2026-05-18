@@ -264,17 +264,10 @@ export default function ProspectingHome({
         <table className="w-full text-xs">
           <thead className="bg-gray-50 text-left text-[10px] uppercase text-gray-500">
             <tr>
-              <th className="px-2 py-1.5 w-10">優先</th>
-              <th className="px-2 py-1.5">企業</th>
-              <th className="px-2 py-1.5">カテゴリ</th>
-              <th className="px-2 py-1.5">アプローチ</th>
-              <th className="px-2 py-1.5 text-right">送信</th>
-              <th className="px-2 py-1.5 text-right">返信</th>
-              <th className="px-2 py-1.5 text-right">商談</th>
-              <th className="px-2 py-1.5">最終</th>
-              <th className="px-2 py-1.5 text-right">求人</th>
-              <th className="px-2 py-1.5 text-right">◎○</th>
-              <th className="px-2 py-1.5">送信先</th>
+              <th className="px-3 py-2">企業</th>
+              <th className="px-3 py-2">状況</th>
+              <th className="px-3 py-2 text-right">求人/◎○</th>
+              <th className="px-3 py-2">送信先</th>
             </tr>
           </thead>
           <tbody>
@@ -283,39 +276,64 @@ export default function ProspectingHome({
               const email = c.contact_paths.find((p) => p.kind === "email");
               const statusDef = APPROACH_STATUSES.find((s) => s.key === c.approach_status)!;
               const counts = c.activity_counts;
+              const hasActivity = (counts.sent ?? 0) + (counts.replied ?? 0) + (counts.meeting ?? 0) > 0;
               return (
-                <tr key={c.id} className="border-t border-gray-100">
-                  <td className="px-2 py-1.5 font-bold">{c.priority}</td>
-                  <td className="px-2 py-1.5">
-                    <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
-                      {c.name}
-                    </button>
+                <tr key={c.id} className="border-t border-gray-100 hover:bg-gray-50/40">
+                  {/* 企業 (優先度バッジ + カテゴリ) */}
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                        c.priority === "S" ? "bg-amber-100 text-amber-700" :
+                        c.priority === "A" ? "bg-blue-100 text-blue-700" :
+                        "bg-gray-100 text-gray-600"
+                      }`}>{c.priority}</span>
+                      <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline truncate">
+                        {c.name}
+                      </button>
+                    </div>
+                    {c.category && (
+                      <div className="text-[10px] text-gray-400 ml-7 truncate">{c.category}</div>
+                    )}
                   </td>
-                  <td className="px-2 py-1.5 text-gray-500">{c.category ?? "-"}</td>
-                  <td className="px-2 py-1.5">
-                    <span className={`text-[10px] font-bold ${statusDef.color}`}>● {statusDef.label}</span>
+
+                  {/* 状況 (アプローチ + アクティビティ集約) */}
+                  <td className="px-3 py-2">
+                    <div className={`text-[10px] font-bold ${statusDef.color}`}>● {statusDef.label}</div>
+                    {hasActivity && (
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        {(counts.sent ?? 0) > 0 && `送${counts.sent} `}
+                        {(counts.replied ?? 0) > 0 && `返${counts.replied} `}
+                        {(counts.meeting ?? 0) > 0 && `商${counts.meeting} `}
+                        {c.last_activity_at && `· ${formatAgo(c.last_activity_at)}`}
+                      </div>
+                    )}
                   </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.sent)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.replied)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{numOrDash(counts.meeting)}</td>
-                  <td className="px-2 py-1.5 text-[10px] text-gray-500 whitespace-nowrap">
-                    {c.last_activity_at ? formatAgo(c.last_activity_at) : "-"}
+
+                  {/* 求人/◎○ */}
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    <span className="text-[#4b4b4b]">{c.open_jobs}</span>
+                    {c.strong_matches > 0 && (
+                      <span className="ml-1 text-green-600 font-bold">◎{c.strong_matches}</span>
+                    )}
                   </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{c.open_jobs}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{c.strong_matches}</td>
-                  <td className="px-2 py-1.5 text-[10px]">
+
+                  {/* 送信先 */}
+                  <td className="px-3 py-2">
                     <div className="flex gap-1">
                       {form && (
-                        <a href={form.url} target="_blank" rel="noreferrer" className="px-1.5 py-0.5 rounded-full bg-[#1CB0F6] text-white font-bold">📝</a>
+                        <a href={form.url} target="_blank" rel="noreferrer" title="お問い合わせフォーム"
+                          className="px-2 py-0.5 rounded-full bg-[#1CB0F6] text-white text-[10px] font-bold">📝 フォーム</a>
                       )}
                       {email && (
-                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer" className="px-1.5 py-0.5 rounded-full bg-[#58CC02] text-white font-bold">✉</a>
+                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer" title={email.value ?? ""}
+                          className="px-2 py-0.5 rounded-full bg-[#58CC02] text-white text-[10px] font-bold">✉ メール</a>
                       )}
                       {!form && !email && c.recruit_page_url && (
-                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="text-gray-400 hover:underline">採用P</a>
+                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer"
+                          className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-bold hover:bg-gray-200">採用ページ</a>
                       )}
                       {!form && !email && !c.recruit_page_url && (
-                        <span className="text-gray-300">未</span>
+                        <span className="text-[10px] text-gray-300">未取得</span>
                       )}
                     </div>
                   </td>
@@ -374,10 +392,6 @@ function FilterChip({ active, onClick, label, count }: { active: boolean; onClic
       {label} {count}
     </button>
   );
-}
-
-function numOrDash(n: number | undefined): string {
-  return n && n > 0 ? String(n) : "-";
 }
 
 function formatAgo(iso: string): string {
