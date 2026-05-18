@@ -18,8 +18,6 @@
  *       OR a valid Supabase user session token (Authorization: Bearer <jwt>).
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
@@ -50,7 +48,31 @@ async function authorize(req: VercelRequest, db: DB): Promise<{ ok: true } | { o
       // fall through to 401
     }
   }
-  return { ok: false, status: 401, body: { error: "unauthorized" } };
+
+  // 失敗時、ハマったときに切り分けやすいよう reason を返す。
+  // セキュリティ上、シークレット自体は絶対に返さない。先頭・末尾の数文字と長さだけ。
+  const obs = (s: string | undefined | null) => {
+    if (!s) return null;
+    const len = s.length;
+    if (len <= 8) return { len, head: "***", tail: "***" };
+    return { len, head: s.slice(0, 4), tail: s.slice(-4) };
+  };
+  const reason =
+    !secret              ? "CRON_SECRET env not set on server" :
+    !bearer && !querySecret ? "no credential sent (need Authorization: Bearer or ?secret=)" :
+                              "credential present but does not match CRON_SECRET";
+  return {
+    ok: false, status: 401,
+    body: {
+      error: "unauthorized",
+      reason,
+      hints: {
+        env_secret: obs(secret ?? ""),       // null = env 未設定
+        sent_bearer: obs(bearer),            // null = ヘッダ無し
+        sent_query:  obs(querySecret),       // null = ?secret 無し
+      },
+    },
+  };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -58,11 +80,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await authorize(req, db);
   if (!auth.ok) return res.status(auth.status).json(auth.body);
 
-  const segments: string[] = Array.isArray(req.query.path)
-    ? req.query.path
-    : req.query.path
-      ? [req.query.path]
-      : [];
+  // `/api/ra/foo/bar` は vercel.json で `/api/ra?path=foo/bar` にリライトされる。
+  // path はクエリ文字列で渡ってくるので、トリム + slash-split で segments 化。
+  const rawPath = req.query.path;
+  const toSegments = (s: string) => s.split("/").map((x) => x.trim()).filter(Boolean);
+  const segments: string[] = Array.isArray(rawPath)
+    ? rawPath.flatMap((p) => toSegments(String(p)))
+    : typeof rawPath === "string" && rawPath
+    ? toSegments(rawPath)
+    : [];
   const sub = segments[0] ?? "";
 
   try {
@@ -91,12 +117,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 // ---------------------------------------------------------------------------
 // /api/ra/import
 // ---------------------------------------------------------------------------
-async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
-  // Vercel bundles files referenced via path.join — we put the seed under public/ra/
-  // and ALSO under api/_data/ to ensure they're included in the function bundle.
-  const dataDir = path.join(process.cwd(), "api", "_data");
+async function importSeed(db: DB, req: VercelRequest, res: VercelResponse) {
+  // Vercel の serverless function は /var/task/ で実行され、api/_data/ の生ファイルは
+  // バンドルに含まれないことがある (Vercel が非 .js/.ts を bundling 対象にしない)。
+  // そこで /ra/companies_seed.csv は public/ra/ に既に存在し HTTP 200 で配信できているので、
+  // 同じドメインから fetch して読む方式に切り替える。
+  const host = req.headers.host;
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? "https";
+  const base = `${proto}://${host}`;
 
-  const csv = await readFile(path.join(dataDir, "companies_seed.csv"), "utf8");
+  const csvRes = await fetch(`${base}/ra/companies_seed.csv`);
+  if (!csvRes.ok) throw new Error(`fetch companies_seed.csv: ${csvRes.status}`);
+  const csv = await csvRes.text();
   const rows = parseCsv(csv);
   const companies = rows.map((r) => ({
     name: r.name,
@@ -115,7 +147,9 @@ async function importSeed(db: DB, _req: VercelRequest, res: VercelResponse) {
     .select("id");
   if (e1) throw new Error(`upsert ra_companies: ${e1.message}`);
 
-  const candJson = await readFile(path.join(dataDir, "candidates_seed.json"), "utf8");
+  const candRes = await fetch(`${base}/ra/candidates_seed.json`);
+  if (!candRes.ok) throw new Error(`fetch candidates_seed.json: ${candRes.status}`);
+  const candJson = await candRes.text();
   const cands = (JSON.parse(candJson) as Array<{
     code: string; name: string; headline?: string; profile: Record<string, unknown>;
   }>).map((c) => ({

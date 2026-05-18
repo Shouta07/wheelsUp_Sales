@@ -582,6 +582,9 @@ ${leaderRefs || "（なし）"}
   let parsed: Record<string, unknown> = {};
   let parseError: string | null = null;
   try {
+    // responseSchema を強制しているので原則そのまま JSON.parse できるはず。
+    // まずは raw を直接試し、失敗したらコードフェンス剥がし → {} 抽出 の順で復旧。
+    // LLM が混入するカーリー引用符/BOM/全角スペースは事前に正規化。
     const trimmed = normalizeJson(raw.trim());
     try {
       parsed = JSON.parse(trimmed);
