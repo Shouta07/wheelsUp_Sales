@@ -570,10 +570,17 @@ ${leaderRefs || "（なし）"}
   let parsed: Record<string, unknown> = {};
   let parseError: string | null = null;
   try {
-    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    else parseError = "JSON が含まれていません";
+    // responseSchema を強制しているので原則そのまま JSON.parse できるはず。
+    // まずは raw を直接試し、失敗したらコードフェンス剥がし → {} 抽出 の順で復旧。
+    const trimmed = raw.trim();
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      const cleaned = trimmed.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      else throw new Error("JSON が含まれていません");
+    }
   } catch (e) {
     parseError = (e as Error).message;
   }
@@ -630,7 +637,12 @@ ${leaderRefs || "（なし）"}
 
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
   } else if (parseError) {
-    return { error: `スコアJSONのパース失敗: ${parseError}`, raw: raw.slice(0, 500), status: 502 };
+    // 原因切り分けのため Gemini の生レスポンス先頭を error 文字列に含める (フロントが raw を捨てるため)
+    return {
+      error: `スコアJSONのパース失敗: ${parseError}\n---raw output (head 800ch)---\n${raw.slice(0, 800)}`,
+      raw: raw.slice(0, 2000),
+      status: 502,
+    };
   }
 
   return { meeting_id: id, ...parsed };
