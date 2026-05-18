@@ -19,7 +19,7 @@ export const geminiModel = MODEL;
 
 export async function generateJson<T>(
   prompt: string,
-  opts: { temperature?: number } = {},
+  opts: { temperature?: number; maxOutputTokens?: number } = {},
 ): Promise<T> {
   if (!KEY) throw new Error("GEMINI_API_KEY not configured");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`;
@@ -32,6 +32,7 @@ export async function generateJson<T>(
       generationConfig: {
         temperature: opts.temperature ?? 0.2,
         responseMimeType: "application/json",
+        maxOutputTokens: opts.maxOutputTokens ?? 2048,
       },
     }),
   });
