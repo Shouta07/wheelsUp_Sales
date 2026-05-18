@@ -7,6 +7,7 @@ import ProspectingDiscovery from "./ProspectingDiscovery";
 import ProspectingCandidates from "./ProspectingCandidates";
 import ProspectingJobs from "./ProspectingJobs";
 import RunToolbar from "./RunToolbar";
+import ProgressPanel from "./ProgressPanel";
 import { isLive } from "../../lib/ra/queries";
 
 type View =
@@ -72,6 +73,7 @@ export default function ProspectingApp() {
         </nav>
 
         <RunToolbar onDone={reload} />
+        <ProgressPanel refreshKey={reloadKey} />
 
         <div key={reloadKey}>
           {view.name === "home"       && <ProspectingHome onOpenCompany={openCompany} />}

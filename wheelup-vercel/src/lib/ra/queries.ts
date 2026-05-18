@@ -180,6 +180,72 @@ export async function getMonthlyKPI(): Promise<MonthlyKPI> {
   };
 }
 
+// =============================================================================
+// PROGRESS / ACTIVITY PANELS
+// 「自分が押したボタンの結果」と「DBが今どうなってるか」を見せるための簡易クエリ群。
+// =============================================================================
+
+export type ProgressCounts = {
+  companies: number;
+  with_url: number;
+  crawled: number;
+  open_jobs: number;
+  matches_total: number;
+  strong_matches: number;     // ◎○
+  ready: number;              // ◎○ かつ未送信
+  sent_this_month: number;
+};
+
+export async function getProgressCounts(): Promise<ProgressCounts> {
+  if (!isLive) {
+    return {
+      companies: 0, with_url: 0, crawled: 0, open_jobs: 0,
+      matches_total: 0, strong_matches: 0, ready: 0, sent_this_month: 0,
+    };
+  }
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const [c1, c2, c3, c4, c5, c6, c7, c8] = await Promise.all([
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }),
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }).not("recruit_page_url", "is", null),
+    supabase.from("ra_companies").select("id", { count: "exact", head: true }).not("last_crawled_at", "is", null),
+    supabase.from("ra_jobs").select("id", { count: "exact", head: true }).eq("is_open", true),
+    supabase.from("ra_matches").select("id", { count: "exact", head: true }),
+    supabase.from("ra_matches").select("id", { count: "exact", head: true }).in("grade", ["◎", "○"]),
+    supabase.from("ra_ready_to_execute").select("match_id", { count: "exact", head: true }),
+    supabase.from("ra_activities").select("id", { count: "exact", head: true }).eq("kind", "sent").gte("occurred_at", monthStart),
+  ]);
+  return {
+    companies:        c1.count ?? 0,
+    with_url:         c2.count ?? 0,
+    crawled:          c3.count ?? 0,
+    open_jobs:        c4.count ?? 0,
+    matches_total:    c5.count ?? 0,
+    strong_matches:   c6.count ?? 0,
+    ready:            c7.count ?? 0,
+    sent_this_month:  c8.count ?? 0,
+  };
+}
+
+export type CrawlRunRow = {
+  id: string;
+  kind: string;
+  started_at: string | null;
+  finished_at: string | null;
+  ok: boolean | null;
+  stats: Record<string, unknown> | null;
+  error: string | null;
+};
+
+export async function listRecentRuns(limit = 5): Promise<CrawlRunRow[]> {
+  if (!isLive) return [];
+  const { data } = await supabase
+    .from("ra_crawl_runs")
+    .select("id,kind,started_at,finished_at,ok,stats,error")
+    .order("finished_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  return (data ?? []) as CrawlRunRow[];
+}
+
 export async function listCandidates(includeInactive = true): Promise<Candidate[]> {
   if (!isLive) return fetchMockCandidates();
   let q = supabase.from("ra_candidates").select("*").order("is_active", { ascending: false }).order("code", { ascending: true });
