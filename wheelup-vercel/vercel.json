@@ -17,9 +17,5 @@
         { "key": "Cache-Control", "value": "no-store" }
       ]
     }
-  ],
-  "crons": [
-    { "path": "/api/ra/cron", "schedule": "0 22 * * *" },
-    { "path": "/api/ra/cron", "schedule": "0 8 * * *" }
   ]
 }
