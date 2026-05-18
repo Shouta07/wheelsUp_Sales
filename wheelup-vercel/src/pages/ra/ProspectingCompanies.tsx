@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, listCompaniesEnriched } from "../../lib/ra/queries";
-import type { ContactPath, CompanyOverview, Priority } from "../../lib/ra/types";
+import { APPROACH_STATUSES, api, listCompaniesEnriched } from "../../lib/ra/queries";
+import type { ApproachStatus, CompanyEnriched } from "../../lib/ra/queries";
+import type { Priority } from "../../lib/ra/types";
 import Modal from "./Modal";
 import { parseCsv } from "../../lib/ra/csv";
 
@@ -9,12 +10,12 @@ export default function ProspectingCompanies({
 }: {
   onOpenCompany: (id: string) => void;
 }) {
-  type Row = CompanyOverview & { contact_paths: ContactPath[] };
-  const [all, setAll] = useState<Row[]>([]);
+  const [all, setAll] = useState<CompanyEnriched[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [priority, setPriority] = useState<"" | Priority>("");
   const [category, setCategory] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | ApproachStatus>("");
   const [showAdd, setShowAdd] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -30,15 +31,25 @@ export default function ProspectingCompanies({
     [all],
   );
 
+  // ステータス別の件数 — フィルタチップに表示
+  const statusCounts = useMemo(() => {
+    const counts: Record<ApproachStatus, number> = {
+      untouched: 0, sent: 0, replied: 0, meeting: 0, closed: 0,
+    };
+    for (const c of all) counts[c.approach_status] = (counts[c.approach_status] ?? 0) + 1;
+    return counts;
+  }, [all]);
+
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
     return all.filter((c) => {
       if (ql && !c.name.toLowerCase().includes(ql)) return false;
       if (priority && c.priority !== priority) return false;
       if (category && c.category !== category) return false;
+      if (statusFilter && c.approach_status !== statusFilter) return false;
       return true;
     });
-  }, [all, q, priority, category]);
+  }, [all, q, priority, category, statusFilter]);
 
   if (loading) return <div className="text-sm text-gray-500">読み込み中…</div>;
 
@@ -92,17 +103,47 @@ export default function ProspectingCompanies({
         />
       )}
 
+      {/* アプローチ状況フィルタチップ */}
+      <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
+        <button
+          onClick={() => setStatusFilter("")}
+          className={`px-2 py-1 rounded-full ${
+            statusFilter === "" ? "bg-[#4b4b4b] text-white" : "bg-white border border-[#e5e5e5] text-[#4b4b4b]"
+          }`}
+        >
+          すべて {all.length}
+        </button>
+        {APPROACH_STATUSES.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setStatusFilter(statusFilter === s.key ? "" : s.key)}
+            className={`px-2 py-1 rounded-full ${
+              statusFilter === s.key
+                ? "bg-[#1CB0F6] text-white"
+                : "bg-white border border-[#e5e5e5] text-[#4b4b4b] hover:bg-gray-50"
+            }`}
+          >
+            {s.label} {statusCounts[s.key] ?? 0}
+          </button>
+        ))}
+      </div>
+
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
         <table className="w-full text-xs">
           <thead className="bg-gray-50 text-left text-[10px] uppercase text-gray-500">
             <tr>
-              <th className="px-3 py-2 w-12">優先度</th>
-              <th className="px-3 py-2">カテゴリ</th>
-              <th className="px-3 py-2">企業</th>
-              <th className="px-3 py-2 text-right">公開求人</th>
-              <th className="px-3 py-2 text-right">◎○</th>
-              <th className="px-3 py-2">採用ページ</th>
-              <th className="px-3 py-2">問い合わせ</th>
+              <th className="px-2 py-2 w-12">優先度</th>
+              <th className="px-2 py-2">企業</th>
+              <th className="px-2 py-2">カテゴリ</th>
+              <th className="px-2 py-2">アプローチ</th>
+              <th className="px-2 py-2 text-right">送信</th>
+              <th className="px-2 py-2 text-right">返信</th>
+              <th className="px-2 py-2 text-right">商談</th>
+              <th className="px-2 py-2 text-right">成約</th>
+              <th className="px-2 py-2">最終接触</th>
+              <th className="px-2 py-2 text-right">求人</th>
+              <th className="px-2 py-2 text-right">◎○</th>
+              <th className="px-2 py-2">送信先</th>
             </tr>
           </thead>
           <tbody>
@@ -110,36 +151,41 @@ export default function ProspectingCompanies({
               const form = c.contact_paths.find((p) => p.kind === "form");
               const email = c.contact_paths.find((p) => p.kind === "email");
               const linkedin = c.contact_paths.find((p) => p.kind === "linkedin");
+              const counts = c.activity_counts;
+              const statusDef = APPROACH_STATUSES.find((s) => s.key === c.approach_status)!;
               return (
                 <tr key={c.id} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-bold">{c.priority}</td>
-                  <td className="px-3 py-2 text-gray-500">{c.category ?? "-"}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2 font-bold">{c.priority}</td>
+                  <td className="px-2 py-2">
                     <button onClick={() => onOpenCompany(c.id)} className="font-bold text-[#4b4b4b] hover:underline">
                       {c.name}
                     </button>
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{c.open_jobs}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{c.strong_matches}</td>
-                  <td className="max-w-[160px] truncate px-3 py-2 text-[10px] text-gray-500">
-                    {c.recruit_page_url ? (
-                      <a href={c.recruit_page_url} target="_blank" rel="noreferrer" className="hover:underline">
-                        {c.recruit_page_url}
-                      </a>
-                    ) : <span className="text-gray-300">未取得</span>}
+                  <td className="px-2 py-2 text-gray-500">{c.category ?? "-"}</td>
+                  <td className="px-2 py-2">
+                    <span className={`text-[10px] font-bold ${statusDef.color}`}>● {statusDef.label}</span>
                   </td>
-                  <td className="px-3 py-2 text-[10px]">
+                  <td className="px-2 py-2 text-right tabular-nums">{numOrDash(counts.sent)}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{numOrDash(counts.replied)}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{numOrDash(counts.meeting)}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{numOrDash(counts.closed)}</td>
+                  <td className="px-2 py-2 text-[10px] text-gray-500 whitespace-nowrap">
+                    {c.last_activity_at ? `${formatAgo(c.last_activity_at)} (${c.last_activity_kind})` : "-"}
+                  </td>
+                  <td className="px-2 py-2 text-right tabular-nums">{c.open_jobs}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{c.strong_matches}</td>
+                  <td className="px-2 py-2 text-[10px]">
                     <div className="flex gap-1 flex-wrap">
                       {form && (
                         <a href={form.url} target="_blank" rel="noreferrer"
                           className="px-1.5 py-0.5 rounded-full bg-[#1CB0F6] text-white font-bold hover:bg-[#1899D6]">
-                          📝 form
+                          📝
                         </a>
                       )}
                       {email && (
                         <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer"
                           className="px-1.5 py-0.5 rounded-full bg-[#58CC02] text-white font-bold hover:bg-[#46a302]">
-                          ✉️ email
+                          ✉️
                         </a>
                       )}
                       {linkedin && (
@@ -148,9 +194,15 @@ export default function ProspectingCompanies({
                           in
                         </a>
                       )}
-                      {!form && !email && !linkedin && (
-                        <button onClick={() => onOpenCompany(c.id)} className="text-gray-400 hover:underline">
-                          (未登録 — 補完)
+                      {!form && !email && !linkedin && c.recruit_page_url && (
+                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer"
+                          className="text-gray-400 hover:underline">
+                          採用ページ
+                        </a>
+                      )}
+                      {!form && !email && !linkedin && !c.recruit_page_url && (
+                        <button onClick={() => onOpenCompany(c.id)} className="text-gray-300 hover:underline">
+                          未登録
                         </button>
                       )}
                     </div>
@@ -161,8 +213,24 @@ export default function ProspectingCompanies({
           </tbody>
         </table>
       </div>
+      {filtered.length === 0 && (
+        <p className="text-center text-xs text-gray-400 py-4">条件に合う企業はありません</p>
+      )}
     </div>
   );
+}
+
+function numOrDash(n: number | undefined): string {
+  return n && n > 0 ? String(n) : "-";
+}
+
+function formatAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60_000) return "数秒前";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}時間前`;
+  if (diff < 86_400_000 * 30) return `${Math.floor(diff / 86_400_000)}日前`;
+  return new Date(iso).toLocaleDateString("ja-JP");
 }
 
 // ---------------------------------------------------------------------------
