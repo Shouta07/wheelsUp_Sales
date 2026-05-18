@@ -30,7 +30,7 @@ function loadMode(): Mode {
 function NavBar({
   currentUser, onSwitchUser, mode, onChangeMode,
 }: {
-  currentUser: string;
+  currentUser: string | null;
   onSwitchUser: () => void;
   mode: Mode;
   onChangeMode: (m: Mode) => void;
@@ -66,20 +66,30 @@ function NavBar({
         </div>
 
         <div className="flex items-center gap-2">
-          {mode === "meeting" && <StreakFlame />}
-          <button
-            onClick={onSwitchUser}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-xl border border-[#e5e5e5] hover:bg-red-50 hover:border-red-200 transition-colors group"
-            title="ユーザー切替"
-          >
-            <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
-              <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
-            </div>
-            <span className="text-xs font-bold text-[#4b4b4b]">{currentUser}</span>
-            <svg className="w-3.5 h-3.5 text-[#afafaf] group-hover:text-red-400 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
-            </svg>
-          </button>
+          {mode === "meeting" && currentUser && <StreakFlame />}
+          {currentUser ? (
+            <button
+              onClick={onSwitchUser}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-xl border border-[#e5e5e5] hover:bg-red-50 hover:border-red-200 transition-colors group"
+              title="ユーザー切替"
+            >
+              <div className="w-6 h-6 rounded-full bg-duo-blue flex items-center justify-center" style={{ borderBottom: "2px solid #1899d6" }}>
+                <span className="text-white text-[10px] font-black">{currentUser[0]}</span>
+              </div>
+              <span className="text-xs font-bold text-[#4b4b4b]">{currentUser}</span>
+              <svg className="w-3.5 h-3.5 text-[#afafaf] group-hover:text-red-400 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={onSwitchUser}
+              className="px-2 py-1 rounded-xl border border-[#e5e5e5] text-[10px] font-bold text-[#afafaf] hover:bg-gray-50"
+              title="面談FBを使う場合はユーザーを選んでください"
+            >
+              ゲスト
+            </button>
+          )}
         </div>
       </div>
     </header>
@@ -95,19 +105,27 @@ export default function App() {
     if (typeof window !== "undefined") window.localStorage.setItem(MODE_KEY, m);
   };
 
-  if (!activeUser) {
+  // 面談FB はユーザー紐付けが必要 (本人のスコア追跡のため)。
+  // RA 開拓 はチーム共有データなのでユーザー選択不要。
+  // 「ゲスト」状態 (RA だけ使う) もこのチェックをすり抜ける。
+  if (!activeUser && mode === "meeting") {
     return (
       <UserSelectPage
         onSelect={(name) => {
           localStorage.setItem("wheelsup_current_user", name);
           setActiveUser(name);
         }}
+        onSkipForRA={() => {
+          // RA 開拓モードに切替 + 未ログインのまま入る
+          setMode("ra");
+          if (typeof window !== "undefined") window.localStorage.setItem(MODE_KEY, "ra");
+        }}
       />
     );
   }
 
   return (
-    <GamificationProvider userName={activeUser} key={activeUser}>
+    <GamificationProvider userName={activeUser ?? "ゲスト"} key={activeUser ?? "guest"}>
       <div className="min-h-screen bg-gray-50">
         <CelebrationOverlay />
         <NavBar
@@ -115,6 +133,8 @@ export default function App() {
           onSwitchUser={() => {
             clearSavedUser();
             setActiveUser(null);
+            // 既に RA モードなら UserSelectPage は出ない (ゲストのまま)
+            // 面談FB モードなら UserSelectPage に飛ばすため mode を切り替えない
           }}
           mode={mode}
           onChangeMode={changeMode}

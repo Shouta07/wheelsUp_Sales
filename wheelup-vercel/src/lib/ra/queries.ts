@@ -249,26 +249,45 @@ export async function listOpenJobsWithContact(): Promise<JobWithCompany[]> {
 
 // ---------- Mutation ----------
 //
-// Every browser → /api/ra/* call attaches the Supabase session JWT in the
-// Authorization header. The server-side handler accepts EITHER that JWT OR
-// `?secret=$CRON_SECRET` (for cron / curl), so secrets stay on the server.
+// 認証方針 (内部ツール用簡易方式):
+// 1) Supabase ログイン中なら session JWT を Bearer 送信
+// 2) 未ログインなら VITE_CRON_SECRET (Vercel 環境変数) を ?secret= 送信
+//    → 5人チームの社内ツール想定。シークレットは JS バンドルに混入するが、
+//      URL を知ってる人しかアクセスしないので運用上は許容範囲。
+//      公開する時は Supabase Auth ベースに切り替える。
 
-async function authHeader(): Promise<Record<string, string>> {
-  if (!isLive) return {};
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+const CLIENT_SECRET = (import.meta.env.VITE_CRON_SECRET as string | undefined) ?? "";
+
+async function authParts(): Promise<{ headers: Record<string, string>; querySuffix: string }> {
+  // Supabase ログイン優先
+  if (isLive) {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (token) return { headers: { Authorization: `Bearer ${token}` }, querySuffix: "" };
+  }
+  // フォールバック: client-side secret
+  if (CLIENT_SECRET) {
+    return { headers: {}, querySuffix: `secret=${encodeURIComponent(CLIENT_SECRET)}` };
+  }
+  return { headers: {}, querySuffix: "" };
 }
 
 async function call<T>(path: string, init: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
-  const headers = { "Content-Type": "application/json", ...(await authHeader()) };
-  const res = await fetch(`/api/ra/${path}`, {
+  const { headers: authHeaders, querySuffix } = await authParts();
+
+  // path に既に query が含まれる場合は & で繋ぐ
+  let url = `/api/ra/${path}`;
+  if (querySuffix) {
+    url += (path.includes("?") ? "&" : "?") + querySuffix;
+  }
+
+  const res = await fetch(url, {
     method: init.method ?? "POST",
-    headers,
+    headers: { "Content-Type": "application/json", ...authHeaders },
     body: init.body == null ? undefined : JSON.stringify(init.body),
   });
-  const json = (await res.json().catch(() => ({}))) as { error?: string } & T;
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as { error?: string; reason?: string } & T;
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}${json.reason ? ` (${json.reason})` : ""}`);
   return json;
 }
 

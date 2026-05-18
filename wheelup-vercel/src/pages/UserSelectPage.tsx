@@ -1,14 +1,21 @@
 import { TEAM_MEMBERS } from "../lib/team";
 
-export default function UserSelectPage({ onSelect }: { onSelect: (name: string) => void }) {
+export default function UserSelectPage({
+  onSelect,
+  onSkipForRA,
+}: {
+  onSelect: (name: string) => void;
+  onSkipForRA?: () => void;
+}) {
   return (
-    <div className="min-h-screen bg-[#f7f7f7] flex items-center justify-center px-4">
+    <div className="min-h-screen bg-[#f7f7f7] flex items-center justify-center px-4 py-8">
       <div className="card-duo p-8 max-w-sm w-full text-center">
         <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-duo-green flex items-center justify-center" style={{ borderBottom: "4px solid #46a302" }}>
           <span className="text-white text-2xl font-black">W</span>
         </div>
         <h1 className="text-xl font-black text-[#4b4b4b] mb-1">wheelsUp</h1>
-        <p className="text-sm font-bold text-[#afafaf] mb-6">ユーザーを選択してください</p>
+        <p className="text-sm font-bold text-[#afafaf] mb-2">面談FB を使うユーザーを選択</p>
+        <p className="text-[10px] font-bold text-[#afafaf] mb-6">(スコア追跡用 — RA 開拓だけなら下のボタンへ)</p>
 
         <div className="space-y-2">
           {TEAM_MEMBERS.map((m) => {
@@ -36,6 +43,26 @@ export default function UserSelectPage({ onSelect }: { onSelect: (name: string) 
             );
           })}
         </div>
+
+        {onSkipForRA && (
+          <>
+            <div className="my-6 flex items-center gap-2">
+              <div className="flex-1 h-px bg-[#e5e5e5]" />
+              <span className="text-[10px] font-bold text-[#afafaf]">または</span>
+              <div className="flex-1 h-px bg-[#e5e5e5]" />
+            </div>
+            <button
+              onClick={onSkipForRA}
+              className="w-full rounded-2xl bg-duo-blue text-white px-4 py-3 text-sm font-black hover:bg-[#1899D6] transition-colors"
+              style={{ borderBottom: "4px solid #1899D6" }}
+            >
+              🎯 RA 開拓を見る (ログイン不要)
+            </button>
+            <p className="text-[10px] font-bold text-[#afafaf] mt-2">
+              246 社 × 4 候補者のマッチング — チーム共有データ
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
