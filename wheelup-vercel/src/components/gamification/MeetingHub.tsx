@@ -153,7 +153,10 @@ export default function MeetingHub() {
   };
 
   const handleRescore = async (id: string) => {
-    await scoreMeeting(id, true);
+    // 通常クリック: キャッシュ尊重 (テキスト未変更なら Gemini を呼ばない)
+    // Shift+クリック: 強制再生成 (Gemini を必ず呼ぶ)
+    const force = (window.event as MouseEvent | undefined)?.shiftKey === true;
+    await scoreMeeting(id, force);
     qc.invalidateQueries({ queryKey: ["meetings"] });
   };
 
@@ -426,7 +429,7 @@ function MeetingEntry({
               <button
                 onClick={handleRescoreClick}
                 className="flex items-center gap-1.5 text-[10px] font-extrabold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10 hover:bg-duo-orange/20 transition-colors"
-                title="自動採点が失敗している場合に手動で再試行"
+                title="クリック: 採点 (キャッシュ尊重) / Shift+クリック: 強制再生成"
               >
                 <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
                 採点中... (クリックで再採点)
