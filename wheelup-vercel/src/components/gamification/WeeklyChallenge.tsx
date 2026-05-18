@@ -7,7 +7,7 @@ const DIM_LABELS: Record<string, string> = {
   needs: "ニーズ把握",
   proposal: "提案力",
   trust: "信頼構築",
-  closing: "クロージング",
+  closing: "前進",
   intel: "情報収集",
 };
 

@@ -698,7 +698,7 @@ const DIMS = [
   { key: "needs", label: "ニーズ", color: "#1CB0F6" },
   { key: "proposal", label: "提案", color: "#58CC02" },
   { key: "trust", label: "信頼", color: "#CE82FF" },
-  { key: "closing", label: "成約", color: "#FF9600" },
+  { key: "closing", label: "前進", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
 
