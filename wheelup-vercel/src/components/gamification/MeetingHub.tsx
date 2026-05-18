@@ -760,7 +760,14 @@ function OutcomeButtons({ meeting, onSaved }: { meeting: MeetingTranscript; onSa
   const save = async (patch: Partial<NonNullable<MeetingTranscript["outcome"]>>) => {
     setSaving(Object.keys(patch)[0]);
     try {
-      await saveMeetingOutcome(meeting.id, { ...outcome, ...patch });
+      const merged = { ...outcome, ...patch };
+      await saveMeetingOutcome(meeting.id, {
+        next_meeting: merged.next_meeting,
+        applied: merged.applied,
+        hired: merged.hired,
+        lost: merged.lost,
+        lost_reason: merged.lost_reason || undefined,
+      });
       onSaved();
     } catch (err) {
       window.alert(`保存失敗: ${(err as Error).message}`);
