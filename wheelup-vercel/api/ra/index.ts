@@ -58,11 +58,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await authorize(req, db);
   if (!auth.ok) return res.status(auth.status).json(auth.body);
 
-  const segments: string[] = Array.isArray(req.query.path)
-    ? req.query.path
-    : req.query.path
-      ? [req.query.path]
-      : [];
+  // `/api/ra/foo/bar` は vercel.json で `/api/ra?path=foo/bar` にリライトされる。
+  // path はクエリ文字列で渡ってくるので、トリム + slash-split で segments 化。
+  const rawPath = req.query.path;
+  const toSegments = (s: string) => s.split("/").map((x) => x.trim()).filter(Boolean);
+  const segments: string[] = Array.isArray(rawPath)
+    ? rawPath.flatMap((p) => toSegments(String(p)))
+    : typeof rawPath === "string" && rawPath
+    ? toSegments(rawPath)
+    : [];
   const sub = segments[0] ?? "";
 
   try {
