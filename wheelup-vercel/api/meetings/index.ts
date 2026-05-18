@@ -424,9 +424,11 @@ async function scoreMeetingInternal(
   // - 429/503 で失敗したら flash → 2.0-flash と切り替えて再試行
   // - 全モデルで失敗したら最終エラーを返す
   // - GEMINI_SCORING_MODEL 環境変数で先頭モデルを上書き可能
+  // 主力は gemini-2.5-flash (構造化出力が安定)。
+  // flash-lite は速いが反復ループしがちなので最終フォールバックに降格。
   const fallbackModels = (process.env.GEMINI_SCORING_MODEL
-    ? [process.env.GEMINI_SCORING_MODEL, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
-    : ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
+    ? [process.env.GEMINI_SCORING_MODEL, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+    : ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
   ).filter((m, i, arr) => arr.indexOf(m) === i); // 重複除去
 
   const callGemini = async (): Promise<{ res: Response; model: string }> => {
@@ -456,72 +458,43 @@ async function scoreMeetingInternal(
   };
 
   const requestBody = JSON.stringify({
-      contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介会社のセールスコーチです。
-以下の面談記録を5つの観点で10点満点で採点し、ダイジェスト用キーモーメントと学習リソースまで含めて返してください。
-**必ず各スコアの根拠として、面談記録からの具体的な引用（発言）を付けてください。**
+      contents: [{ parts: [{ text: `建築技術者専門の人材紹介の面談を 5 軸で採点してください。各軸 0〜10 点の整数。
 
-## 面談記録:
+## 面談記録 (最大4000字):
 ${text.slice(0, 4000)}
 
-## 参考: リーダーの過去面談（学習リソース推薦時に source_name として引用してよい）:
-${leaderRefs || "（なし）"}
+## 採点軸 (各 10 点満点・整数):
+- needs: 候補者/企業の本音・課題を引き出せたか
+- proposal: 具体的求人/候補者を提示し、マッチ理由を説明できたか
+- trust: 業界知識で専門家としての信頼を得られたか
+- closing: 期限付きの次アクション/コミットを得られたか
+- intel: 他社状況・温度感・意思決定者を聞き出せたか
 
-## 採点基準（各10点）:
-1. **ニーズ深掘り(needs)**: 候補者/企業の本音・課題を引き出せたか
-2. **提案力(proposal)**: 具体的な求人・候補者を提示し、なぜマッチするか説明できたか
-3. **信頼構築(trust)**: 業界知識を示し、専門家としての信頼を得られたか
-4. **クロージング(closing)**: 次のアクションを明確にし、期限付きのコミットを得られたか
-5. **情報収集(intel)**: 他社状況・温度感・意思決定者情報を聞き出せたか
+## 厳守ルール:
+1. **同じ文を絶対に繰り返さない**。1 観察 = 1 度だけ書く。
+2. evidence は各軸 1 文・60 字以内で簡潔に書く。
+3. improvements は 2 件・各 50 字以内。
+4. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
-## 出力形式（JSON厳守、コードフェンスや前後の説明文を出さない）:
+## JSON 形式:
 {
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
-  "total": 30,
-  "grade": "B",
   "evidence": {
-    "needs": "「〇〇さんが本当に求めているのは…」と深掘りできている",
-    "proposal": "具体的な求人提示がなく、一般論にとどまった",
-    "trust": "「施工管理の現場では…」と業界知識を交えて話せている",
-    "closing": "「来週までに…」と期限を切れていない",
-    "intel": "他社選考状況を聞き出せた「実は〇〇社も受けていて…」"
+    "needs": "...",
+    "proposal": "...",
+    "trust": "...",
+    "closing": "...",
+    "intel": "..."
   },
-  "strengths": ["具体的な強み1", "強み2"],
-  "improvements": ["具体的な改善点1（どう言い換えれば良かったか含む）", "改善点2"],
-  "leader_would": "リーダーならこの場面でこう話す、という具体的な1シーン再現（セリフ付き）",
-  "key_moments": [
-    {
-      "text": "面談記録から抜き出した実際の発言を50〜120字で",
-      "axis": "needs",
-      "axis_label": "ニーズ深掘り",
-      "relevance": 0.9,
-      "speaker": "コンサル"
-    }
-  ],
-  "learning_resources": [
-    {
-      "axis": "needs",
-      "title": "本音を引き出す質問の型",
-      "description": "なぜ転職するのかを3層で深掘りする手順を、リーダー面談の同じ場面で再現する",
-      "source_type": "playbook",
-      "source_name": "上記参考リーダー面談のタイトル",
-      "playbook_situation": "候補者が「年収を上げたい」と表層的な理由しか出さない場面"
-    }
-  ]
-}
-
-要件 (簡潔さ優先):
-- **絶対に同じ文・同じフレーズを 2 回繰り返さない**。1 つの発言・観察は 1 度だけ書く。
-- key_moments は **2〜3 件のみ**、最重要の転換点だけ。各 text は 60 字以内。axis_label は省略可。
-- learning_resources は弱い軸を中心に **1〜2 件**。description は 80 字以内。url は書かない。
-- evidence は各軸 60 字以内で簡潔に。1 文で完結させる。
-- strengths / improvements は **各 2 件、各 50 字以内**。leader_would は 100 字以内。
-- 出力は単一の JSON オブジェクトのみ。前置きや結語は禁止。` }] }],
+  "improvements": ["改善点1", "改善点2"]
+}` }] }],
       generationConfig: {
         temperature: 0.5,
         topP: 0.9,
         maxOutputTokens: 2048,
         responseMimeType: "application/json",
-        // Schema を強制してパースエラー → リトライ をゼロに。精度と省エネを両立。
+        // スキーマを最小限に絞る (フィールド多いと flash-lite が反復ループしやすいため)。
+        // scores + evidence + improvements の 3 つだけ。それ以外は別フィードバック画面で生成。
         responseSchema: {
           type: "object",
           properties: {
@@ -536,8 +509,6 @@ ${leaderRefs || "（なし）"}
               },
               required: ["needs", "proposal", "trust", "closing", "intel"],
             },
-            total: { type: "integer" },
-            grade: { type: "string" },
             evidence: {
               type: "object",
               properties: {
@@ -547,41 +518,11 @@ ${leaderRefs || "（なし）"}
                 closing: { type: "string" },
                 intel: { type: "string" },
               },
+              required: ["needs", "proposal", "trust", "closing", "intel"],
             },
-            strengths: { type: "array", items: { type: "string" } },
             improvements: { type: "array", items: { type: "string" } },
-            leader_would: { type: "string" },
-            key_moments: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  text: { type: "string" },
-                  axis: { type: "string" },
-                  axis_label: { type: "string" },
-                  relevance: { type: "number" },
-                  speaker: { type: "string" },
-                },
-                required: ["text", "axis"],
-              },
-            },
-            learning_resources: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  axis: { type: "string" },
-                  title: { type: "string" },
-                  description: { type: "string" },
-                  source_type: { type: "string" },
-                  source_name: { type: "string" },
-                  playbook_situation: { type: "string" },
-                },
-                required: ["axis", "title", "description"],
-              },
-            },
           },
-          required: ["scores", "evidence"],
+          required: ["scores"],
         },
       },
   });
