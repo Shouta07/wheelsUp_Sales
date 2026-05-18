@@ -37,16 +37,12 @@ export default function MeetingHub() {
 
   const isLeaderUser = isLeaderRole(currentUser);
 
+  // 採点は手動 (ユーザー操作) になったので自動 refetch は廃止。
+  // 採点完了時に handleRescore 内で invalidateQueries しているのでそれで十分。
   const { data: myMeetings } = useQuery({
     queryKey: ["meetings", "mine", currentUser],
     queryFn: () => fetchMeetings(undefined, undefined, currentUser),
     enabled: !!currentUser,
-    refetchInterval: (query) => {
-      const hasUnscored = query.state.data?.transcripts?.some(
-        (m: MeetingTranscript) => m.transcript_text && !m.score_data
-      );
-      return hasUnscored ? 5000 : false;
-    },
   });
 
   const { data: leaderMeetings } = useQuery({
@@ -116,7 +112,7 @@ export default function MeetingHub() {
       });
       qc.invalidateQueries({ queryKey: ["meetings"] });
       setTitleInput("");
-      // refetchInterval (5s) が自動採点の完了を拾う
+      // 採点はユーザーが「▶ AI 採点する」を押した時のみ走る (運用面のクォータ制御のため)
     } catch (err) {
       setErrorMsg(`録音の保存に失敗しました: ${(err as Error).message}`);
     }
@@ -152,12 +148,21 @@ export default function MeetingHub() {
     qc.invalidateQueries({ queryKey: ["meetings"] });
   };
 
+  // 採点中の面談ID。null なら誰も採点していない。1 件ずつ採点する制約をフロントで強制する。
+  const [scoringId, setScoringId] = useState<string | null>(null);
+
   const handleRescore = async (id: string) => {
+    if (scoringId) return; // 他の採点中はクリック無視 (運用面のクォータ保護)
     // 通常クリック: キャッシュ尊重 (テキスト未変更なら Gemini を呼ばない)
     // Shift+クリック: 強制再生成 (Gemini を必ず呼ぶ)
     const force = (window.event as MouseEvent | undefined)?.shiftKey === true;
-    await scoreMeeting(id, force);
-    qc.invalidateQueries({ queryKey: ["meetings"] });
+    setScoringId(id);
+    try {
+      await scoreMeeting(id, force);
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+    } finally {
+      setScoringId(null);
+    }
   };
 
   const handleDelete = async (id: string, title: string) => {
@@ -316,6 +321,8 @@ export default function MeetingHub() {
             isLeaderUser={isLeaderUser}
             currentUser={currentUser}
             onFeedbackSaved={() => qc.invalidateQueries({ queryKey: ["meetings"] })}
+            isScoringThis={scoringId === m.id}
+            isScoringOther={scoringId !== null && scoringId !== m.id}
           />
         ))}
       </div>
@@ -332,6 +339,8 @@ function MeetingEntry({
   isLeaderUser,
   currentUser,
   onFeedbackSaved,
+  isScoringThis,
+  isScoringOther,
 }: {
   meeting: MeetingTranscript;
   leaderAvg: Record<string, number> | null;
@@ -341,24 +350,25 @@ function MeetingEntry({
   isLeaderUser: boolean;
   currentUser: string;
   onFeedbackSaved: () => void;
+  isScoringThis: boolean;
+  isScoringOther: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [fbText, setFbText] = useState("");
   const [fbSaving, setFbSaving] = useState(false);
-  const [rescoring, setRescoring] = useState(false);
   const [rescoreError, setRescoreError] = useState<string | null>(null);
+  const rescoring = isScoringThis;
   const score = m.score_data;
   const canDelete = isLeaderUser || (m.consultant_name && m.consultant_name === currentUser);
 
   const handleRescoreClick = async () => {
-    setRescoring(true);
+    if (isScoringOther) return;
     setRescoreError(null);
     try {
       await onRescore(m.id);
     } catch (err) {
-      setRescoreError(`再採点に失敗: ${(err as Error).message}`);
+      setRescoreError(`採点に失敗: ${(err as Error).message}`);
     }
-    setRescoring(false);
   };
 
   const handleFeedbackSave = async () => {
@@ -428,18 +438,25 @@ function MeetingEntry({
             {!score && m.transcript_text && !rescoring && (
               <button
                 onClick={handleRescoreClick}
-                className="flex items-center gap-1.5 text-[10px] font-extrabold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10 hover:bg-duo-orange/20 transition-colors"
-                title="クリック: 採点 (キャッシュ尊重) / Shift+クリック: 強制再生成"
+                disabled={isScoringOther}
+                className="text-[10px] font-extrabold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10 hover:bg-duo-orange/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title={isScoringOther ? "他の採点が完了するまでお待ちください" : "この面談を AI 採点する (Shift+クリックで強制再生成)"}
               >
-                <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
-                採点中... (クリックで再採点)
+                ▶ AI 採点する
               </button>
+            )}
+            {!score && m.transcript_text && rescoring && (
+              <span className="flex items-center gap-1.5 text-[10px] font-extrabold text-duo-orange px-3 py-1.5 rounded-xl bg-duo-orange/10">
+                <span className="inline-block w-2 h-2 rounded-full bg-duo-orange animate-pulse" />
+                採点中...
+              </span>
             )}
             {score && m.transcript_text && (
               <button
                 onClick={handleRescoreClick}
-                disabled={rescoring}
-                className="text-[10px] font-extrabold text-duo-blue px-3 py-1.5 rounded-xl bg-duo-blue/10 hover:bg-duo-blue/20 disabled:opacity-40 transition-colors"
+                disabled={rescoring || isScoringOther}
+                className="text-[10px] font-extrabold text-duo-blue px-3 py-1.5 rounded-xl bg-duo-blue/10 hover:bg-duo-blue/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title={isScoringOther ? "他の採点が完了するまでお待ちください" : "クリックで再採点 (Shift+クリックで強制再生成)"}
               >
                 {rescoring ? "再採点中..." : "再採点"}
               </button>

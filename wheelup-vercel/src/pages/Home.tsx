@@ -21,7 +21,7 @@ export default function Home() {
             {currentUser ? `${currentUser}さん` : "面談フィードバック"}
           </h1>
           <p className="text-xs font-bold text-[#afafaf] mt-0.5">
-            面談を入れるだけ。AIが自動で採点して、リーダーと比較します
+            面談を保存して「▶ AI 採点する」を押すと、AIがスコアと改善ポイントを返します
           </p>
         </div>
 
