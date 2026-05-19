@@ -17,6 +17,9 @@
 | 面談FB | `/` | 面談議事録の AI 採点 + 成長可視化 | 小林 (リーダー) + メンバー 4 名 |
 | RA開拓 | `/ra` | 求人クロール + 候補者マッチング | RA 担当 (リーダー中心) |
 
+モード切替はヘッダー左上のトグル。選択は `localStorage.wheelsup_active_mode` に保持。
+面談 FB はユーザー紐付け必須 (`wheelsup_current_user`)。RA 開拓はゲストでも入れる。
+
 ---
 
 ## 1. システム全体図
@@ -67,12 +70,20 @@ wheelup-vercel/
 ├── api/                           # Vercel Serverless Functions
 │   ├── meetings/index.ts          # 面談FB の全 API (~1400 行)
 │   ├── ra/index.ts                # RA 開拓 の全 API (~1000 行)
+│   ├── candidates/[[...path]].ts  # 候補者 CRUD + OpenAI による自動補完
+│   ├── companies/[[...path]].ts   # 既存 companies テーブルの CRUD (RA とは別物)
+│   ├── jobs/[[...path]].ts        # 求人 CRUD + import + match
+│   ├── knowledge/[[...path]].ts   # ナレッジベース検索
+│   ├── pipedrive/[[...path]].ts   # Pipedrive 連携 + コーチング (OpenAI)
+│   ├── lark/[[...path]].ts        # Lark (チャットツール) 連携
+│   ├── health.ts                  # ヘルスチェック
+│   ├── seed.ts                    # 初期シードデータ投入
 │   ├── _data/                     # シードデータ
 │   │   ├── leader-meetings-seed.json  # 小林の議事録 15 件 (教師データ)
-│   │   ├── companies_seed.csv         # 開拓対象 246 社
-│   │   └── candidates_seed.json       # 候補者 4 名
+│   │   ├── companies_seed.csv         # RA 開拓対象 246 社
+│   │   └── candidates_seed.json       # RA 候補者 4 名
 │   └── _lib/
-│       ├── auth.ts                # ユーザー判定・役割判定
+│       ├── auth.ts                # ユーザー判定・役割判定 (team.ts のミラー)
 │       ├── rate-limit.ts          # in-memory bucket (6 req/min/user)
 │       ├── supabase-admin.ts      # サーバー側 Supabase クライアント
 │       ├── learning-resources.ts  # 軸ごとの学習リソース URL (固定)
@@ -375,18 +386,22 @@ gemini-2.5-flash-lite ← 最終 (軽量・無料枠広い)
 
 ## 6. 環境変数 (Vercel に設定)
 
-| キー | 用途 |
-|---|---|
-| `SUPABASE_URL` | Supabase プロジェクト URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | サーバー側 (RLS バイパス) |
-| `SUPABASE_ANON_KEY` | フロント側 |
-| `VITE_SUPABASE_URL` | フロントビルド時に埋め込み |
-| `VITE_SUPABASE_ANON_KEY` | フロントビルド時に埋め込み |
-| `GEMINI_API_KEY` | Google Gemini API |
-| `GEMINI_MODEL` | デフォルト `gemini-2.5-flash` (任意上書き) |
-| `CRON_SECRET` | RA Cron / 内部 API の共有秘密 |
-| `JINA_API_KEY` | (任意) ページクロール用。なければ素の fetch |
-| `LARK_WEBHOOK_URL` | (任意) Lark への結果通知 |
+`wheelup-vercel/.env.example` がテンプレート。
+
+| キー | 必須 | 用途 |
+|---|---|---|
+| `SUPABASE_URL` | ✅ | Supabase プロジェクト URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | サーバー側 (RLS バイパス) |
+| `SUPABASE_ANON_KEY` | ✅ | フロント側 |
+| `VITE_SUPABASE_URL` | ✅ | フロントビルド時に埋め込み |
+| `VITE_SUPABASE_ANON_KEY` | ✅ | フロントビルド時に埋め込み |
+| `GEMINI_API_KEY` | ✅ | Google Gemini API |
+| `GEMINI_MODEL` | 任意 | RA 用デフォルト `gemini-2.5-flash-lite` |
+| `GEMINI_SCORING_MODEL` | 任意 | 面談採点モデル上書き (デフォルト `gemini-2.5-flash` で 2.0-flash / lite にフォールバック) |
+| `OPENAI_API_KEY` | △ | `/api/candidates` 補完、`/api/pipedrive` コーチング用 (使わない機能なら不要) |
+| `CRON_SECRET` | ✅ | RA API / 内部 API の共有秘密 |
+| `JINA_API_KEY` | 任意 | ページクロール高品質化。なければ素の fetch |
+| `LARK_WEBHOOK_URL` | 任意 | Lark への結果通知 |
 
 ## 7. データ保護方針
 
@@ -434,7 +449,7 @@ Vercel 自動デプロイ (2-3 分)
 |---|---|---|---|
 | Vercel | Hobby → **Pro** | $0 → $20 | 複数人開発するなら Pro 必須 |
 | Supabase | Free | $0 | 500MB DB / 2GB 転送内で運用中 |
-| Gemini API | Free tier | $0 | 1 日 1500 req まで。多段フォールバックで吸収 |
+| Gemini API | Free tier | $0 | Free 枠は **モデル別に RPM/RPD 制限あり** ([最新公式](https://ai.google.dev/gemini-api/docs/rate-limits))。多段フォールバックで吸収 |
 | GitHub | Free | $0 | Private リポジトリ無制限 |
 | Jina Reader | 任意 | $0 〜 | なくても fallback で動作 |
 | **合計** | | **$0 〜 $20** | 5 ユーザー / 週 5 面談ペースで Free tier 内 |
@@ -465,7 +480,7 @@ Vercel 自動デプロイ (2-3 分)
 | Vercel デプロイ失敗 | Vercel ダッシュボード → Deployments → 最新ビルドのログ確認 |
 | AI 採点エラー (Gemini quota) | 自動でフォールバックモデルに切替。それでもダメなら手動採点で代替 |
 | データ消失の不安 | `score_history` から復元可能。`meeting_transcripts` は `deleted_at` 設定のみ (物理削除なし) |
-| ユーザーから「採点遅い」 | Vercel Functions のコールドスタート (初回 2-3 秒) は仕様 |
+| ユーザーから「採点遅い」 | Vercel Functions のコールドスタート + Gemini 応答時間。同じ議事録の再採点は `score_input_hash` でキャッシュされ高速 |
 | RA Cron が動かない | `vercel.json` の `crons` 設定 + `CRON_SECRET` 整合を確認 |
 | 採点結果がおかしい | `score_history` で前回値を確認、教師データ (`leader-meetings-seed.json`) を再投入 |
 
@@ -497,7 +512,26 @@ Vercel 自動デプロイ (2-3 分)
 | `wheelup-vercel/docs/feature-purpose.md` | 機能ごとの目的・背景・解決する課題 |
 | `wheelup-vercel/docs/ra-prospecting.md` | RA 開拓モジュールの詳細セットアップ手順 |
 | `wheelup-vercel/supabase/SETUP.md` | Supabase 初期セットアップ |
+| `wheelup-vercel/.env.example` | 環境変数テンプレート |
 | `docs/README.md` | 旧 Next.js 版 (現在は wheelup-vercel/ に統合済み) |
+
+## 14. 補助 API (現状の役割)
+
+メインの `/api/meetings` `/api/ra` 以外の API は **既存業務システム連携 / レガシー機能** 用:
+
+| パス | 役割 | 状態 |
+|---|---|---|
+| `/api/health` | ヘルスチェック | 稼働 |
+| `/api/seed` | 初期データ投入 | 移管時のセットアップ用 |
+| `/api/candidates` | 候補者 CRUD + OpenAI による情報補完 | 現状フロントから利用あり |
+| `/api/companies` | 既存 `companies` テーブル CRUD (RA とは別系統) | 現状フロントから利用あり |
+| `/api/jobs` | 求人 CRUD + import + match | 現状フロントから利用あり |
+| `/api/knowledge` | ナレッジベース検索 | 利用頻度低 |
+| `/api/pipedrive` | Pipedrive CRM 連携 + コーチング (OpenAI) | 要 `OPENAI_API_KEY` |
+| `/api/lark` | Lark (チャット) 連携 | 要 `LARK_WEBHOOK_URL` |
+
+⚠️ これらは主に **以前の単独機能の残り**。面談 FB と RA 開拓に絞った運用なら触らなくても動く。
+将来削除整理するかは先方判断。
 
 ---
 
