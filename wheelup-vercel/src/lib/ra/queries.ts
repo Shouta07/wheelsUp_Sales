@@ -275,6 +275,63 @@ export type CompanyEnriched = CompanyOverview & {
   approach_status: ApproachStatus;
 };
 
+export type CandidateMatchCell = {
+  candidate_id: string;
+  candidate_code: string;
+  candidate_name: string;
+  grade: Grade;
+  score: number;
+};
+
+/**
+ * 企業 × 候補者の "ベストマッチ" を 1 セル分にまとめる。
+ * 各 (company, candidate) ペアについて、最も高スコアの match を採用する。
+ * 候補者一覧は ra_candidates から取得 (順序固定)。
+ */
+export async function listCompanyCandidateMatches(): Promise<{
+  candidates: { id: string; code: string; name: string }[];
+  byCompany: Map<string, Map<string, CandidateMatchCell>>; // companyId → candidateCode → cell
+}> {
+  if (!isLive) return { candidates: [], byCompany: new Map() };
+
+  const [candsRes, jobsRes, matchesRes] = await Promise.all([
+    supabase.from("ra_candidates").select("id,code,name").eq("is_active", true).order("created_at"),
+    supabase.from("ra_jobs").select("id,company_id").limit(5000),
+    supabase.from("ra_matches").select("job_id,candidate_id,grade,score").limit(20000),
+  ]);
+
+  const candidates = ((candsRes.data ?? []) as Array<{ id: string; code: string; name: string }>);
+  const jobToCompany = new Map<string, string>();
+  for (const j of (jobsRes.data ?? []) as Array<{ id: string; company_id: string }>) {
+    jobToCompany.set(j.id, j.company_id);
+  }
+  const candById = new Map(candidates.map((c) => [c.id, c]));
+
+  const byCompany = new Map<string, Map<string, CandidateMatchCell>>();
+  for (const m of (matchesRes.data ?? []) as Array<{ job_id: string; candidate_id: string; grade: Grade; score: number }>) {
+    const companyId = jobToCompany.get(m.job_id);
+    const cand = candById.get(m.candidate_id);
+    if (!companyId || !cand) continue;
+    let cellMap = byCompany.get(companyId);
+    if (!cellMap) {
+      cellMap = new Map();
+      byCompany.set(companyId, cellMap);
+    }
+    const cur = cellMap.get(cand.code);
+    if (!cur || m.score > cur.score) {
+      cellMap.set(cand.code, {
+        candidate_id: m.candidate_id,
+        candidate_code: cand.code,
+        candidate_name: cand.name,
+        grade: m.grade,
+        score: m.score,
+      });
+    }
+  }
+
+  return { candidates, byCompany };
+}
+
 /** approach の進捗をカウントから判定。closed > meeting > replied > sent > untouched の優先順位。 */
 function deriveStatus(counts: Record<string, number>): ApproachStatus {
   if ((counts.closed ?? 0) > 0)  return "closed";

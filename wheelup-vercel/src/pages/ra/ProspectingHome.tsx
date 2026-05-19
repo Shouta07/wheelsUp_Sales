@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { isLive, listCompaniesEnriched, listReady, APPROACH_STATUSES } from "../../lib/ra/queries";
-import type { ApproachStatus, CompanyEnriched } from "../../lib/ra/queries";
-import type { Priority } from "../../lib/ra/types";
+import {
+  isLive, listCompaniesEnriched, listReady, listCompanyCandidateMatches, APPROACH_STATUSES,
+} from "../../lib/ra/queries";
+import type { ApproachStatus, CompanyEnriched, CandidateMatchCell } from "../../lib/ra/queries";
+import type { Grade, Priority } from "../../lib/ra/types";
 import { supabase } from "../../lib/supabase";
 
 /**
@@ -34,30 +36,46 @@ export default function ProspectingHome({
   const [companies, setCompanies] = useState<CompanyEnriched[]>([]);
   const [readyCount, setReadyCount] = useState(0);
   const [follows, setFollows] = useState<FollowUpRow[]>([]);
+  const [candidates, setCandidates] = useState<{ id: string; code: string; name: string }[]>([]);
+  const [matchesByCompany, setMatchesByCompany] = useState<Map<string, Map<string, CandidateMatchCell>>>(new Map());
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"" | ApproachStatus>("");
   const [q, setQ] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<"" | Priority>("");
+  const [categoryFilter, setCategoryFilter] = useState<string>(""); // "" = すべて
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const [co, rd, fu] = await Promise.all([
+        const [co, rd, fu, mm] = await Promise.all([
           listCompaniesEnriched(),
           listReady(200),
           listFollowUps(),
+          listCompanyCandidateMatches(),
         ]);
         if (!alive) return;
         setCompanies(co);
         setReadyCount(rd.length);
         setFollows(fu);
+        setCandidates(mm.candidates);
+        setMatchesByCompany(mm.byCompany);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
   }, []);
+
+  // 企業データから抽出した業種一覧 (件数付き)
+  const categoryCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of companies) {
+      const k = c.category ?? "未分類";
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]); // 件数降順
+  }, [companies]);
 
   // 進捗タイルの集計
   const stats = useMemo(() => ({
@@ -76,9 +94,10 @@ export default function ProspectingHome({
       if (ql && !c.name.toLowerCase().includes(ql)) return false;
       if (priorityFilter && c.priority !== priorityFilter) return false;
       if (statusFilter && c.approach_status !== statusFilter) return false;
+      if (categoryFilter && (c.category ?? "未分類") !== categoryFilter) return false;
       return true;
     });
-  }, [companies, q, priorityFilter, statusFilter]);
+  }, [companies, q, priorityFilter, statusFilter, categoryFilter]);
 
   // ステータス別カウント
   const statusCounts = useMemo(() => {
@@ -146,13 +165,13 @@ export default function ProspectingHome({
             </span>
           </div>
 
-          {/* フィルタ行 */}
-          <div className="flex flex-wrap gap-2 items-center">
+          {/* フィルタ行 1: 検索 + 優先度 + リセット */}
+          <div className="flex flex-wrap gap-2 items-center mb-2">
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="企業名で絞り込み"
-              className="rounded-lg border border-gray-200 px-2 py-1 text-xs w-40"
+              placeholder="🔍 企業名で絞り込み"
+              className="rounded-lg border border-gray-200 px-2 py-1 text-xs w-44"
             />
             <select
               value={priorityFilter}
@@ -162,28 +181,60 @@ export default function ProspectingHome({
               <option value="">優先度すべて</option>
               <option value="S">S</option><option value="A">A</option><option value="B">B</option><option value="C">C</option>
             </select>
-            <div className="flex gap-1 ml-1">
-              <FilterChip active={statusFilter === ""} onClick={() => setStatusFilter("")} label="すべて" count={companies.length} />
-              {APPROACH_STATUSES.map((s) => (
-                <FilterChip
-                  key={s.key}
-                  active={statusFilter === s.key}
-                  onClick={() => setStatusFilter(statusFilter === s.key ? "" : s.key)}
-                  label={s.label}
-                  count={statusCounts[s.key] ?? 0}
-                />
-              ))}
-            </div>
+            {(q || priorityFilter || statusFilter || categoryFilter) && (
+              <button
+                onClick={() => { setQ(""); setPriorityFilter(""); setStatusFilter(""); setCategoryFilter(""); }}
+                className="text-[10px] font-bold text-[#777] hover:text-[#4b4b4b] underline ml-auto"
+              >
+                絞り込みクリア
+              </button>
+            )}
+          </div>
+
+          {/* フィルタ行 2: 業種 */}
+          <div className="flex flex-wrap gap-1 items-center mb-2">
+            <span className="text-[10px] font-extrabold text-[#777] mr-1">業種:</span>
+            <FilterChip active={categoryFilter === ""} onClick={() => setCategoryFilter("")} label="すべて" count={companies.length} />
+            {categoryCounts.map(([cat, count]) => (
+              <FilterChip
+                key={cat}
+                active={categoryFilter === cat}
+                onClick={() => setCategoryFilter(categoryFilter === cat ? "" : cat)}
+                label={cat}
+                count={count}
+              />
+            ))}
+          </div>
+
+          {/* フィルタ行 3: アプローチ状況 */}
+          <div className="flex flex-wrap gap-1 items-center">
+            <span className="text-[10px] font-extrabold text-[#777] mr-1">状況:</span>
+            <FilterChip active={statusFilter === ""} onClick={() => setStatusFilter("")} label="すべて" count={companies.length} />
+            {APPROACH_STATUSES.map((s) => (
+              <FilterChip
+                key={s.key}
+                active={statusFilter === s.key}
+                onClick={() => setStatusFilter(statusFilter === s.key ? "" : s.key)}
+                label={s.label}
+                count={statusCounts[s.key] ?? 0}
+              />
+            ))}
           </div>
         </div>
 
-        <table className="w-full text-xs">
+        <div className="overflow-x-auto">
+        <table className="w-full text-xs min-w-[900px]">
           <thead className="bg-gray-50 text-left text-[10px] uppercase text-gray-500">
             <tr>
-              <th className="px-3 py-2">企業</th>
+              <th className="px-3 py-2 sticky left-0 bg-gray-50">企業</th>
+              {candidates.map((cand) => (
+                <th key={cand.code} className="px-2 py-2 text-center" title={`${cand.name} とのマッチ精度`}>
+                  {cand.name}
+                </th>
+              ))}
+              <th className="px-2 py-2 text-right">求人</th>
               <th className="px-3 py-2">状況</th>
-              <th className="px-3 py-2 text-right">求人/◎○</th>
-              <th className="px-3 py-2">送信先</th>
+              <th className="px-3 py-2">リンク</th>
             </tr>
           </thead>
           <tbody>
@@ -193,10 +244,11 @@ export default function ProspectingHome({
               const statusDef = APPROACH_STATUSES.find((s) => s.key === c.approach_status)!;
               const counts = c.activity_counts;
               const hasActivity = (counts.sent ?? 0) + (counts.replied ?? 0) + (counts.meeting ?? 0) > 0;
+              const candMatches = matchesByCompany.get(c.id);
               return (
                 <tr key={c.id} className="border-t border-gray-100 hover:bg-gray-50/40">
                   {/* 企業 (優先度バッジ + カテゴリ) */}
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 sticky left-0 bg-white hover:bg-gray-50/40">
                     <div className="flex items-center gap-1.5">
                       <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
                         c.priority === "S" ? "bg-amber-100 text-amber-700" :
@@ -212,8 +264,26 @@ export default function ProspectingHome({
                     )}
                   </td>
 
-                  {/* 状況 (アプローチ + アクティビティ集約) */}
-                  <td className="px-3 py-2">
+                  {/* 候補者ごとのマッチ精度 */}
+                  {candidates.map((cand) => {
+                    const cell = candMatches?.get(cand.code);
+                    return (
+                      <td key={cand.code} className="px-2 py-2 text-center">
+                        {cell ? <MatchBadge grade={cell.grade} score={cell.score} /> : <span className="text-gray-300 text-[10px]">—</span>}
+                      </td>
+                    );
+                  })}
+
+                  {/* 求人 (open / strong) */}
+                  <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
+                    <span className="text-[#4b4b4b]">{c.open_jobs}</span>
+                    {c.strong_matches > 0 && (
+                      <span className="ml-1 text-green-600 font-bold">◎{c.strong_matches}</span>
+                    )}
+                  </td>
+
+                  {/* 状況 */}
+                  <td className="px-3 py-2 whitespace-nowrap">
                     <div className={`text-[10px] font-bold ${statusDef.color}`}>● {statusDef.label}</div>
                     {hasActivity && (
                       <div className="text-[10px] text-gray-400 mt-0.5">
@@ -225,30 +295,26 @@ export default function ProspectingHome({
                     )}
                   </td>
 
-                  {/* 求人/◎○ */}
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    <span className="text-[#4b4b4b]">{c.open_jobs}</span>
-                    {c.strong_matches > 0 && (
-                      <span className="ml-1 text-green-600 font-bold">◎{c.strong_matches}</span>
-                    )}
-                  </td>
-
-                  {/* 送信先 */}
+                  {/* リンク: 採用ページ / 企業 / 問い合わせ */}
                   <td className="px-3 py-2">
-                    <div className="flex gap-1">
+                    <div className="flex flex-wrap gap-1">
+                      {c.recruit_page_url && (
+                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer" title="採用ページ"
+                          className="px-2 py-0.5 rounded-full bg-[#CE82FF] text-white text-[10px] font-bold hover:opacity-90">📋 求人</a>
+                      )}
+                      {c.corporate_url && (
+                        <a href={c.corporate_url} target="_blank" rel="noreferrer" title="企業サイト"
+                          className="px-2 py-0.5 rounded-full bg-gray-500 text-white text-[10px] font-bold hover:opacity-90">🏢 企業</a>
+                      )}
                       {form && (
                         <a href={form.url} target="_blank" rel="noreferrer" title="お問い合わせフォーム"
-                          className="px-2 py-0.5 rounded-full bg-[#1CB0F6] text-white text-[10px] font-bold">📝 フォーム</a>
+                          className="px-2 py-0.5 rounded-full bg-[#1CB0F6] text-white text-[10px] font-bold hover:opacity-90">📝 問</a>
                       )}
                       {email && (
                         <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer" title={email.value ?? ""}
-                          className="px-2 py-0.5 rounded-full bg-[#58CC02] text-white text-[10px] font-bold">✉ メール</a>
+                          className="px-2 py-0.5 rounded-full bg-[#58CC02] text-white text-[10px] font-bold hover:opacity-90">✉ Mail</a>
                       )}
-                      {!form && !email && c.recruit_page_url && (
-                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer"
-                          className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-bold hover:bg-gray-200">採用ページ</a>
-                      )}
-                      {!form && !email && !c.recruit_page_url && (
+                      {!c.recruit_page_url && !c.corporate_url && !form && !email && (
                         <span className="text-[10px] text-gray-300">未取得</span>
                       )}
                     </div>
@@ -258,6 +324,7 @@ export default function ProspectingHome({
             })}
           </tbody>
         </table>
+        </div>
         {filteredCompanies.length > 100 && (
           <div className="px-3 py-2 text-[10px] text-center text-[#afafaf] border-t border-gray-100">
             {filteredCompanies.length - 100} 件を非表示中 — フィルタで絞り込んでください
@@ -299,6 +366,25 @@ function FunnelBar({ steps }: { steps: { label: string; value: number; color: st
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// 候補者 × 企業 のマッチ精度を 1 セル分にコンパクト表示。
+// 判定 (◎○△×) ごとに色分け、点数も併記する。
+function MatchBadge({ grade, score }: { grade: Grade; score: number }) {
+  const color =
+    grade === "◎" ? "bg-green-100 text-green-700 border-green-300" :
+    grade === "○" ? "bg-blue-50 text-blue-700 border-blue-200" :
+    grade === "△" ? "bg-gray-50 text-gray-500 border-gray-200" :
+                    "bg-red-50 text-red-400 border-red-100";
+  return (
+    <div
+      className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[10px] font-extrabold tabular-nums ${color}`}
+      title={`判定 ${grade} / スコア ${score}`}
+    >
+      <span>{grade}</span>
+      <span>{score}</span>
     </div>
   );
 }
