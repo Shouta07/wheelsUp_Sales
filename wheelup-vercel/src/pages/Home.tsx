@@ -9,6 +9,8 @@ import WeeklyReport from "../components/gamification/WeeklyReport";
 import TeamHighlights from "../components/gamification/TeamHighlights";
 import PlaybookPanel from "../components/gamification/PlaybookPanel";
 import TodayMission from "../components/gamification/TodayMission";
+import GrowthChart from "../components/gamification/GrowthChart";
+import CVRDashboard from "../components/gamification/CVRDashboard";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -33,6 +35,20 @@ export default function Home() {
 
         {/* 今日のミッション (ユーザーの次にやるべきことを明示) */}
         {currentUser && <TodayMission currentUser={currentUser} />}
+
+        {/* 成長グラフ (採点 2 件以上で自動表示) */}
+        {currentUser && (
+          <div className="mb-4">
+            <GrowthChart currentUser={currentUser} />
+          </div>
+        )}
+
+        {/* CVR ダッシュボード (リーダーかつアウトカム 5 件以上で表示) */}
+        {currentUser && (
+          <div className="mb-4">
+            <CVRDashboard currentUser={currentUser} />
+          </div>
+        )}
 
         {/* MAIN: 面談ライブラリ + プレイブック */}
         <main className="space-y-5">

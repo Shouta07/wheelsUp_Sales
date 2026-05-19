@@ -108,14 +108,23 @@ export default function ProspectingHome({
 
   return (
     <div className="space-y-4">
-      {/* ─── 1. 進捗タイル (コンパクト) ───────────────── */}
-      <section className="grid grid-cols-3 md:grid-cols-6 gap-2">
-        <Tile label="企業" value={stats.total} color="gray" />
-        <Tile label="URL補完済" value={stats.withUrl} color="gray" />
-        <Tile label="求人(公開)" value={stats.openJobs} color="gray" />
-        <Tile label="◎○マッチ" value={stats.strong} color="green" />
-        <Tile label="実行待ち" value={ready.length} color="blue" />
-        <Tile label="未接触" value={stats.untouched} color="amber" />
+      {/* ─── 1. 進捗ファネル (パイプラインを視覚化) ───────── */}
+      <section className="rounded-xl border border-gray-200 bg-white shadow-sm p-3">
+        <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-2">📊 開拓パイプライン</div>
+        <FunnelBar
+          steps={[
+            { label: "企業", value: stats.total, color: "#6b7280" },
+            { label: "URL補完", value: stats.withUrl, color: "#1CB0F6" },
+            { label: "求人公開", value: stats.openJobs, color: "#CE82FF" },
+            { label: "◎○マッチ", value: stats.strong, color: "#58CC02" },
+            { label: "送信可能", value: ready.length, color: "#FF9600" },
+          ]}
+        />
+        {stats.untouched > 0 && (
+          <div className="mt-2 text-[10px] text-amber-700 bg-amber-50 rounded-md px-2 py-1 inline-block">
+            🎯 未接触: <span className="font-extrabold">{stats.untouched}</span> 社
+          </div>
+        )}
       </section>
 
       {/* ─── 2. ⏰ フォロー対象 ─────────────────────── */}
@@ -366,17 +375,34 @@ export default function ProspectingHome({
 
 // ─── ヘルパ ──────────────────────────────────────────────
 
-function Tile({ label, value, color }: { label: string; value: number; color: "gray" | "green" | "blue" | "amber" }) {
-  const bg = {
-    gray:  "bg-gray-50 border-gray-200",
-    green: "bg-green-50 border-green-200 ring-1 ring-green-300",
-    blue:  "bg-blue-50 border-blue-200 ring-1 ring-blue-300",
-    amber: "bg-amber-50 border-amber-200",
-  }[color];
+// 開拓パイプラインの進捗を 1 本のバーで視覚化。各ステップが前ステップの何 % か分かる。
+function FunnelBar({ steps }: { steps: { label: string; value: number; color: string }[] }) {
+  const maxValue = Math.max(...steps.map((s) => s.value), 1);
   return (
-    <div className={`rounded-xl border p-2 ${bg}`}>
-      <div className="text-[9px] font-bold text-[#afafaf] uppercase truncate">{label}</div>
-      <div className="text-2xl font-black tabular-nums text-[#4b4b4b] leading-none mt-0.5">{value}</div>
+    <div className="space-y-1.5">
+      {steps.map((s, i) => {
+        const pct = (s.value / maxValue) * 100;
+        const prevValue = i > 0 ? steps[i - 1].value : null;
+        const conversionPct = prevValue && prevValue > 0 ? ((s.value / prevValue) * 100).toFixed(0) : null;
+        return (
+          <div key={s.label} className="flex items-center gap-2">
+            <div className="w-20 shrink-0 text-[10px] font-extrabold text-[#4b4b4b]">{s.label}</div>
+            <div className="flex-1 relative h-5 bg-gray-100 rounded overflow-hidden">
+              <div
+                className="h-full transition-all flex items-center justify-end px-2"
+                style={{ width: `${Math.max(pct, 8)}%`, backgroundColor: s.color }}
+              >
+                <span className="text-[10px] font-extrabold text-white tabular-nums">{s.value}</span>
+              </div>
+            </div>
+            {conversionPct !== null && (
+              <div className="w-12 shrink-0 text-right text-[9px] font-bold text-[#aaa] tabular-nums">
+                {conversionPct}%
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
