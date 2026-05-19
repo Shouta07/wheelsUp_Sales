@@ -199,35 +199,45 @@ wheelup-vercel/
 | POST | `/api/meetings/extract-playbook` | リーダー面談からプレイブック抽出 |
 | POST | `/api/meetings/coach` | 案件文脈付きフェーズ別コーチング |
 | POST | `/api/meetings/:id/manual-score` | 手動採点登録 |
-| POST | `/api/meetings/:id/outcome` | アウトカム記録 (次回予約 / 応募 / 採用) |
+| POST | `/api/meetings/:id/outcome` | アウトカム記録 (次回予約 / 応募 / 採用 / lost) |
+| POST | `/api/meetings/:id/restore` | 論理削除の取り消し |
 | GET | `/api/meetings/:id/history` | 採点履歴取得 |
+| POST | `/api/meetings/reseed-leader` | 教師データ (`leader-meetings-seed.json`) を再投入 |
 
 ## 3.5 データモデル (面談 FB)
 
-### `meetings` テーブル
+### `meeting_transcripts` テーブル (主)
 | カラム | 型 | 用途 |
 |---|---|---|
 | `id` | uuid | PK |
-| `recorded_at` | timestamptz | 面談日時 |
+| `deal_id` | uuid | (任意) Deal 連携 |
+| `candidate_id` | uuid | (任意) 候補者連携 |
 | `consultant_name` | text | 担当 CA |
-| `transcript` | text | 議事録本文 |
 | `is_leader` | bool | リーダー教師データか |
-| `score_data` | jsonb | AI 採点結果 (上記スコア構造) |
-| `manual_score` | jsonb | 手動採点 |
-| `outcome` | jsonb | `{next_meeting, applied, hired, recorded_at}` |
-| `deleted_at` | timestamptz | 論理削除 (NULL = 生きてる) |
-| `score_cache_key` | text | キャッシュ判定用ハッシュ |
+| `title` | text | 面談タイトル |
+| `transcript_text` | text | 議事録本文 |
+| `summary` | text | 要約 |
+| `score_data` | jsonb | AI 採点結果 (5 軸スコア + 引用 + 改善) |
+| `leader_feedback` | text | リーダーが手動で残した FB |
+| `recorded_at` | timestamptz | 面談日時 |
+| `outcome` | jsonb | (migration_006) `{next_meeting, applied, hired, lost, lost_reason, recorded_at}` |
+| `score_input_hash` | text | (migration_004) 採点入力 SHA-256。Gemini 再呼び出し抑止 |
+| `deleted_at` | timestamptz | (migration_006) 論理削除 (NULL = 生きてる) |
 
-### `score_history` テーブル
-採点のスナップショット履歴。誤って上書きしてもロールバック可能。
+### `score_history` テーブル (migration_006)
+採点のスナップショット履歴。`score_data` を上書きする前に毎回保存。
+`ON DELETE SET NULL` なので面談削除後も履歴は残る。
 
-| カラム | 型 |
-|---|---|
-| `id` | uuid |
-| `meeting_id` | uuid (FK) |
-| `score_data` | jsonb |
-| `scored_at` | timestamptz |
-| `scored_by` | text (`ai` / `manual` / `rescore`) |
+| カラム | 型 | 用途 |
+|---|---|---|
+| `id` | uuid | PK |
+| `meeting_id` | uuid (FK, SET NULL) | 元面談 |
+| `meeting_title` | text | 退避時点の面談タイトル |
+| `consultant_name` | text | 担当 CA |
+| `score_data` | jsonb | スナップショット |
+| `source` | text | `ai` / `manual` 等 (デフォルト `ai`) |
+| `scored_by` | text | 採点を実行したユーザー名 |
+| `scored_at` | timestamptz | 採点時刻 |
 
 ## 3.6 AI 採点エンジンの設計
 
@@ -242,8 +252,9 @@ gemini-2.5-flash-lite ← 最終 (軽量・無料枠広い)
 1 アカウントで quota:0 が出る事象に対応するため。
 
 ### コスト最適化
-- **キャッシュキー** = リーダー教師データの `[id, updated_at]` 配列ハッシュ + 議事録本文ハッシュ
-- 教師データが更新された時のみキャッシュ無効化
+- **キャッシュキー** = `transcript_text` + リーダー教師データ参照 (`leader_refs`) の SHA-256
+- `meeting_transcripts.score_input_hash` に保存 (migration_004)
+- 議事録本文や教師データが変わらない限り Gemini 再呼び出しなし
 - 同じ議事録に対する再採点は 2 回目以降ほぼ無料
 
 ### セキュリティ
@@ -310,8 +321,15 @@ gemini-2.5-flash-lite ← 最終 (軽量・無料枠広い)
 | POST | `/api/ra/update-candidate` | 候補者プロフィールパッチ |
 | GET/POST | `/api/ra/cron` | crawl + match + Lark 通知 (Vercel Cron が叩く) |
 
-### Cron 設定 (`vercel.json`)
-毎日 22:00 UTC = 07:00 JST に `/api/ra/cron` を実行。
+### Cron 設定
+⚠️ **現状 `vercel.json` の `crons` は未登録**。エンドポイント `/api/ra/cron` は実装済みだが、手動 (curl) または外部スケジューラから叩く必要がある。
+自動運用するには `vercel.json` に以下を追加:
+```json
+"crons": [
+  { "path": "/api/ra/cron?secret=$CRON_SECRET", "schedule": "0 22 * * *" }
+]
+```
+※ Hobby プランは Cron 1 本まで / Daily 制限。Pro 化推奨。
 
 ## 4.4 データモデル (RA)
 
@@ -446,7 +464,7 @@ Vercel 自動デプロイ (2-3 分)
 |---|---|
 | Vercel デプロイ失敗 | Vercel ダッシュボード → Deployments → 最新ビルドのログ確認 |
 | AI 採点エラー (Gemini quota) | 自動でフォールバックモデルに切替。それでもダメなら手動採点で代替 |
-| データ消失の不安 | `score_history` から復元可能。`meetings` は `deleted_at` 設定のみ (物理削除なし) |
+| データ消失の不安 | `score_history` から復元可能。`meeting_transcripts` は `deleted_at` 設定のみ (物理削除なし) |
 | ユーザーから「採点遅い」 | Vercel Functions のコールドスタート (初回 2-3 秒) は仕様 |
 | RA Cron が動かない | `vercel.json` の `crons` 設定 + `CRON_SECRET` 整合を確認 |
 | 採点結果がおかしい | `score_history` で前回値を確認、教師データ (`leader-meetings-seed.json`) を再投入 |
