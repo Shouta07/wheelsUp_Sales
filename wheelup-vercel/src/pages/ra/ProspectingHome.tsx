@@ -298,24 +298,31 @@ export default function ProspectingHome({
                   {/* リンク: 採用ページ / 企業 / 問い合わせ */}
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1">
-                      {c.recruit_page_url && (
-                        <a href={c.recruit_page_url} target="_blank" rel="noreferrer" title="採用ページ"
-                          className="px-2 py-0.5 rounded-full bg-[#CE82FF] text-white text-[10px] font-bold hover:opacity-90">📋 求人</a>
-                      )}
-                      {c.corporate_url && (
-                        <a href={c.corporate_url} target="_blank" rel="noreferrer" title="企業サイト"
-                          className="px-2 py-0.5 rounded-full bg-gray-500 text-white text-[10px] font-bold hover:opacity-90">🏢 企業</a>
-                      )}
-                      {form && (
-                        <a href={form.url} target="_blank" rel="noreferrer" title="お問い合わせフォーム"
+                      <LinkButton
+                        url={c.recruit_page_url}
+                        searchQuery={`${c.name} 採用 求人`}
+                        emoji="📋"
+                        label="求人"
+                        color="#CE82FF"
+                      />
+                      <LinkButton
+                        url={c.corporate_url}
+                        searchQuery={`${c.name} 公式サイト`}
+                        emoji="🏢"
+                        label="企業"
+                        color="#6b7280"
+                      />
+                      {form ? (
+                        <a href={form.url} target="_blank" rel="noopener noreferrer" title="お問い合わせフォーム"
                           className="px-2 py-0.5 rounded-full bg-[#1CB0F6] text-white text-[10px] font-bold hover:opacity-90">📝 問</a>
+                      ) : (
+                        <a href={googleSearchUrl(`${c.name} お問い合わせ`)} target="_blank" rel="noopener noreferrer"
+                          title="お問い合わせページを Google で検索"
+                          className="px-2 py-0.5 rounded-full bg-white border border-[#1CB0F6] text-[#1CB0F6] text-[10px] font-bold hover:bg-[#1CB0F6]/10">🔍 問</a>
                       )}
                       {email && (
-                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noreferrer" title={email.value ?? ""}
+                        <a href={email.url ?? `mailto:${email.value}`} target="_blank" rel="noopener noreferrer" title={email.value ?? ""}
                           className="px-2 py-0.5 rounded-full bg-[#58CC02] text-white text-[10px] font-bold hover:opacity-90">✉ Mail</a>
-                      )}
-                      {!c.recruit_page_url && !c.corporate_url && !form && !email && (
-                        <span className="text-[10px] text-gray-300">未取得</span>
                       )}
                     </div>
                   </td>
@@ -368,6 +375,50 @@ function FunnelBar({ steps }: { steps: { label: string; value: number; color: st
       })}
     </div>
   );
+}
+
+// 直接 URL がある場合はそこに飛ぶ。
+// 無い / 壊れてそうな場合は Google 検索にフォールバック (枠線スタイルで区別)。
+// 引き継ぎ後にデータ整備が進めば直接リンク率が上がる前提。
+function LinkButton({
+  url, searchQuery, emoji, label, color,
+}: { url: string | null | undefined; searchQuery: string; emoji: string; label: string; color: string }) {
+  const normalized = normalizeUrl(url);
+  if (normalized) {
+    return (
+      <a href={normalized} target="_blank" rel="noopener noreferrer" title={normalized}
+        className="px-2 py-0.5 rounded-full text-white text-[10px] font-bold hover:opacity-90"
+        style={{ backgroundColor: color }}>
+        {emoji} {label}
+      </a>
+    );
+  }
+  return (
+    <a href={googleSearchUrl(searchQuery)} target="_blank" rel="noopener noreferrer"
+      title={`「${searchQuery}」を Google で検索`}
+      className="px-2 py-0.5 rounded-full bg-white text-[10px] font-bold hover:bg-gray-50"
+      style={{ borderWidth: 1, borderStyle: "solid", borderColor: color, color }}>
+      🔍 {label}
+    </a>
+  );
+}
+
+// "//example.com" や "example.com" のような protocol 抜けにも対応。
+// 無効なものは null を返してフォールバック判定させる。
+function normalizeUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (s.startsWith("mailto:") || s.startsWith("tel:")) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith("//")) return "https:" + s;
+  // ドメインっぽい文字列なら https を付けて開く (e.g. "example.co.jp/recruit/")
+  if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/i.test(s)) return "https://" + s;
+  return null;
+}
+
+function googleSearchUrl(q: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
 // 候補者 × 企業 のマッチ精度を 1 セル分にコンパクト表示。
