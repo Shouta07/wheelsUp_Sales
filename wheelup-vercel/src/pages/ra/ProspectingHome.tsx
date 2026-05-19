@@ -1,23 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { isLive, listCompaniesEnriched, listReady, APPROACH_STATUSES } from "../../lib/ra/queries";
 import type { ApproachStatus, CompanyEnriched } from "../../lib/ra/queries";
-import type { ReadyRow, Priority } from "../../lib/ra/types";
+import type { Priority } from "../../lib/ra/types";
 import { supabase } from "../../lib/supabase";
-import SendModal from "./SendModal";
 
 /**
- * RA トップ画面 — タブ切替なしで「全部 1 画面で完結」する統合ダッシュボード。
+ * RA トップ画面 — ホームタブの中身。
  *
  * セクション (上から):
- *   1. 進捗タイル (5 つ、コンパクト)
+ *   1. 📊 開拓パイプライン (ファネル可視化)
  *   2. ⏰ フォロー対象 (3 日経過後 sent でその後反応なし)
- *   3. 🎯 今日のアタック対象 (◎○ × 未送信、送信処理ボタン)
- *   4. 📋 企業一覧 (246 社、フィルタ + アプローチ状況)
+ *   3. 📋 企業一覧 (246 社、フィルタ + アプローチ状況)
  *
- * 5/19 ユーザー要望:
- *   - KPI 削除
- *   - エラー表示を控えめに
- *   - 全部 1 画面で見たい (タブ切替なし)
+ * 「今日のアタック対象」は別タブ (募集ポジション) と機能重複のため削除。
  */
 
 type FollowUpRow = {
@@ -37,15 +32,12 @@ export default function ProspectingHome({
   onOpenCompany: (id: string) => void;
 }) {
   const [companies, setCompanies] = useState<CompanyEnriched[]>([]);
-  const [ready, setReady] = useState<ReadyRow[]>([]);
+  const [readyCount, setReadyCount] = useState(0);
   const [follows, setFollows] = useState<FollowUpRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [openSend, setOpenSend] = useState<ReadyRow | null>(null);
-  const [sentLocal, setSentLocal] = useState<Record<string, boolean>>({});
   const [statusFilter, setStatusFilter] = useState<"" | ApproachStatus>("");
   const [q, setQ] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<"" | Priority>("");
-  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -58,14 +50,14 @@ export default function ProspectingHome({
         ]);
         if (!alive) return;
         setCompanies(co);
-        setReady(rd);
+        setReadyCount(rd.length);
         setFollows(fu);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [reloadKey]);
+  }, []);
 
   // 進捗タイルの集計
   const stats = useMemo(() => ({
@@ -95,15 +87,6 @@ export default function ProspectingHome({
     return c;
   }, [companies]);
 
-  // ready のソート (◎ → ○ → △、スコア降順)
-  const sortedReady = useMemo(() => {
-    return [...ready].sort((a, b) => {
-      const gw = (g: string) => g === "◎" ? 0 : g === "○" ? 1 : 2;
-      if (gw(a.grade) !== gw(b.grade)) return gw(a.grade) - gw(b.grade);
-      return (b.score ?? 0) - (a.score ?? 0);
-    });
-  }, [ready]);
-
   if (loading) return <div className="text-sm text-gray-500">読み込み中…</div>;
 
   return (
@@ -117,7 +100,7 @@ export default function ProspectingHome({
             { label: "URL補完", value: stats.withUrl, color: "#1CB0F6" },
             { label: "求人公開", value: stats.openJobs, color: "#CE82FF" },
             { label: "◎○マッチ", value: stats.strong, color: "#58CC02" },
-            { label: "送信可能", value: ready.length, color: "#FF9600" },
+            { label: "送信可能", value: readyCount, color: "#FF9600" },
           ]}
         />
         {stats.untouched > 0 && (
@@ -154,83 +137,7 @@ export default function ProspectingHome({
         </section>
       )}
 
-      {/* ─── 3. 🎯 今日のアタック対象 ─────────────────── */}
-      <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-          <span className="text-xs font-black text-[#4b4b4b]">
-            🎯 今日のアタック対象 ({sortedReady.length} 件)
-          </span>
-          <span className="text-[10px] text-[#afafaf]">◎○ × 未送信、◎ → ○ → △ の優先順</span>
-        </div>
-        {sortedReady.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-gray-400">
-            {!isLive ? (
-              <>モックモード — 🤖 URL補完 → 🕸 クロール → 🎯 マッチ を回すと並びます</>
-            ) : (
-              <>該当なし。求人クロール → 候補者マッチを実行してください</>
-            )}
-          </div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead className="text-left text-[10px] uppercase text-gray-500">
-              <tr>
-                <th className="px-3 py-1.5">判定</th>
-                <th className="px-3 py-1.5">点数</th>
-                <th className="px-3 py-1.5">企業</th>
-                <th className="px-3 py-1.5">求人</th>
-                <th className="px-3 py-1.5">候補者</th>
-                <th className="px-3 py-1.5">理由 (抜粋)</th>
-                <th className="px-3 py-1.5 text-right">アクション</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedReady.slice(0, 50).map((r) => (
-                <tr key={r.match_id} className="border-t border-gray-100 hover:bg-gray-50/50">
-                  <td className={`px-3 py-1.5 font-black ${r.grade === "◎" ? "text-green-600" : r.grade === "○" ? "text-blue-500" : "text-gray-500"}`}>
-                    {r.grade}
-                  </td>
-                  <td className="px-3 py-1.5 tabular-nums">{r.score}</td>
-                  <td className="px-3 py-1.5">
-                    <button onClick={() => onOpenCompany(r.company_id)} className="font-bold text-[#4b4b4b] hover:underline">
-                      {r.company_name}
-                    </button>
-                    <span className="ml-1.5 inline-flex items-center rounded-full bg-gray-100 px-1.5 text-[9px] text-gray-500">
-                      {r.company_priority}
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5 max-w-[180px] truncate" title={r.job_title}>
-                    {r.job_url ? <a href={r.job_url} target="_blank" rel="noreferrer" className="hover:underline">{r.job_title}</a> : r.job_title}
-                  </td>
-                  <td className="px-3 py-1.5 text-gray-500">{r.candidate_name}</td>
-                  <td className="px-3 py-1.5 max-w-[260px] text-[10px] text-gray-600 truncate" title={(r.reasons ?? []).join(" / ")}>
-                    {(r.reasons ?? []).slice(0, 2).join(" / ")}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    {sentLocal[r.match_id] ? (
-                      <span className="text-[10px] text-green-600 font-bold">✓ 送信記録済</span>
-                    ) : (
-                      <button
-                        onClick={() => setOpenSend(r)}
-                        className="px-2.5 py-1 rounded-lg text-[10px] font-black bg-[#58CC02] text-white hover:bg-[#46a302]"
-                        style={{ borderBottom: "2px solid #46a302" }}
-                      >
-                        ✉️ 送信処理
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {sortedReady.length > 50 && (
-          <div className="px-3 py-2 text-[10px] text-center text-[#afafaf] border-t border-gray-100">
-            {sortedReady.length - 50} 件を非表示中
-          </div>
-        )}
-      </section>
-
-      {/* ─── 4. 📋 企業一覧 ──────────────────────────── */}
+      {/* ─── 3. 📋 企業一覧 ──────────────────────────── */}
       <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
         <div className="px-3 py-2 bg-gray-50 border-b border-gray-200">
           <div className="flex items-center justify-between mb-2">
@@ -358,17 +265,6 @@ export default function ProspectingHome({
         )}
       </section>
 
-      {openSend && (
-        <SendModal
-          row={openSend}
-          onClose={() => setOpenSend(null)}
-          onSent={() => {
-            setSentLocal((s) => ({ ...s, [openSend.match_id]: true }));
-            setOpenSend(null);
-            setReloadKey((k) => k + 1);
-          }}
-        />
-      )}
     </div>
   );
 }
