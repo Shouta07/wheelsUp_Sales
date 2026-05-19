@@ -312,11 +312,12 @@ async function match(db: DB, req: VercelRequest, res: VercelResponse) {
   const r = await runMatch(db, {
     limit: Number(req.query.limit ?? 20),
     jobId: typeof req.query.job_id === "string" ? req.query.job_id : null,
+    force: req.query.force === "1" || req.query.force === "true",
   });
   return res.json(r);
 }
 
-async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
+async function runMatch(db: DB, opts: { limit: number; jobId: string | null; force: boolean }) {
   const { data: candidates } = await db.from("ra_candidates").select("*").eq("is_active", true).limit(20);
   const jobsQuery = opts.jobId
     ? db.from("ra_jobs").select("*").eq("id", opts.jobId).limit(1)
@@ -324,7 +325,7 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   const { data: jobs, error } = await jobsQuery;
   if (error) throw new Error(error.message);
 
-  const stats = { scored: 0, skipped: 0, errors: 0 };
+  const stats = { scored: 0, rescored: 0, skipped: 0, errors: 0 };
   const errors: string[] = [];
 
   // Cartesian product of jobs × candidates, then run in parallel pool.
@@ -342,13 +343,22 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null }) {
   await mapWithConcurrency(pairs, 1, async ({ j, c }) => {
     try {
       const { data: existing } = await db.from("ra_matches").select("id").eq("job_id", j.id).eq("candidate_id", c.id).limit(1);
-      if (existing && existing.length > 0) { stats.skipped += 1; return; }
+      const existingId = existing && existing.length > 0 ? existing[0].id : null;
+      // force 指定時のみ既存マッチを再採点。通常は重複呼び出しを避けて Gemini クォータを節約。
+      if (existingId && !opts.force) { stats.skipped += 1; return; }
       const s = await scoreOne(j, c);
-      await db.from("ra_matches").insert({
-        job_id: j.id, candidate_id: c.id,
-        grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
-      });
-      stats.scored += 1;
+      if (existingId) {
+        await db.from("ra_matches").update({
+          grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
+        }).eq("id", existingId);
+        stats.rescored += 1;
+      } else {
+        await db.from("ra_matches").insert({
+          job_id: j.id, candidate_id: c.id,
+          grade: s.grade, score: s.score, reasons: s.reasons, concerns: s.concerns, model: geminiModel,
+        });
+        stats.scored += 1;
+      }
     } catch (err) {
       stats.errors += 1;
       errors.push(`${j.title} × ${c.name}: ${(err as Error).message}`);
@@ -367,30 +377,82 @@ type Scored = { grade: "◎" | "○" | "△" | "×"; score: number; reasons: str
 
 async function scoreOne(job: Record<string, unknown>, candidate: Record<string, unknown>): Promise<Scored> {
   if (!hasGemini) return { grade: "△", score: 50, reasons: ["mock"], concerns: ["GEMINI_API_KEY未設定"] };
-  const prompt = `あなたは建築設備 / FM / PM / 施設管理 領域の日本のRAです。以下の求人 × 候補者の相性を ◎ ○ △ × で判定し、0-100点を付けてください。
 
-# 候補者
+  const profile = (candidate.profile ?? {}) as {
+    specialties?: string[]; industries_ok?: string[]; industries_ng?: string[];
+    deal_breakers?: string[]; in_progress?: string[]; preferred_location?: string[];
+    desired_salary?: string; notes?: string;
+  };
+
+  // 議事録の話と同じ思想: 議論を出させる前に、まず判定軸を明確にしてから採点させる。
+  // few-shot で「ありえる事例 × あるべき判定」を最低 3 つ示し grade のズレを抑える。
+  const prompt = `あなたは建築設備 / FM / PM / 施設管理 / ゼネコン領域の日本のリクルーティングエージェント (RA) です。
+求人と候補者プロフィールから、相性を厳密に判定してください。
+
+<task>
+次の <job> と <candidate> を見比べ、(1) deal_breakers / industries_ng に抵触しないか、
+(2) 候補者の specialties が求人要件にどれだけ合うか、(3) 業界・勤務地・年収レンジが合うか、
+(4) 既に進行中の案件 (in_progress) と競合しないか、を順にチェックしてください。
+</task>
+
+<rubric>
+判定の順序:
+- step 1: 求人内容が deal_breakers に 1 つでも抵触したら → 必ず "×" (score: 0-29)
+- step 2: 求人企業の業界が industries_ng に該当 → 必ず "×" (score: 0-29)
+- step 3: industries_ok にない業界 → "△" 上限 (score: 30-59) 例外的に specialties が強く合えば "○"
+- step 4: industries_ok かつ specialties の 50% 以上カバー → "○" (score: 60-79)
+- step 5: industries_ok かつ specialties の 75% 以上カバー、勤務地・年収も範囲内 → "◎" (score: 80-100)
+- 勤務地 mismatch (希望外エリア) は最大 1 段階ダウングレード
+- 年収レンジが下振れ過剰 (希望下限の 80% 未満) は最大 1 段階ダウングレード
+- in_progress に同社・類似ポジションがあれば concerns に明記 (judgement は据え置き)
+</rubric>
+
+<examples>
+例1: 候補者の deal_breakers に「夜勤シフト」、求人が「夜勤あり交代制」
+→ { "grade": "×", "score": 10, "reasons": ["業務形態 OK"], "concerns": ["夜勤シフトに deal_breaker 抵触"] }
+
+例2: industries_ok に "FM" が含まれ、求人が大規模商業施設の FM マネージャー、specialties の 4/5 が要件と一致
+→ { "grade": "◎", "score": 90, "reasons": ["FM 業界", "specialties 高一致", "勤務地一致"], "concerns": [] }
+
+例3: 業界は industries_ok だが、求人が「新人教育メイン」で deal_breakers の「未経験者教育がメインの管理職」に近い
+→ { "grade": "×", "score": 20, "reasons": ["業界 OK"], "concerns": ["業務内容が deal_breakers に類似"] }
+
+例4: industries_ok の業界、specialties はギリギリ部分一致、年収レンジが希望下限の 70%
+→ { "grade": "△", "score": 50, "reasons": ["業界 OK"], "concerns": ["specialties 部分一致のみ", "年収レンジ下振れ"] }
+</examples>
+
+<candidate>
 名前: ${candidate.name}
 ヘッドライン: ${candidate.headline ?? ""}
-プロフィール:
-${JSON.stringify(candidate.profile, null, 2)}
+specialties: ${JSON.stringify(profile.specialties ?? [])}
+industries_ok: ${JSON.stringify(profile.industries_ok ?? [])}
+industries_ng: ${JSON.stringify(profile.industries_ng ?? [])}
+deal_breakers: ${JSON.stringify(profile.deal_breakers ?? [])}
+in_progress: ${JSON.stringify(profile.in_progress ?? [])}
+preferred_location: ${JSON.stringify(profile.preferred_location ?? [])}
+desired_salary: ${profile.desired_salary ?? ""}
+notes: ${profile.notes ?? ""}
+</candidate>
 
-# 求人
+<job>
 タイトル: ${job.title}
 雇用形態: ${job.employment_type ?? ""}
 勤務地: ${job.location ?? ""}
 想定年収: ${job.salary_range ?? ""}
 説明: ${job.description ?? ""}
 必須要件: ${job.requirements ?? ""}
+</job>
 
-# 判定基準
-- ◎ = ほぼ確実にマッチ
-- ○ = 強くマッチ
-- △ = 接戦
-- × = 不適合（deal_breakers 抵触 等）
+<output_schema>
+JSON のみ。コメント・前置き禁止。
+{
+  "grade": "◎" | "○" | "△" | "×",
+  "score": 整数 0-100,
+  "reasons": ["合致点を 1-3 個", "短く具体的に"],
+  "concerns": ["不安点・dealbreaker 抵触 を 0-3 個"]
+}
+</output_schema>`;
 
-# 出力(JSON のみ)
-{ "grade": "...", "score": 0-100, "reasons": ["..."], "concerns": ["..."] }`;
   const parsed = await generateJson<Scored>(prompt);
   const g = parsed.grade ?? "△";
   return {
@@ -480,9 +542,9 @@ async function cron(db: DB, _req: VercelRequest, res: VercelResponse) {
   // 合計 ~50s で 60s タイムアウトに収まる。
   // Gemini calls/cron: 10 (enrich) + 25 (crawl) + 25-100 (match) = ~150 calls/cron
   //                  × 2 cron/日 = ~300/日 < 無料枠 1500/日 (20%)
-  const e = await tryRun(() => runEnrich(db, { limit: 10 }));
+  const e = await tryRun(() => runEnrich(db, { limit: 10, verify: false, force: false }));
   const c = await tryRun(() => runCrawl(db,  { limit: 25, companyId: null }));
-  const m = await tryRun(() => runMatch(db,  { limit: 25, jobId: null }));
+  const m = await tryRun(() => runMatch(db,  { limit: 25, jobId: null, force: false }));
   const s = await tryRun(() => closeStaleJobs(db, 30));
   const ok = e.ok && c.ok && m.ok && s.ok;
   await db.from("ra_crawl_runs").insert({
@@ -839,27 +901,60 @@ JSON のみ:
 }
 
 /**
- * Auto-enrich: pick companies that have NO recruit_page_url and NO contact_paths,
- * and let Gemini guess their URLs. This is what makes the pipeline truly hands-free.
+ * Auto-enrich:
+ *   通常: recruit_page_url が NULL の会社を対象。
+ *   verify=1: 既に URL がある会社についても HEAD 検証し、dead なら再 enrich。
+ *   force=1: 全社対象に再 enrich (検証コストが大きいので注意)。
  */
-async function runEnrich(db: DB, opts: { limit: number }) {
-  if (!hasGemini) return { enriched: 0, failed: 0, errors: [] };
+async function runEnrich(db: DB, opts: { limit: number; verify: boolean; force: boolean }) {
+  if (!hasGemini) return { enriched: 0, failed: 0, verified_ok: 0, replaced: 0, errors: [] };
 
-  const { data: companies, error } = await db
-    .from("ra_companies")
-    .select("id,name")
-    .is("recruit_page_url", null)
-    .order("created_at", { ascending: true })
-    .limit(opts.limit);
-  if (error) throw new Error(error.message);
+  let targets: Array<{ id: string; name: string }> = [];
+  let verified_ok_count = 0;
 
-  let enriched = 0, failed = 0;
+  if (opts.force) {
+    const { data, error } = await db.from("ra_companies").select("id,name")
+      .order("created_at", { ascending: true }).limit(opts.limit);
+    if (error) throw new Error(error.message);
+    targets = (data ?? []) as Array<{ id: string; name: string }>;
+  } else if (opts.verify) {
+    // URL が入ってる会社を引っ張ってきて HEAD 検証。dead だけ enrich する。
+    const { data, error } = await db.from("ra_companies").select("id,name,recruit_page_url,corporate_url")
+      .not("recruit_page_url", "is", null)
+      .order("created_at", { ascending: true }).limit(opts.limit * 3); // 検証分を多めに
+    if (error) throw new Error(error.message);
+    const dead: typeof targets = [];
+    for (const c of (data ?? []) as Array<{ id: string; name: string; recruit_page_url: string | null; corporate_url: string | null }>) {
+      const recAlive = c.recruit_page_url ? await urlExists(c.recruit_page_url) : false;
+      const corpAlive = c.corporate_url ? await urlExists(c.corporate_url) : false;
+      if (recAlive || corpAlive) verified_ok_count += 1;
+      else dead.push({ id: c.id, name: c.name });
+      if (dead.length >= opts.limit) break;
+    }
+    targets = dead;
+  } else {
+    const { data, error } = await db.from("ra_companies").select("id,name")
+      .is("recruit_page_url", null)
+      .order("created_at", { ascending: true }).limit(opts.limit);
+    if (error) throw new Error(error.message);
+    targets = (data ?? []) as Array<{ id: string; name: string }>;
+  }
+
+  let enriched = 0, replaced = 0, failed = 0;
   const errors: string[] = [];
 
-  await mapWithConcurrency(companies ?? [], 1, async (c) => {
+  await mapWithConcurrency(targets, 1, async (c) => {
     try {
-      await enrichOne(db, { id: c.id as string, name: c.name as string });
-      enriched += 1;
+      const before = await db.from("ra_companies").select("recruit_page_url,corporate_url").eq("id", c.id).maybeSingle();
+      await enrichOne(db, { id: c.id, name: c.name });
+      const after = await db.from("ra_companies").select("recruit_page_url,corporate_url").eq("id", c.id).maybeSingle();
+      const changed = before.data?.recruit_page_url !== after.data?.recruit_page_url
+                   || before.data?.corporate_url   !== after.data?.corporate_url;
+      if (before.data?.recruit_page_url || before.data?.corporate_url) {
+        if (changed) replaced += 1; else enriched += 1;
+      } else {
+        enriched += 1;
+      }
     } catch (err) {
       failed += 1;
       errors.push(`${c.name}: ${(err as Error).message}`);
@@ -868,15 +963,23 @@ async function runEnrich(db: DB, opts: { limit: number }) {
 
   await db.from("ra_crawl_runs").insert({
     kind: "enrich", finished_at: new Date().toISOString(),
-    ok: failed === 0, stats: { enriched, failed, model: geminiModel }, error: errors.join(" | ") || null,
+    ok: failed === 0,
+    stats: { enriched, replaced, failed, mode: opts.force ? "force" : opts.verify ? "verify" : "fresh", model: geminiModel },
+    error: errors.join(" | ") || null,
   });
-  return { ok: true, enriched, failed, errors };
+  return {
+    ok: true, enriched, replaced, failed,
+    verified_ok: verified_ok_count,
+    errors,
+  };
 }
 
 /** Manual trigger from the UI / curl. */
 async function enrichEndpoint(db: DB, req: VercelRequest, res: VercelResponse) {
   const limit = Number(req.query.limit ?? 20);
-  const r = await runEnrich(db, { limit });
+  const verify = req.query.verify === "1" || req.query.verify === "true";
+  const force  = req.query.force  === "1" || req.query.force  === "true";
+  const r = await runEnrich(db, { limit, verify, force });
   return res.json(r);
 }
 

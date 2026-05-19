@@ -7,8 +7,10 @@ type Spec = { key: Kind; label: string; emoji: string; params?: Record<string, s
 const KINDS: Spec[] = [
   { key: "import",   label: "シード投入",   emoji: "📥", expected: "246社+4候補者の投入" },
   { key: "enrich",   label: "URL自動補完",  emoji: "🤖", params: { limit: 3 }, expected: "3社のURLをGemini推定" },
+  { key: "enrich",   label: "URL再検証",    emoji: "🔄", params: { limit: 5, verify: 1 }, expected: "既存URLをHEAD検証、deadなら差し替え (5社まで)" },
   { key: "crawl",    label: "求人クロール", emoji: "🕸", params: { limit: 2 }, expected: "2社の採用ページから求人抽出" },
   { key: "match",    label: "候補者マッチ", emoji: "🎯", params: { limit: 2 }, expected: "2求人×4候補者の◎○△×採点" },
+  { key: "match",    label: "マッチ再採点", emoji: "♻️", params: { limit: 5, force: 1 }, expected: "既存マッチを新プロンプトで再採点 (5求人まで)" },
   { key: "discover", label: "新規企業発掘", emoji: "🔍", params: { count: 5 }, expected: "Geminiが5社提案" },
 ];
 
@@ -165,12 +167,12 @@ export default function RunToolbar({ onDone }: { onDone?: () => void }) {
           {advancedOpen ? "▼" : "▶"} 個別実行 (デバッグ・初回投入用)
         </summary>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {KINDS.map((t) => {
+          {KINDS.map((t, idx) => {
             const isBusy = busy === t.key;
             const disabled = busy !== null || autoMode;
             return (
               <button
-                key={t.key}
+                key={`${t.key}-${idx}`}
                 onClick={() => run(t)}
                 disabled={disabled}
                 title={t.expected}
