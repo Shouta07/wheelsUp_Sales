@@ -22,7 +22,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { parseCsv } from "../_lib/ra-csv.js";
 import { generateJson, geminiModel, hasGemini } from "../_lib/ra-gemini.js";
-import { fetchPage, sha256, urlExists } from "../_lib/ra-scrape.js";
+import { fetchPage, sha256, urlExists, verifyRecruitContent, verifyCorporateContent } from "../_lib/ra-scrape.js";
 import { googleSearch, hasGoogleSearch } from "../_lib/ra-search.js";
 
 // Vercel function timeout — Hobby plan caps at 60s, Pro at 300s.
@@ -375,6 +375,76 @@ async function runMatch(db: DB, opts: { limit: number; jobId: string | null; for
 
 type Scored = { grade: "◎" | "○" | "△" | "×"; score: number; reasons: string[]; concerns: string[] };
 
+// 「700-850万円」「応相談」「年収700万〜」など多様な表記から数値レンジを抽出。
+// 抽出不能なら null を返す (judgement では給与差分のチェックを skip させる)。
+function parseSalaryRange(s: string | null | undefined): { min: number | null; max: number | null } {
+  if (!s) return { min: null, max: null };
+  const t = s.replace(/[,，\s]/g, "");
+  // 例: "700-850万円", "700~850万", "700～850万"
+  const range = t.match(/(\d{3,5})\s*[\-〜~～]\s*(\d{3,5})\s*万/);
+  if (range) return { min: Number(range[1]), max: Number(range[2]) };
+  // 例: "700万〜", "700万円以上"
+  const lower = t.match(/(\d{3,5})\s*万\s*[〜~～以以上]/);
+  if (lower) return { min: Number(lower[1]), max: null };
+  // 例: "〜850万", "850万円以下"
+  const upper = t.match(/[〜~～以以下]\s*(\d{3,5})\s*万/);
+  if (upper) return { min: null, max: Number(upper[1]) };
+  // 例: "700万円"
+  const single = t.match(/(\d{3,5})\s*万/);
+  if (single) return { min: Number(single[1]), max: Number(single[1]) };
+  return { min: null, max: null };
+}
+
+// 候補者ごとの "業界 → grade" の正解例。Few-shot calibration の現場感を底上げする。
+// 抽象例だけだと AI が個別の specialties を取り違える → 候補者本人を引用した例を渡す。
+function candidateSpecificExamples(name: string): string {
+  switch (name) {
+    case "志村":
+      return `
+例 (志村): 大手 FM 子会社の「商業施設のチーフマネジャー (空調・電気の改修案件多数)」
+→ { "grade": "◎", "score": 92, "spec_score": 90, "ind_score": 100, "loc_score": 90, "sal_score": 85,
+    "reasons": ["FM 大手", "改修マネジメント specialty 直撃", "都内勤務"], "concerns": [] }
+
+例 (志村): ハウスメーカー子会社の「戸建て分譲現場の常駐施工管理」
+→ { "grade": "×", "score": 15, "spec_score": 30, "ind_score": 20, "loc_score": 70, "sal_score": 60,
+    "reasons": ["勤務地 OK"], "concerns": ["現場常駐 100% の deal_breaker 抵触", "FM/PM 志向と相反"] }`;
+    case "宮本":
+      return `
+例 (宮本): 大手サブコンの「現場代理人 (空調設備の機械側中心、首都圏案件)」
+→ { "grade": "◎", "score": 88, "spec_score": 95, "ind_score": 95, "loc_score": 100, "sal_score": 75,
+    "reasons": ["1 級管工事と現場代理人 specialty 直撃", "首都圏勤務"], "concerns": ["年収レンジが下限ぎりぎり"] }
+
+例 (宮本): サブコンの「電気設備のみの施工管理 (機械設備の経験は不問)」
+→ { "grade": "×", "score": 20, "spec_score": 25, "ind_score": 100, "loc_score": 90, "sal_score": 70,
+    "reasons": ["業界 OK"], "concerns": ["機械設備の specialty が活きない deal_breaker 抵触"] }`;
+    case "長島":
+      return `
+例 (長島): ゼネコンの「データセンター建設の所長候補 (案件規模 50 億円以上)」
+→ { "grade": "◎", "score": 95, "spec_score": 100, "ind_score": 100, "loc_score": 90, "sal_score": 95,
+    "reasons": ["DC 建設 specialty 直撃", "大規模案件で年収 OK"], "concerns": [] }
+
+例 (長島): リフォーム会社の「個人住宅リノベの工事管理 (1 案件 1000 万円規模)」
+→ { "grade": "×", "score": 10, "spec_score": 20, "ind_score": 30, "loc_score": 80, "sal_score": 40,
+    "reasons": ["勤務地 OK"], "concerns": ["案件規模 10 億円未満の deal_breaker 抵触", "戸建て中心も NG"] }`;
+    case "加藤":
+      return `
+例 (加藤): ホテルチェーンの「FM チーフマネジャー (都内オフィス兼ホテル管理、日勤中心)」
+→ { "grade": "◎", "score": 90, "spec_score": 95, "ind_score": 100, "loc_score": 100, "sal_score": 80,
+    "reasons": ["ホテル FM specialty 直撃", "東京 23 区"], "concerns": [] }
+
+例 (加藤): ビル管理会社の「夜勤主体の常駐スタッフ (シフト固定、月 10 回夜勤)」
+→ { "grade": "×", "score": 8, "spec_score": 60, "ind_score": 90, "loc_score": 100, "sal_score": 50,
+    "reasons": ["業界 OK", "都内勤務"], "concerns": ["夜勤主体の deal_breaker 抵触"] }`;
+    default:
+      return "";
+  }
+}
+
+type DetailedScore = Scored & {
+  spec_score?: number; ind_score?: number; loc_score?: number; sal_score?: number;
+  thinking?: string; // chain-of-thought
+};
+
 async function scoreOne(job: Record<string, unknown>, candidate: Record<string, unknown>): Promise<Scored> {
   if (!hasGemini) return { grade: "△", score: 50, reasons: ["mock"], concerns: ["GEMINI_API_KEY未設定"] };
 
@@ -384,41 +454,62 @@ async function scoreOne(job: Record<string, unknown>, candidate: Record<string, 
     desired_salary?: string; notes?: string;
   };
 
-  // 議事録の話と同じ思想: 議論を出させる前に、まず判定軸を明確にしてから採点させる。
-  // few-shot で「ありえる事例 × あるべき判定」を最低 3 つ示し grade のズレを抑える。
+  // 求人の説明文が薄すぎる時は概念上は採点不能。AI に「不確実」シグナルを送る。
+  const jobDescLen = String(job.description ?? "").length + String(job.requirements ?? "").length;
+  const lowDataWarning = jobDescLen < 200
+    ? "\n注意: 求人の説明/要件が極端に短い (200 字未満)。confidence を下げ、不明な点は concerns に明記。"
+    : "";
+
+  // 年収レンジを機械パース。AI に「希望と求人で何万円差があるか」を直接渡すと
+  // 「年収不問」と書いてある求人を曖昧に評価する事故が減る。
+  const wantRange = parseSalaryRange(profile.desired_salary);
+  const jobRange  = parseSalaryRange(String(job.salary_range ?? ""));
+  const salaryNote = (wantRange.min || wantRange.max) && (jobRange.min || jobRange.max)
+    ? `\n年収パース結果: 候補者希望 ${wantRange.min ?? "?"}-${wantRange.max ?? "?"}万 / 求人 ${jobRange.min ?? "?"}-${jobRange.max ?? "?"}万`
+    : "";
+
+  // Chain-of-Thought + per-dimension scoring + candidate-specific few-shots。
+  // 議事録採点と同じ思想で、最終 grade の手前に「思考」を出させて推論の質を上げる。
   const prompt = `あなたは建築設備 / FM / PM / 施設管理 / ゼネコン領域の日本のリクルーティングエージェント (RA) です。
 求人と候補者プロフィールから、相性を厳密に判定してください。
 
 <task>
-次の <job> と <candidate> を見比べ、(1) deal_breakers / industries_ng に抵触しないか、
-(2) 候補者の specialties が求人要件にどれだけ合うか、(3) 業界・勤務地・年収レンジが合うか、
-(4) 既に進行中の案件 (in_progress) と競合しないか、を順にチェックしてください。
+以下を <thinking> で 1 文ずつ評価してから <output> に最終判定を出してください。
+1. deal_breakers に抵触するか (yes/no と該当項目)
+2. industries_ng に該当するか (yes/no)
+3. industries_ok に該当するか + specialties のうち求人要件に直結するもの数
+4. 勤務地: preferred_location と求人勤務地が一致するか
+5. 年収: 希望レンジと求人レンジの重なり (パース済み数値あり)
+6. in_progress に競合があるか
 </task>
 
 <rubric>
-判定の順序:
-- step 1: 求人内容が deal_breakers に 1 つでも抵触したら → 必ず "×" (score: 0-29)
-- step 2: 求人企業の業界が industries_ng に該当 → 必ず "×" (score: 0-29)
-- step 3: industries_ok にない業界 → "△" 上限 (score: 30-59) 例外的に specialties が強く合えば "○"
-- step 4: industries_ok かつ specialties の 50% 以上カバー → "○" (score: 60-79)
-- step 5: industries_ok かつ specialties の 75% 以上カバー、勤務地・年収も範囲内 → "◎" (score: 80-100)
-- 勤務地 mismatch (希望外エリア) は最大 1 段階ダウングレード
-- 年収レンジが下振れ過剰 (希望下限の 80% 未満) は最大 1 段階ダウングレード
-- in_progress に同社・類似ポジションがあれば concerns に明記 (judgement は据え置き)
+次元別スコア (各 0-100) を出してから加重平均で総合点を決める:
+- spec_score (specialties カバー率): weight 0.40
+- ind_score  (業界適合):              weight 0.30
+- loc_score  (勤務地):                weight 0.15
+- sal_score  (年収レンジ):            weight 0.15
+
+総合点 score = round(spec*0.4 + ind*0.3 + loc*0.15 + sal*0.15)
+
+grade の決定:
+- deal_breakers 抵触 もしくは industries_ng 該当 → 必ず "×" (score 上限 29)
+- score >= 80 かつ 全次元 70 以上 → "◎"
+- score >= 60 → "○"
+- score >= 40 → "△"
+- それ以外 → "×"
+${lowDataWarning}${salaryNote}
 </rubric>
 
 <examples>
-例1: 候補者の deal_breakers に「夜勤シフト」、求人が「夜勤あり交代制」
-→ { "grade": "×", "score": 10, "reasons": ["業務形態 OK"], "concerns": ["夜勤シフトに deal_breaker 抵触"] }
+例 (汎用 1): 候補者の deal_breakers に「夜勤シフト」、求人が「夜勤あり交代制」
+→ { "grade": "×", "score": 12, "spec_score": 60, "ind_score": 80, "loc_score": 70, "sal_score": 60,
+    "reasons": ["業界 OK"], "concerns": ["夜勤シフトに deal_breaker 抵触"] }
 
-例2: industries_ok に "FM" が含まれ、求人が大規模商業施設の FM マネージャー、specialties の 4/5 が要件と一致
-→ { "grade": "◎", "score": 90, "reasons": ["FM 業界", "specialties 高一致", "勤務地一致"], "concerns": [] }
-
-例3: 業界は industries_ok だが、求人が「新人教育メイン」で deal_breakers の「未経験者教育がメインの管理職」に近い
-→ { "grade": "×", "score": 20, "reasons": ["業界 OK"], "concerns": ["業務内容が deal_breakers に類似"] }
-
-例4: industries_ok の業界、specialties はギリギリ部分一致、年収レンジが希望下限の 70%
-→ { "grade": "△", "score": 50, "reasons": ["業界 OK"], "concerns": ["specialties 部分一致のみ", "年収レンジ下振れ"] }
+例 (汎用 2): industries_ok + specialties 80% カバー + 勤務地・年収一致
+→ { "grade": "◎", "score": 90, "spec_score": 95, "ind_score": 100, "loc_score": 90, "sal_score": 75,
+    "reasons": ["FM 業界", "specialties 高一致", "勤務地一致"], "concerns": ["年収やや下限寄り"] }
+${candidateSpecificExamples(String(candidate.name ?? ""))}
 </examples>
 
 <candidate>
@@ -439,25 +530,46 @@ notes: ${profile.notes ?? ""}
 雇用形態: ${job.employment_type ?? ""}
 勤務地: ${job.location ?? ""}
 想定年収: ${job.salary_range ?? ""}
-説明: ${job.description ?? ""}
-必須要件: ${job.requirements ?? ""}
+説明: ${String(job.description ?? "").slice(0, 1500)}
+必須要件: ${String(job.requirements ?? "").slice(0, 800)}
 </job>
 
 <output_schema>
-JSON のみ。コメント・前置き禁止。
+JSON のみ。前置きやコメント禁止。
 {
+  "thinking": "deal_breakers: ... / industries: ... / specialties: ... / location: ... / salary: ... の 5 行で簡潔に",
+  "spec_score": 0-100,
+  "ind_score":  0-100,
+  "loc_score":  0-100,
+  "sal_score":  0-100,
   "grade": "◎" | "○" | "△" | "×",
-  "score": 整数 0-100,
+  "score": 整数 0-100 (上記の重み付け式に従って計算),
   "reasons": ["合致点を 1-3 個", "短く具体的に"],
-  "concerns": ["不安点・dealbreaker 抵触 を 0-3 個"]
+  "concerns": ["不安点・deal_breaker 抵触 を 0-3 個"]
 }
 </output_schema>`;
 
-  const parsed = await generateJson<Scored>(prompt);
+  const parsed = await generateJson<DetailedScore>(prompt);
   const g = parsed.grade ?? "△";
+
+  // AI が rubric を無視して総合点を勝手にいじるケースに対し、サーバ側で再計算した値を採用。
+  // 次元別スコアが返ってきていれば、加重平均で算出した値の方を「信頼できる総合点」とする。
+  let finalScore = Math.max(0, Math.min(100, Number(parsed.score) || 0));
+  const ss = Number(parsed.spec_score);
+  const isFiniteNum = (n: number) => Number.isFinite(n);
+  if (isFiniteNum(ss) && isFiniteNum(Number(parsed.ind_score)) &&
+      isFiniteNum(Number(parsed.loc_score)) && isFiniteNum(Number(parsed.sal_score))) {
+    const weighted = Math.round(
+      ss * 0.4 + Number(parsed.ind_score) * 0.3 +
+      Number(parsed.loc_score) * 0.15 + Number(parsed.sal_score) * 0.15,
+    );
+    // AI 出力と加重計算の乖離が 15 以上なら計算値を信用、それ以下なら AI 値を尊重。
+    if (Math.abs(weighted - finalScore) >= 15) finalScore = Math.max(0, Math.min(100, weighted));
+  }
+
   return {
     grade: (["◎","○","△","×"] as const).includes(g as never) ? g : "△",
-    score: Math.max(0, Math.min(100, Number(parsed.score) || 0)),
+    score: finalScore,
     reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : [],
     concerns: Array.isArray(parsed.concerns) ? parsed.concerns.slice(0, 6) : [],
   };
@@ -724,10 +836,12 @@ async function enrichOne(db: DB, target: { id: string | null; name: string }): P
     } catch { /* swallow */ }
   }
 
-  // ── 最終 HEAD 検証 ────────────────────────────────────────────────
+  // ── 最終 HEAD + コンテンツ検証 ────────────────────────────────────
+  // recruit / corporate はコンテンツ検証つきで「200 OK だがトップにリダイレクト」を排除。
+  // contact / linkedin は遷移できれば OK なので HEAD だけで通す。
   const [corpFinal, recruitFinal, contactFinal, linkedinFinal] = await Promise.all([
-    firstValidUrl(dedupe(candidates.corporate)),
-    firstValidUrl(dedupe(candidates.recruit)),
+    firstVerifiedCorpUrl(dedupe(candidates.corporate)),
+    firstVerifiedRecruitUrl(dedupe(candidates.recruit)),
     firstValidUrl(dedupe(candidates.contact)),
     firstValidUrl(dedupe(candidates.linkedin)),
   ]);
@@ -796,6 +910,35 @@ function dedupe(arr: string[]): string[] {
 }
 
 async function firstValidUrl(urls: string[]): Promise<string | null> {
+  for (const u of urls.slice(0, 6)) {
+    if (await urlExists(u)) return u;
+  }
+  return null;
+}
+
+/**
+ * 採用ページ候補を「200 OK + 採用キーワード含む」の二段でフィルタ。
+ * 第二段がコンテンツ検証なので「200 だがトップにリダイレクトされた」
+ * 「企業サイトのトップしか持ってない」を排除できる。
+ */
+async function firstVerifiedRecruitUrl(urls: string[]): Promise<string | null> {
+  for (const u of urls.slice(0, 6)) {
+    if (!(await urlExists(u))) continue;
+    if (await verifyRecruitContent(u)) return u;
+  }
+  // コンテンツ検証で全部落ちた場合は、せめて 200 OK のものを返す (枠線ボタンで遷移は可能)
+  for (const u of urls.slice(0, 6)) {
+    if (await urlExists(u)) return u;
+  }
+  return null;
+}
+
+/** 企業 URL 用: 200 OK + 会社サイトっぽいキーワードでの 2 段検証。 */
+async function firstVerifiedCorpUrl(urls: string[]): Promise<string | null> {
+  for (const u of urls.slice(0, 6)) {
+    if (!(await urlExists(u))) continue;
+    if (await verifyCorporateContent(u)) return u;
+  }
   for (const u of urls.slice(0, 6)) {
     if (await urlExists(u)) return u;
   }
@@ -925,9 +1068,11 @@ async function runEnrich(db: DB, opts: { limit: number; verify: boolean; force: 
     if (error) throw new Error(error.message);
     const dead: typeof targets = [];
     for (const c of (data ?? []) as Array<{ id: string; name: string; recruit_page_url: string | null; corporate_url: string | null }>) {
-      const recAlive = c.recruit_page_url ? await urlExists(c.recruit_page_url) : false;
-      const corpAlive = c.corporate_url ? await urlExists(c.corporate_url) : false;
-      if (recAlive || corpAlive) verified_ok_count += 1;
+      // HEAD + コンテンツ検証で「実際に採用ページか」を確認。
+      // ここでコンテンツ検証も使うと「200 OK だがトップにリダイレクト済み」を弾ける。
+      const recOk  = c.recruit_page_url   ? (await urlExists(c.recruit_page_url))   && (await verifyRecruitContent(c.recruit_page_url))   : false;
+      const corpOk = c.corporate_url      ? (await urlExists(c.corporate_url))      && (await verifyCorporateContent(c.corporate_url))   : false;
+      if (recOk || corpOk) verified_ok_count += 1;
       else dead.push({ id: c.id, name: c.name });
       if (dead.length >= opts.limit) break;
     }

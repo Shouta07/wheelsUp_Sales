@@ -74,3 +74,85 @@ export async function urlExists(url: string, timeoutMs = 5000): Promise<boolean>
     clearTimeout(t);
   }
 }
+
+/**
+ * 採用ページかどうかをコンテンツで検証する。
+ * urlExists() の 200 OK は通るが「トップにリダイレクトされた」「404 を 200 で返す」
+ * ケースを排除するため、本文に採用関連キーワードがあるかをチェック。
+ *
+ * Returns:
+ *  - true:  本文に採用/求人キーワードあり → 信頼できる
+ *  - false: 200 OK だが採用ページではなさそう → 棄却 (再 enrich の対象)
+ */
+const RECRUIT_KEYWORDS = [
+  "採用", "求人", "募集", "中途採用", "新卒採用", "キャリア採用", "キャリア",
+  "join us", "join our", "careers", "career", "recruit", "hiring", "we are hiring",
+  "jobs at", "open positions", "現在募集中",
+];
+
+export async function verifyRecruitContent(url: string, timeoutMs = 6000): Promise<boolean> {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 wheelup-prospecting/0.1 (content-check)",
+        // 全文取らずに先頭だけ。長大なページの転送量を節約。
+        Range: "bytes=0-65535",
+      },
+    });
+    if (res.status >= 400) return false;
+    const html = await res.text();
+    // タグ除去後の小文字テキストでキーワード判定。
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .toLowerCase()
+      .slice(0, 20000); // 先頭 20KB 分だけ見れば十分
+    return RECRUIT_KEYWORDS.some((k) => text.includes(k.toLowerCase()));
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** 会社サイト URL を見て、そのページに採用ページへのリンクが含まれているか軽くチェック。 */
+const CORPORATE_KEYWORDS = ["会社概要", "事業内容", "コーポレート", "about", "company"];
+
+export async function verifyCorporateContent(url: string, timeoutMs = 5000): Promise<boolean> {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 wheelup-prospecting/0.1 (content-check)",
+        Range: "bytes=0-32768",
+      },
+    });
+    if (res.status >= 400) return false;
+    const html = await res.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .toLowerCase()
+      .slice(0, 16000);
+    // 会社サイトっぽいキーワードがあれば OK。なくても 200 ならとりあえず通す
+    // (一部の単純な LP しか持ってない企業もあるため)。
+    return CORPORATE_KEYWORDS.some((k) => text.includes(k.toLowerCase())) || text.length > 1000;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
