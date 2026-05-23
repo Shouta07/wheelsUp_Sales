@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
+import { listFolderFiles, downloadFileText, probeFolder, type DriveFile } from "../_lib/drive-client.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -56,6 +57,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/reseed-leader ---
     if (segments[0] === "reseed-leader" && req.method === "POST") {
       return await reseedLeaderMeetings(db, req, res);
+    }
+    // --- /api/meetings/drive-import (ミモが Drive に格納する議事録を取り込み) ---
+    if (segments[0] === "drive-import" && req.method === "POST") {
+      return await driveImport(db, req, res);
+    }
+    // --- /api/meetings/drive-probe (Service Account の権限テスト用) ---
+    if (segments[0] === "drive-probe" && req.method === "GET") {
+      return await driveProbe(req, res);
+    }
+    // --- /api/meetings/drive-webhook (Drive Push Notification の受信口) ---
+    if (segments[0] === "drive-webhook" && req.method === "POST") {
+      return await driveWebhook(db, req, res);
     }
     // --- /api/meetings/:id ---
     const id = segments[0];
@@ -1508,5 +1521,216 @@ ${leaderExamples || "（事例なし）"}
       fallback: !contextProvided,
     },
   });
+}
+
+/* ========== Mimo (Google Drive) 連携 ========== */
+
+const MIMO_FOLDER_ID = process.env.MIMO_DRIVE_FOLDER_ID ?? "";
+
+/**
+ * /api/meetings/drive-probe
+ * Service Account の権限が正しく設定されているか確認するための軽量チェック。
+ * ?secret=$CRON_SECRET 必須。
+ */
+async function driveProbe(req: VercelRequest, res: VercelResponse) {
+  if (!isCronAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+  const folder = (req.query.folder_id as string | undefined) || MIMO_FOLDER_ID;
+  if (!folder) return res.status(400).json({ error: "folder_id 必須 (もしくは MIMO_DRIVE_FOLDER_ID 環境変数)" });
+  const r = await probeFolder(folder);
+  return res.json(r);
+}
+
+/**
+ * /api/meetings/drive-import
+ * Drive フォルダから新着ファイルを取り込み、meeting_transcripts に投入。
+ * オプションで自動採点も実行 (auto_score=1)。
+ *
+ * クエリ:
+ *   ?secret=$CRON_SECRET  認可 (必須)
+ *   ?since=ISO            これ以降に modified されたファイルのみ (省略時は前回最終取込以降)
+ *   ?auto_score=1         取り込んだ各議事録を即採点 (件数が多いと Gemini quota 注意)
+ *   ?dry_run=1            DB に書かず、検出したファイル名一覧だけ返す
+ */
+async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  if (!isCronAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+  if (!MIMO_FOLDER_ID) return res.status(400).json({ error: "MIMO_DRIVE_FOLDER_ID env not set" });
+
+  const dryRun = req.query.dry_run === "1";
+  const autoScore = req.query.auto_score === "1";
+  const sinceParam = typeof req.query.since === "string" ? req.query.since : null;
+
+  // since が指定されなければ「これまで取り込んだ最新ファイルの modified_time」を採用。
+  // ra_app_state を流用 (RA 系で既に運用中の KV テーブル)。
+  let since = sinceParam;
+  if (!since) {
+    const { data } = await db.from("ra_app_state").select("value").eq("key", "mimo:last_imported_modified_time").maybeSingle();
+    since = (data?.value as string | null) ?? null;
+  }
+
+  let files: DriveFile[];
+  try {
+    files = await listFolderFiles(MIMO_FOLDER_ID, since);
+  } catch (e) {
+    return res.status(502).json({ error: `Drive 接続失敗: ${(e as Error).message}` });
+  }
+
+  if (dryRun) {
+    return res.json({ ok: true, dry_run: true, file_count: files.length, files: files.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType })) });
+  }
+
+  const results: Array<{ file: string; ok: boolean; meeting_id?: string; consultant?: string; skipped?: string; error?: string }> = [];
+  let imported = 0, skipped = 0, errors = 0;
+  let maxModifiedTime = since ?? "";
+
+  for (const f of files) {
+    try {
+      // 同じ Drive ファイルを 2 度取り込まないため、source_external_id 相当の照合を行う
+      // ※ meeting_transcripts に専用カラムがないので、title に "[mimo:{file.id}]" タグを埋めて代用
+      const tag = `[mimo:${f.id}]`;
+      const { data: existing } = await db.from("meeting_transcripts").select("id").like("title", `%${tag}%`).limit(1).maybeSingle();
+      if (existing) {
+        skipped += 1;
+        results.push({ file: f.name, ok: true, skipped: "already imported" });
+        continue;
+      }
+
+      const text = await downloadFileText(f);
+      if (!text || text.length < 50) {
+        skipped += 1;
+        results.push({ file: f.name, ok: true, skipped: "本文 50 字未満" });
+        continue;
+      }
+
+      // ファイル名 + 本文から担当 CA を推測。先頭発話者で当たる確率が高い。
+      const consultant = inferConsultantFromMimoFile(f.name, text);
+      const title = `${stripExtension(f.name)} ${tag}`.slice(0, 250);
+
+      const { data: created, error } = await db.from("meeting_transcripts").insert({
+        consultant_name: consultant,
+        is_leader: consultant === "小林",
+        title,
+        transcript_text: text,
+        source: "mimo",
+        recorded_at: f.createdTime || new Date().toISOString(),
+      }).select("id, consultant_name").single();
+
+      if (error) {
+        errors += 1;
+        results.push({ file: f.name, ok: false, error: error.message });
+        continue;
+      }
+
+      // 自動採点 (オプション)。失敗してもインポート自体は成功扱い。
+      if (autoScore && consultant) {
+        try {
+          await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
+        } catch (e) {
+          // 自動採点失敗は警告レベル
+          results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+        }
+      }
+
+      imported += 1;
+      if (f.modifiedTime > maxModifiedTime) maxModifiedTime = f.modifiedTime;
+      results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant: consultant ?? undefined });
+    } catch (e) {
+      errors += 1;
+      results.push({ file: f.name, ok: false, error: (e as Error).message });
+    }
+  }
+
+  // 次回 since 用に最新 modified_time を保存
+  if (maxModifiedTime && maxModifiedTime !== (since ?? "")) {
+    await db.from("ra_app_state").upsert({ key: "mimo:last_imported_modified_time", value: maxModifiedTime }, { onConflict: "key" });
+  }
+
+  return res.json({ ok: true, imported, skipped, errors, next_since: maxModifiedTime, results });
+}
+
+/**
+ * /api/meetings/drive-webhook
+ * Drive Push Notification (changes.watch) からの POST を受信。
+ * 中身は X-Goog-* ヘッダだけで body は空なので、ここでは driveImport を内部呼び出ししてポーリングする。
+ *
+ * Drive Push Notification の登録は別途バッチで行う必要がある (24 時間で expire するので
+ * Vercel Cron で日次 renew する想定)。
+ */
+async function driveWebhook(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  // Drive からの通知の信頼性は X-Goog-Channel-Token で確認 (登録時に設定したシークレット)。
+  const tokenHeader = req.headers["x-goog-channel-token"];
+  const expected = (process.env.DRIVE_WEBHOOK_TOKEN ?? "").trim();
+  if (!expected || (Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader) !== expected) {
+    return res.status(401).json({ error: "invalid drive webhook token" });
+  }
+  // ackOnly: 通知だけ受け取って 200 を返す。実際の取り込みは別 Cron で実行する設計もあり。
+  // 今回は受信即取り込み (フォルダ単位ならコストはほぼ同じ)。
+  try {
+    if (!MIMO_FOLDER_ID) throw new Error("MIMO_DRIVE_FOLDER_ID env not set");
+    // since は KV から読み出し、driveImport と同じ処理を内製呼び出し
+    const { data } = await db.from("ra_app_state").select("value").eq("key", "mimo:last_imported_modified_time").maybeSingle();
+    const since = (data?.value as string | null) ?? null;
+    const files = await listFolderFiles(MIMO_FOLDER_ID, since);
+    let imported = 0;
+    let maxMtime = since ?? "";
+    for (const f of files) {
+      try {
+        const tag = `[mimo:${f.id}]`;
+        const { data: existing } = await db.from("meeting_transcripts").select("id").like("title", `%${tag}%`).limit(1).maybeSingle();
+        if (existing) continue;
+        const text = await downloadFileText(f);
+        if (!text || text.length < 50) continue;
+        const consultant = inferConsultantFromMimoFile(f.name, text);
+        await db.from("meeting_transcripts").insert({
+          consultant_name: consultant,
+          is_leader: consultant === "小林",
+          title: `${stripExtension(f.name)} ${tag}`.slice(0, 250),
+          transcript_text: text,
+          source: "mimo-webhook",
+          recorded_at: f.createdTime || new Date().toISOString(),
+        });
+        imported += 1;
+        if (f.modifiedTime > maxMtime) maxMtime = f.modifiedTime;
+      } catch { /* swallow individual file errors */ }
+    }
+    if (maxMtime && maxMtime !== (since ?? "")) {
+      await db.from("ra_app_state").upsert({ key: "mimo:last_imported_modified_time", value: maxMtime }, { onConflict: "key" });
+    }
+    return res.json({ ok: true, imported, file_count: files.length });
+  } catch (e) {
+    // 200 を返さないと Drive が retry を続けるので、エラーでも 200 で握り潰す
+    return res.status(200).json({ ok: false, error: (e as Error).message });
+  }
+}
+
+const VALID_CONSULTANTS = ["小林", "西村", "辻内", "安藤", "村上"] as const;
+
+/** ミモのファイル名 / 本文から担当 CA を推測。 */
+function inferConsultantFromMimoFile(fileName: string, text: string): string | null {
+  // 1. ファイル名に CA 名が含まれていれば最優先
+  for (const name of VALID_CONSULTANTS) {
+    if (fileName.includes(name)) return name;
+  }
+  // 2. 本文の先頭 2000 字で「{CA}: ...」「[{CA}] ...」の登場回数をカウント
+  const head = text.slice(0, 5000);
+  let bestName: string | null = null;
+  let bestCount = 0;
+  for (const name of VALID_CONSULTANTS) {
+    const re = new RegExp(`(^|\n)\\s*[\\[【]?${name}[\\]】]?\\s*[:：]`, "g");
+    const cnt = (head.match(re) ?? []).length;
+    if (cnt > bestCount) { bestCount = cnt; bestName = name; }
+  }
+  return bestCount >= 2 ? bestName : null; // 1 回だけは誤検知の可能性が高いので 2 回以上で確定
+}
+
+function stripExtension(name: string): string {
+  return name.replace(/\.(gdoc|txt|docx|json|vtt|srt|md)$/i, "");
+}
+
+function isCronAuthorized(req: VercelRequest): boolean {
+  const secret = (process.env.CRON_SECRET ?? "").trim();
+  if (!secret) return false;
+  const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+  const querySecret = typeof req.query.secret === "string" ? req.query.secret.trim() : "";
+  return secret === bearer || secret === querySecret;
 }
 
