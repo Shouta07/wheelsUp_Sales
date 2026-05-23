@@ -248,6 +248,89 @@ export async function listFolderFilesRecursive(
   return out;
 }
 
+/**
+ * 詳細診断: SA が Drive に対して何を見られるかを多角的に確認する。
+ * folder_count: 0 のときに「権限が無いのか / フォルダが見えないのか / 共有が反映されてないのか」
+ * を切り分けるための情報を返す。
+ */
+export async function diagnoseDrive(folderId: string): Promise<{
+  ok: boolean;
+  sa_about: { ok: boolean; user_email?: string; error?: string };
+  folder_metadata: { ok: boolean; name?: string; mimeType?: string; owners?: string[]; permissions_count?: number; error?: string };
+  all_visible_files: { ok: boolean; count?: number; error?: string };
+  folder_children: { ok: boolean; count?: number; error?: string };
+}> {
+  const token = await getAccessToken().catch((e) => ({ error: (e as Error).message }));
+  if (typeof token !== "string") {
+    return {
+      ok: false,
+      sa_about: { ok: false, error: token.error },
+      folder_metadata: { ok: false, error: "no token" },
+      all_visible_files: { ok: false, error: "no token" },
+      folder_children: { ok: false, error: "no token" },
+    };
+  }
+  const auth = { Authorization: `Bearer ${token}` };
+
+  // 1. SA 自身の認証情報を確認 (about.get)
+  let sa_about: { ok: boolean; user_email?: string; error?: string };
+  try {
+    const res = await fetch("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)", { headers: auth });
+    if (!res.ok) {
+      sa_about = { ok: false, error: `${res.status} ${(await res.text()).slice(0, 200)}` };
+    } else {
+      const d = (await res.json()) as { user?: { emailAddress?: string } };
+      sa_about = { ok: true, user_email: d.user?.emailAddress };
+    }
+  } catch (e) { sa_about = { ok: false, error: (e as Error).message }; }
+
+  // 2. 指定フォルダのメタデータ取得 (files.get)
+  let folder_metadata: { ok: boolean; name?: string; mimeType?: string; owners?: string[]; permissions_count?: number; error?: string };
+  try {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId.trim()}?fields=id,name,mimeType,owners(emailAddress),permissions(emailAddress,role)`,
+      { headers: auth });
+    if (!res.ok) {
+      folder_metadata = { ok: false, error: `${res.status} ${(await res.text()).slice(0, 300)}` };
+    } else {
+      const d = (await res.json()) as { name?: string; mimeType?: string; owners?: Array<{ emailAddress?: string }>; permissions?: Array<{ emailAddress?: string }> };
+      folder_metadata = {
+        ok: true,
+        name: d.name, mimeType: d.mimeType,
+        owners: (d.owners ?? []).map((o) => o.emailAddress ?? "?"),
+        permissions_count: (d.permissions ?? []).length,
+      };
+    }
+  } catch (e) { folder_metadata = { ok: false, error: (e as Error).message }; }
+
+  // 3. SA が見える全ファイル (フォルダ filter なし) — SA に何かしらの共有があれば見える
+  let all_visible_files: { ok: boolean; count?: number; error?: string };
+  try {
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", "trashed = false");
+    url.searchParams.set("fields", "files(id)");
+    url.searchParams.set("pageSize", "100");
+    const res = await fetch(url.toString(), { headers: auth });
+    if (!res.ok) {
+      all_visible_files = { ok: false, error: `${res.status} ${(await res.text()).slice(0, 200)}` };
+    } else {
+      const d = (await res.json()) as { files?: unknown[] };
+      all_visible_files = { ok: true, count: (d.files ?? []).length };
+    }
+  } catch (e) { all_visible_files = { ok: false, error: (e as Error).message }; }
+
+  // 4. フォルダ直下の子要素数 (既存の listFolderFiles 相当)
+  let folder_children: { ok: boolean; count?: number; error?: string };
+  try {
+    const files = await listFolderFiles(folderId);
+    folder_children = { ok: true, count: files.length };
+  } catch (e) { folder_children = { ok: false, error: (e as Error).message }; }
+
+  return {
+    ok: sa_about.ok && folder_metadata.ok && all_visible_files.ok && folder_children.ok,
+    sa_about, folder_metadata, all_visible_files, folder_children,
+  };
+}
+
 /** フォルダ ID と件数だけ確認したい時の軽量チェック (権限テスト用)。 */
 export async function probeFolder(folderId: string): Promise<{
   ok: true; file_count: number; subfolder_count: number; recursive_file_count: number;

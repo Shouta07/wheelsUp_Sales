@@ -4,7 +4,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
-import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
+import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, diagnoseDrive, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -65,6 +65,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/drive-probe (Service Account の権限テスト用) ---
     if (segments[0] === "drive-probe" && req.method === "GET") {
       return await driveProbe(req, res);
+    }
+    // --- /api/meetings/drive-diagnose (深層診断: SA から見える全情報) ---
+    if (segments[0] === "drive-diagnose" && req.method === "GET") {
+      if (!isCronAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+      const folder = (req.query.folder_id as string | undefined) || MIMO_FOLDER_ID;
+      if (!folder) return res.status(400).json({ error: "folder_id 必須" });
+      const r = await diagnoseDrive(folder);
+      return res.json(r);
     }
     // --- /api/meetings/drive-webhook (Drive Push Notification の受信口) ---
     if (segments[0] === "drive-webhook" && req.method === "POST") {
