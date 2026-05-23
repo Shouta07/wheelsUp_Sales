@@ -87,9 +87,11 @@ export type DriveFile = {
  */
 export async function listFolderFiles(folderId: string, sinceIso: string | null = null): Promise<DriveFile[]> {
   const token = await getAccessToken();
+  // 入力値の前後空白を除去 (Vercel ENV コピペで紛れがちなタブ・改行への対策)。
+  folderId = folderId.trim();
   // folderId はクエリ文字列に直接埋まるので '" を含むものは弾く (injection 防御)。
   if (!/^[A-Za-z0-9_-]+$/.test(folderId)) {
-    throw new Error(`invalid folder id: ${folderId.slice(0, 20)}`);
+    throw new Error(`invalid folder id: ${JSON.stringify(folderId.slice(0, 20))}`);
   }
   const queryParts = [`'${folderId}' in parents`, "trashed = false"];
   if (sinceIso) {
@@ -210,7 +212,7 @@ export class DocxNotSupportedError extends Error {
 /** フォルダ ID と件数だけ確認したい時の軽量チェック (権限テスト用)。 */
 export async function probeFolder(folderId: string): Promise<{ ok: true; file_count: number } | { ok: false; error: string }> {
   try {
-    const files = await listFolderFiles(folderId);
+    const files = await listFolderFiles(folderId.trim());
     return { ok: true, file_count: files.length };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

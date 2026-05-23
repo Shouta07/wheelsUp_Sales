@@ -1525,7 +1525,7 @@ ${leaderExamples || "（事例なし）"}
 
 /* ========== Mimo (Google Drive) 連携 ========== */
 
-const MIMO_FOLDER_ID = process.env.MIMO_DRIVE_FOLDER_ID ?? "";
+const MIMO_FOLDER_ID = (process.env.MIMO_DRIVE_FOLDER_ID ?? "").trim();
 
 /**
  * /api/meetings/drive-probe
