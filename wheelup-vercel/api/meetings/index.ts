@@ -4,7 +4,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
-import { listFolderFiles, downloadFileText, probeFolder, type DriveFile } from "../_lib/drive-client.js";
+import { listFolderFiles, downloadFileText, probeFolder, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1558,6 +1558,11 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
   const dryRun = req.query.dry_run === "1";
   const autoScore = req.query.auto_score === "1";
   const sinceParam = typeof req.query.since === "string" ? req.query.since : null;
+  // autoScore 時は Gemini クォータ保護のため 1 回の取り込みで採点する件数に上限。
+  // limit_score=N で上書き可能 (default 10)。
+  const maxAutoScore = Math.max(1, Math.min(50, Number(req.query.limit_score ?? 10)));
+  // 採点間スリープ (ms)。default 8s で 15 RPM の余裕を確保。
+  const scoreSleepMs = Math.max(0, Math.min(60000, Number(req.query.score_sleep_ms ?? 8000)));
 
   // since が指定されなければ「これまで取り込んだ最新ファイルの modified_time」を採用。
   // ra_app_state を流用 (RA 系で既に運用中の KV テーブル)。
@@ -1578,9 +1583,10 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
     return res.json({ ok: true, dry_run: true, file_count: files.length, files: files.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType })) });
   }
 
-  const results: Array<{ file: string; ok: boolean; meeting_id?: string; consultant?: string; skipped?: string; error?: string }> = [];
-  let imported = 0, skipped = 0, errors = 0;
+  const results: Array<{ file: string; ok: boolean; meeting_id?: string; consultant?: string; skipped?: string; error?: string; scored?: boolean }> = [];
+  let imported = 0, skipped = 0, errors = 0, scored = 0;
   let maxModifiedTime = since ?? "";
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   for (const f of files) {
     try {
@@ -1594,7 +1600,17 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
         continue;
       }
 
-      const text = await downloadFileText(f);
+      let text: string;
+      try {
+        text = await downloadFileText(f);
+      } catch (e) {
+        if (e instanceof DocxNotSupportedError) {
+          skipped += 1;
+          results.push({ file: f.name, ok: true, skipped: ".docx 未対応 (Google Docs / .txt に変換してください)" });
+          continue;
+        }
+        throw e;
+      }
       if (!text || text.length < 50) {
         skipped += 1;
         results.push({ file: f.name, ok: true, skipped: "本文 50 字未満" });
@@ -1620,19 +1636,35 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
         continue;
       }
 
-      // 自動採点 (オプション)。失敗してもインポート自体は成功扱い。
+      // 自動採点 (オプション)。Gemini クォータ保護のため:
+      //   - 採点件数を maxAutoScore 件で打切る (default 10)
+      //   - 採点間 scoreSleepMs ミリ秒スリープ (default 8s, 15 RPM 余裕)
+      //   - 失敗してもインポート自体は成功扱い (採点だけ後でリトライ可能)
+      let scoredOk = false;
       if (autoScore && consultant) {
-        try {
-          await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
-        } catch (e) {
-          // 自動採点失敗は警告レベル
-          results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+        if (scored < maxAutoScore) {
+          try {
+            if (scored > 0) await sleep(scoreSleepMs); // 1 件目はスリープ不要
+            await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
+            scoredOk = true;
+            scored += 1;
+          } catch (e) {
+            // 自動採点失敗は警告レベル (importは成功)
+            results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+            continue;
+          }
+        } else {
+          // 上限に達した: import だけ完了させ、採点は後続バッチで
+          results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, skipped: `auto_score 上限 ${maxAutoScore} 件超過、後で手動再採点してください` });
+          imported += 1;
+          if (f.modifiedTime > maxModifiedTime) maxModifiedTime = f.modifiedTime;
+          continue;
         }
       }
 
       imported += 1;
       if (f.modifiedTime > maxModifiedTime) maxModifiedTime = f.modifiedTime;
-      results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant: consultant ?? undefined });
+      results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant: consultant ?? undefined, scored: scoredOk });
     } catch (e) {
       errors += 1;
       results.push({ file: f.name, ok: false, error: (e as Error).message });
@@ -1644,7 +1676,7 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
     await db.from("ra_app_state").upsert({ key: "mimo:last_imported_modified_time", value: maxModifiedTime }, { onConflict: "key" });
   }
 
-  return res.json({ ok: true, imported, skipped, errors, next_since: maxModifiedTime, results });
+  return res.json({ ok: true, imported, skipped, errors, scored, next_since: maxModifiedTime, results });
 }
 
 /**
@@ -1704,22 +1736,35 @@ async function driveWebhook(db: ReturnType<typeof getSupabaseAdmin>, req: Vercel
 
 const VALID_CONSULTANTS = ["小林", "西村", "辻内", "安藤", "村上"] as const;
 
-/** ミモのファイル名 / 本文から担当 CA を推測。 */
+/**
+ * ミモのファイル名 / 本文から担当 CA を推測。
+ *
+ * ロジック:
+ *   1. ファイル名に複数 CA 名が含まれる場合は「先頭に近い方」を採用
+ *      (例: "辻内・小林 面談" → 辻内、"小林・辻内 面談" → 小林)
+ *   2. それでも一意に決まらない場合は本文の発話者カウント (先頭 5000 字)
+ *   3. 2 回未満は誤検知の可能性が高く null を返す → autoScore で skip される
+ */
 function inferConsultantFromMimoFile(fileName: string, text: string): string | null {
-  // 1. ファイル名に CA 名が含まれていれば最優先
+  // 1. ファイル名チェック: 「最初に出現する」CA 名を採用
+  let firstName: string | null = null;
+  let firstIdx = Infinity;
   for (const name of VALID_CONSULTANTS) {
-    if (fileName.includes(name)) return name;
+    const idx = fileName.indexOf(name);
+    if (idx >= 0 && idx < firstIdx) { firstIdx = idx; firstName = name; }
   }
-  // 2. 本文の先頭 2000 字で「{CA}: ...」「[{CA}] ...」の登場回数をカウント
+  if (firstName) return firstName;
+
+  // 2. 本文 (先頭 5000 字) で発話者ラベルをカウント
   const head = text.slice(0, 5000);
   let bestName: string | null = null;
   let bestCount = 0;
   for (const name of VALID_CONSULTANTS) {
-    const re = new RegExp(`(^|\n)\\s*[\\[【]?${name}[\\]】]?\\s*[:：]`, "g");
+    const re = new RegExp(`(^|\\n)\\s*[\\[【]?${name}[\\]】]?\\s*[:：]`, "g");
     const cnt = (head.match(re) ?? []).length;
     if (cnt > bestCount) { bestCount = cnt; bestName = name; }
   }
-  return bestCount >= 2 ? bestName : null; // 1 回だけは誤検知の可能性が高いので 2 回以上で確定
+  return bestCount >= 2 ? bestName : null;
 }
 
 function stripExtension(name: string): string {

@@ -81,31 +81,50 @@ export type DriveFile = {
 };
 
 /**
- * 指定フォルダ内のファイル一覧を取得。
+ * 指定フォルダ内のファイル一覧を取得 (pagination 対応で全件)。
  * @param folderId - フォルダ ID
  * @param sinceIso - これ以降に modified されたファイルのみ (null = 全件)
  */
 export async function listFolderFiles(folderId: string, sinceIso: string | null = null): Promise<DriveFile[]> {
   const token = await getAccessToken();
+  // folderId はクエリ文字列に直接埋まるので '" を含むものは弾く (injection 防御)。
+  if (!/^[A-Za-z0-9_-]+$/.test(folderId)) {
+    throw new Error(`invalid folder id: ${folderId.slice(0, 20)}`);
+  }
   const queryParts = [`'${folderId}' in parents`, "trashed = false"];
-  if (sinceIso) queryParts.push(`modifiedTime > '${sinceIso}'`);
+  if (sinceIso) {
+    // ISO 8601 形式 (RFC3339) のみ許可。それ以外は弾く。
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(sinceIso)) {
+      throw new Error(`invalid sinceIso: ${sinceIso.slice(0, 40)}`);
+    }
+    queryParts.push(`modifiedTime > '${sinceIso}'`);
+  }
   const q = queryParts.join(" and ");
 
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
-  url.searchParams.set("q", q);
-  url.searchParams.set("fields", "files(id,name,mimeType,modifiedTime,createdTime,webViewLink)");
-  url.searchParams.set("orderBy", "modifiedTime desc");
-  url.searchParams.set("pageSize", "100");
+  const all: DriveFile[] = [];
+  let pageToken: string | null = null;
+  // 1000 件まで安全に取りに行く (それ以上はフォルダ設計を見直す前提)
+  for (let page = 0; page < 10; page++) {
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("fields", "nextPageToken, files(id,name,mimeType,modifiedTime,createdTime,webViewLink)");
+    url.searchParams.set("orderBy", "modifiedTime desc");
+    url.searchParams.set("pageSize", "100");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Drive list failed: ${res.status} ${body.slice(0, 300)}`);
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Drive list failed: ${res.status} ${body.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+    all.push(...(data.files ?? []));
+    pageToken = data.nextPageToken ?? null;
+    if (!pageToken) break;
   }
-  const data = (await res.json()) as { files: DriveFile[] };
-  return data.files ?? [];
+  return all;
 }
 
 /**
@@ -170,7 +189,22 @@ export async function downloadFileText(file: DriveFile): Promise<string> {
       .join("\n").trim();
   }
 
+  // .docx の本格パースは外部ライブラリ依存になるため、明示的に "skip" を伝える特別エラー。
+  // 呼び出し側 (driveImport) でキャッチして skip 集計に回す。
+  if (file.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      || file.name.match(/\.docx$/i)) {
+    throw new DocxNotSupportedError(`.docx は未対応です: ${file.name}. ミモの出力を Google Docs (.gdoc) か .txt に変更してください`);
+  }
+
   throw new Error(`unsupported mimeType: ${file.mimeType}`);
+}
+
+/** .docx 未対応エラー。呼び出し側で「skip」扱いにする用。 */
+export class DocxNotSupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocxNotSupportedError";
+  }
 }
 
 /** フォルダ ID と件数だけ確認したい時の軽量チェック (権限テスト用)。 */
