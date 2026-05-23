@@ -78,7 +78,12 @@ export type DriveFile = {
   modifiedTime: string;
   createdTime: string;
   webViewLink?: string;
+  /** 再帰探索時に親フォルダ名を埋める (CA 判定用)。直下なら null。 */
+  parentFolderName?: string | null;
 };
+
+/** フォルダ MIME。Drive ではフォルダもファイルとして扱われる。 */
+const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 /**
  * 指定フォルダ内のファイル一覧を取得 (pagination 対応で全件)。
@@ -209,11 +214,55 @@ export class DocxNotSupportedError extends Error {
   }
 }
 
+/**
+ * フォルダを再帰的に探索してファイル一覧を取得する。
+ * サブフォルダの中身もすべて返し、各ファイルに parentFolderName をセットする。
+ * @param folderId  起点フォルダ
+ * @param sinceIso  これ以降の modifiedTime のみ (null=全件)
+ * @param maxDepth  再帰の最大深さ。1=直下のみ、2=サブフォルダ 1 段、3=サブフォルダ 2 段 (default 3)
+ */
+export async function listFolderFilesRecursive(
+  folderId: string,
+  sinceIso: string | null = null,
+  maxDepth = 3,
+): Promise<DriveFile[]> {
+  const visited = new Set<string>();
+  const out: DriveFile[] = [];
+
+  async function walk(curId: string, parentName: string | null, depth: number) {
+    if (visited.has(curId)) return;
+    visited.add(curId);
+    if (depth > maxDepth) return;
+    const items = await listFolderFiles(curId, sinceIso);
+    for (const it of items) {
+      if (it.mimeType === FOLDER_MIME) {
+        // サブフォルダは再帰
+        if (depth < maxDepth) await walk(it.id, it.name, depth + 1);
+      } else {
+        out.push({ ...it, parentFolderName: parentName });
+      }
+    }
+  }
+
+  await walk(folderId.trim(), null, 1);
+  return out;
+}
+
 /** フォルダ ID と件数だけ確認したい時の軽量チェック (権限テスト用)。 */
-export async function probeFolder(folderId: string): Promise<{ ok: true; file_count: number } | { ok: false; error: string }> {
+export async function probeFolder(folderId: string): Promise<{
+  ok: true; file_count: number; subfolder_count: number; recursive_file_count: number;
+} | { ok: false; error: string }> {
   try {
-    const files = await listFolderFiles(folderId.trim());
-    return { ok: true, file_count: files.length };
+    const id = folderId.trim();
+    const direct = await listFolderFiles(id);
+    const subfolders = direct.filter((f) => f.mimeType === FOLDER_MIME);
+    const recursive = await listFolderFilesRecursive(id);
+    return {
+      ok: true,
+      file_count: direct.filter((f) => f.mimeType !== FOLDER_MIME).length,
+      subfolder_count: subfolders.length,
+      recursive_file_count: recursive.length,
+    };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

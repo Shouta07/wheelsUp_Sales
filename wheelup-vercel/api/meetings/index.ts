@@ -4,7 +4,7 @@ import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
 import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
-import { listFolderFiles, downloadFileText, probeFolder, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
+import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1574,13 +1574,18 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
 
   let files: DriveFile[];
   try {
-    files = await listFolderFiles(MIMO_FOLDER_ID, since);
+    // ミモが各 CA のサブフォルダに保存する構造に対応するため再帰で全件取得。
+    // 親フォルダ名はサブフォルダ名 (sugiyama / nishimura 等) で CA 判定に使う。
+    files = await listFolderFilesRecursive(MIMO_FOLDER_ID, since, 3);
   } catch (e) {
     return res.status(502).json({ error: `Drive 接続失敗: ${(e as Error).message}` });
   }
 
   if (dryRun) {
-    return res.json({ ok: true, dry_run: true, file_count: files.length, files: files.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType })) });
+    return res.json({
+      ok: true, dry_run: true, file_count: files.length,
+      files: files.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, parentFolderName: f.parentFolderName ?? null })),
+    });
   }
 
   const results: Array<{ file: string; ok: boolean; meeting_id?: string; consultant?: string; skipped?: string; error?: string; scored?: boolean }> = [];
@@ -1617,8 +1622,8 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
         continue;
       }
 
-      // ファイル名 + 本文から担当 CA を推測。先頭発話者で当たる確率が高い。
-      const consultant = inferConsultantFromMimoFile(f.name, text);
+      // ファイル名 + 本文 + 親フォルダ (CA 別のサブフォルダ運用に対応) から担当 CA を推測
+      const consultant = inferConsultantFromMimoFile(f.name, text, f.parentFolderName ?? null);
       const title = `${stripExtension(f.name)} ${tag}`.slice(0, 250);
 
       const { data: created, error } = await db.from("meeting_transcripts").insert({
@@ -1701,7 +1706,8 @@ async function driveWebhook(db: ReturnType<typeof getSupabaseAdmin>, req: Vercel
     // since は KV から読み出し、driveImport と同じ処理を内製呼び出し
     const { data } = await db.from("ra_app_state").select("value").eq("key", "mimo:last_imported_modified_time").maybeSingle();
     const since = (data?.value as string | null) ?? null;
-    const files = await listFolderFiles(MIMO_FOLDER_ID, since);
+    // Webhook 経由でも再帰探索 (サブフォルダ運用に対応)
+    const files = await listFolderFilesRecursive(MIMO_FOLDER_ID, since, 3);
     let imported = 0;
     let maxMtime = since ?? "";
     for (const f of files) {
@@ -1711,7 +1717,7 @@ async function driveWebhook(db: ReturnType<typeof getSupabaseAdmin>, req: Vercel
         if (existing) continue;
         const text = await downloadFileText(f);
         if (!text || text.length < 50) continue;
-        const consultant = inferConsultantFromMimoFile(f.name, text);
+        const consultant = inferConsultantFromMimoFile(f.name, text, f.parentFolderName ?? null);
         await db.from("meeting_transcripts").insert({
           consultant_name: consultant,
           is_leader: consultant === "小林",
@@ -1736,17 +1742,43 @@ async function driveWebhook(db: ReturnType<typeof getSupabaseAdmin>, req: Vercel
 
 const VALID_CONSULTANTS = ["小林", "西村", "辻内", "安藤", "村上"] as const;
 
+// ミモが切るサブフォルダ名 (ローマ字) から漢字氏名へのマッピング。
+// 大文字小文字を区別しない比較で照合する。
+const ROMAJI_TO_JP: Record<string, string> = {
+  kobayashi: "小林",
+  nishimura: "西村",
+  tsujiuchi: "辻内",
+  ando: "安藤",
+  andou: "安藤",
+  murakami: "村上",
+  // 必要に応じて追加
+};
+
 /**
- * ミモのファイル名 / 本文から担当 CA を推測。
+ * ミモのファイル名 / 本文 / 親フォルダ名から担当 CA を推測。
  *
- * ロジック:
- *   1. ファイル名に複数 CA 名が含まれる場合は「先頭に近い方」を採用
- *      (例: "辻内・小林 面談" → 辻内、"小林・辻内 面談" → 小林)
- *   2. それでも一意に決まらない場合は本文の発話者カウント (先頭 5000 字)
- *   3. 2 回未満は誤検知の可能性が高く null を返す → autoScore で skip される
+ * 優先順位:
+ *   1. 親フォルダ名 (ローマ字) — ミモが CA ごとにサブフォルダを切る運用に最強くマッチ
+ *   2. ファイル名に CA 漢字名が含まれている (先頭に近いもの優先)
+ *   3. 本文先頭 5000 字の発話者ラベルカウント (2 回以上で確定)
+ *   4. どれもダメなら null → autoScore で skip
  */
-function inferConsultantFromMimoFile(fileName: string, text: string): string | null {
-  // 1. ファイル名チェック: 「最初に出現する」CA 名を採用
+function inferConsultantFromMimoFile(
+  fileName: string,
+  text: string,
+  parentFolderName: string | null = null,
+): string | null {
+  // 1. 親フォルダがローマ字 CA 名なら最優先
+  if (parentFolderName) {
+    const key = parentFolderName.trim().toLowerCase();
+    if (ROMAJI_TO_JP[key]) return ROMAJI_TO_JP[key];
+    // 親フォルダ名がそのまま漢字 CA 名のこともある (例: "西村")
+    for (const name of VALID_CONSULTANTS) {
+      if (parentFolderName.includes(name)) return name;
+    }
+  }
+
+  // 2. ファイル名チェック: 最初に出現する CA 漢字名を採用
   let firstName: string | null = null;
   let firstIdx = Infinity;
   for (const name of VALID_CONSULTANTS) {
@@ -1755,7 +1787,7 @@ function inferConsultantFromMimoFile(fileName: string, text: string): string | n
   }
   if (firstName) return firstName;
 
-  // 2. 本文 (先頭 5000 字) で発話者ラベルをカウント
+  // 3. 本文 (先頭 5000 字) で発話者ラベルをカウント
   const head = text.slice(0, 5000);
   let bestName: string | null = null;
   let bestCount = 0;
