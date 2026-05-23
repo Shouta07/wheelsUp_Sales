@@ -1531,13 +1531,38 @@ const MIMO_FOLDER_ID = (process.env.MIMO_DRIVE_FOLDER_ID ?? "").trim();
  * /api/meetings/drive-probe
  * Service Account の権限が正しく設定されているか確認するための軽量チェック。
  * ?secret=$CRON_SECRET 必須。
+ *
+ * 返り値に config_check を含める:
+ *   - sa_email_suffix: 設定されてる SA メールの末尾 (Drive 共有リストとの照合用)
+ *   - has_private_key: 秘密鍵が空でないか
+ *   - folder_id_used:  実際に使われたフォルダ ID
  */
 async function driveProbe(req: VercelRequest, res: VercelResponse) {
   if (!isCronAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
   const folder = (req.query.folder_id as string | undefined) || MIMO_FOLDER_ID;
-  if (!folder) return res.status(400).json({ error: "folder_id 必須 (もしくは MIMO_DRIVE_FOLDER_ID 環境変数)" });
+  const saEmail = (process.env.GOOGLE_SA_EMAIL ?? "").trim();
+  const saKey = (process.env.GOOGLE_SA_PRIVATE_KEY ?? "").trim();
+
+  // 設定状況を冒頭で返すことで「そもそも env が空」「共有先メール違い」を一目で判別可能に。
+  // メールの先頭・末尾の少しだけ返す。秘密鍵自体は絶対に返さない。
+  const config_check = {
+    sa_email_set:      saEmail.length > 0,
+    sa_email_preview:  saEmail ? `${saEmail.slice(0, 6)}...${saEmail.slice(-32)}` : null,
+    sa_email_length:   saEmail.length,
+    has_private_key:   saKey.length > 100,
+    private_key_length: saKey.length,
+    folder_id_used:    folder || null,
+    folder_id_valid_chars: folder ? /^[A-Za-z0-9_-]+$/.test(folder.trim()) : false,
+  };
+
+  if (!folder) {
+    return res.status(400).json({ error: "folder_id 必須 (もしくは MIMO_DRIVE_FOLDER_ID 環境変数)", config_check });
+  }
+  if (!config_check.sa_email_set || !config_check.has_private_key) {
+    return res.status(400).json({ error: "GOOGLE_SA_EMAIL / GOOGLE_SA_PRIVATE_KEY が未設定", config_check });
+  }
   const r = await probeFolder(folder);
-  return res.json(r);
+  return res.json({ ...r, config_check });
 }
 
 /**
