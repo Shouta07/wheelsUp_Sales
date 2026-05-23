@@ -125,7 +125,7 @@ export default function MeetingHub() {
     const force = (window.event as MouseEvent | undefined)?.shiftKey === true;
     setScoringId(id);
     try {
-      await scoreMeeting(id, force);
+      await scoreMeeting(id, { force });
       setAiUnavailable(null); // 成功したらバナー解除
       qc.invalidateQueries({ queryKey: ["meetings"] });
     } catch (err) {
@@ -146,7 +146,7 @@ export default function MeetingHub() {
       const id = ids[i];
       setScoringId(id);
       try {
-        await scoreMeeting(id, false);
+        await scoreMeeting(id, { force: false });
       } catch (err) {
         console.error(`bulk rescore ${id} failed:`, err);
       }

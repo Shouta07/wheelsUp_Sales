@@ -1021,9 +1021,18 @@ export interface ContextualCoachingResponse {
   };
 }
 
-export async function scoreMeeting(id: string, force = false): Promise<MeetingScore> {
+export async function scoreMeeting(
+  id: string,
+  opts: { force?: boolean; targetSpeaker?: string | null } = {},
+): Promise<MeetingScore & { target_speaker?: string; detected_speakers?: string[] }> {
   if (DEMO_MODE) return demoScoreMeeting(id);
-  return request(`/meetings/${id}/score`, { method: "POST", body: JSON.stringify({ force }) });
+  return request(`/meetings/${id}/score`, {
+    method: "POST",
+    body: JSON.stringify({
+      force: opts.force ?? false,
+      ...(opts.targetSpeaker ? { target_speaker: opts.targetSpeaker } : {}),
+    }),
+  });
 }
 
 // 面談アウトカム (この面談から応募/採用に進んだか) を記録。CVR 分析の基礎データ。
