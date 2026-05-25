@@ -1,21 +1,31 @@
 /**
  * WheelsUp ミモ議事録 自動連携 — Google Apps Script
  *
- * 役割: ミモが Drive に保存した議事録を、本人 (yamamoto@wheelsup.jp) の権限で読み、
- *       WheelsUp 面談FBシステムの push-transcript エンドポイントに送信する。
+ * 役割: ミモが Drive に保存した議事録を、社内アカウント (support@wheelsup.jp) の
+ *       権限で読み、WheelsUp 面談FBシステムの push-transcript エンドポイントに送信する。
  *
  * なぜこの方式か:
  *   サービスアカウント (外部アカウント) は Workspace の組織ポリシーで Drive 共有を
- *   ブロックされる。Apps Script は「本人のアカウント」で動くため、本人がアクセスできる
- *   フォルダは普通に読める → 外部共有設定が一切不要。
+ *   ブロックされる。Apps Script は「社内アカウントの権限」で動くため、そのアカウントが
+ *   アクセスできるフォルダは普通に読める → 外部共有設定が一切不要。
+ *
+ * なぜ support@wheelsup.jp で運用するか:
+ *   個人アカウント (担当者個人) だと、担当者の退職・異動で連携が止まる。
+ *   共有運用アカウント support@wheelsup.jp に紐づけることで、担当が代わっても継続する。
+ *
+ * ───────────── 事前準備 (1 回だけ) ─────────────
+ *  A. ミモの保存先フォルダ「面談文字起こし保存用」を support@wheelsup.jp に共有する
+ *     - フォルダ所有者 (yamamoto@wheelsup.jp 等) が、共有 → support@wheelsup.jp を
+ *       「閲覧者」で追加 (同じ wheelsup.jp ドメイン内なので外部共有制限に当たらない)
  *
  * ───────────── セットアップ手順 ─────────────
- *  1. https://script.google.com/ を開く (yamamoto@wheelsup.jp でログイン)
+ *  1. https://script.google.com/ を *support@wheelsup.jp でログインして* 開く
+ *     (重要: 必ず support アカウントで。別アカウントで作ると権限が紐づかない)
  *  2. 「新しいプロジェクト」
  *  3. このファイルの中身を全部貼り付け
  *  4. 下記 CONFIG の API_SECRET を Vercel の CRON_SECRET と同じ値に書き換え
  *  5. 上部メニュー「実行」→ 関数 importOnce を一度手動実行
- *     → 初回は「承認が必要」と出るので、自分のアカウントで許可する
+ *     → 初回は「承認が必要」と出るので support@wheelsup.jp で許可する
  *     → ログに { imported: N } が出れば成功
  *  6. 自動化: 左メニュー「トリガー」(時計アイコン) → 「トリガーを追加」
  *     - 実行する関数: importOnce
@@ -24,6 +34,7 @@
  *     → 保存
  *
  *  以降、10 分おきに自動で新着議事録が取り込まれ、採点され、Lark に通知が飛ぶ。
+ *  トリガーは support@wheelsup.jp に紐づくので、担当者が代わっても動き続ける。
  */
 
 // ============ CONFIG (ここだけ書き換える) ============
