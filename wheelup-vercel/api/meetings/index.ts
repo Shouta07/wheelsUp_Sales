@@ -63,6 +63,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (segments[0] === "drive-import" && req.method === "POST") {
       return await driveImport(db, req, res);
     }
+    // --- /api/meetings/push-transcript (Apps Script から議事録本文を push 受信) ---
+    if (segments[0] === "push-transcript" && req.method === "POST") {
+      return await pushTranscript(db, req, res);
+    }
     // --- /api/meetings/drive-probe (Service Account の権限テスト用) ---
     if (segments[0] === "drive-probe" && req.method === "GET") {
       return await driveProbe(req, res);
@@ -1740,6 +1744,109 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
   }
 
   return res.json({ ok: true, imported, skipped, errors, scored, next_since: maxModifiedTime, results });
+}
+
+/**
+ * /api/meetings/push-transcript
+ *
+ * Google Apps Script から議事録本文を直接 push 受信する。
+ * Workspace の外部共有制限を回避するための代替経路:
+ *   Apps Script は本人 (yamamoto@wheelsup.jp) の権限で Drive を読み、
+ *   ここに本文を POST する。サービスアカウント・外部共有が一切不要。
+ *
+ * 認可: ?secret=$CRON_SECRET または Authorization: Bearer
+ *
+ * body: {
+ *   auto_score?: boolean,
+ *   files: [
+ *     { file_id, file_name, parent_folder_name?, content, created_time? }
+ *   ]
+ * }
+ *
+ * 重複防止: 既存 driveImport と同じく title に "[mimo:{file_id}]" タグを埋めて照合。
+ */
+async function pushTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  if (!isCronAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+
+  const body = (req.body ?? {}) as {
+    auto_score?: boolean;
+    files?: Array<{ file_id?: string; file_name?: string; parent_folder_name?: string; content?: string; created_time?: string }>;
+  };
+  const files = Array.isArray(body.files) ? body.files : [];
+  if (files.length === 0) return res.status(400).json({ error: "files[] が空です" });
+
+  const autoScore = body.auto_score === true;
+  const maxAutoScore = 10;          // 1 リクエストあたりの自動採点上限 (Gemini quota 保護)
+  const scoreSleepMs = 8000;        // 採点間スリープ
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  const results: Array<{ file: string; ok: boolean; meeting_id?: string; consultant?: string; skipped?: string; error?: string; scored?: boolean }> = [];
+  let imported = 0, skipped = 0, errors = 0, scored = 0;
+
+  for (const f of files) {
+    const fileId = (f.file_id ?? "").trim();
+    const fileName = (f.file_name ?? "").trim();
+    const content = f.content ?? "";
+    try {
+      if (!fileId || !content) {
+        skipped += 1;
+        results.push({ file: fileName || "(no name)", ok: true, skipped: "file_id か content が空" });
+        continue;
+      }
+      const tag = `[mimo:${fileId}]`;
+      const { data: existing } = await db.from("meeting_transcripts").select("id").like("title", `%${tag}%`).limit(1).maybeSingle();
+      if (existing) {
+        skipped += 1;
+        results.push({ file: fileName, ok: true, skipped: "already imported" });
+        continue;
+      }
+      if (content.length < 50) {
+        skipped += 1;
+        results.push({ file: fileName, ok: true, skipped: "本文 50 字未満" });
+        continue;
+      }
+
+      const consultant = inferConsultantFromMimoFile(fileName, content, f.parent_folder_name ?? null);
+      const title = `${stripExtension(fileName)} ${tag}`.slice(0, 250);
+
+      const { data: created, error } = await db.from("meeting_transcripts").insert({
+        consultant_name: consultant,
+        is_leader: consultant === "小林",
+        title,
+        transcript_text: content,
+        source: "mimo-appsscript",
+        recorded_at: f.created_time || new Date().toISOString(),
+      }).select("id").single();
+
+      if (error) {
+        errors += 1;
+        results.push({ file: fileName, ok: false, error: error.message });
+        continue;
+      }
+
+      let scoredOk = false;
+      if (autoScore && consultant && scored < maxAutoScore) {
+        try {
+          if (scored > 0) await sleep(scoreSleepMs);
+          await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
+          scoredOk = true;
+          scored += 1;
+        } catch (e) {
+          results.push({ file: fileName, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+          imported += 1;
+          continue;
+        }
+      }
+
+      imported += 1;
+      results.push({ file: fileName, ok: true, meeting_id: created.id as string, consultant: consultant ?? undefined, scored: scoredOk });
+    } catch (e) {
+      errors += 1;
+      results.push({ file: fileName || "(no name)", ok: false, error: (e as Error).message });
+    }
+  }
+
+  return res.json({ ok: true, imported, skipped, errors, scored, results });
 }
 
 /**
