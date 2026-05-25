@@ -5,6 +5,7 @@ import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } fr
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
 import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, diagnoseDrive, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
+import { notifyMeetingScored } from "../_lib/notify.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -677,6 +678,15 @@ async function manualScoreMeeting(
     .eq("id", id);
   if (error) return res.status(500).json({ error: error.message });
 
+  // 採点完了通知 (Lark / Slack)。手動採点 (リーダー採点) でも本人に届ける。
+  await notifyMeetingScored({
+    consultantName: (prevRow as { consultant_name?: string } | null)?.consultant_name ?? null,
+    meetingTitle: ((prevRow as { title?: string } | null)?.title ?? "面談").replace(/\s*\[mimo:[^\]]+\]/, ""),
+    scores: cleanScores,
+    improvements: null, // 手動採点の improvements は軸別ではなく配列なので tip は省略
+    appBaseUrl: (process.env.APP_BASE_URL ?? "").trim() || undefined,
+  });
+
   return res.json({ meeting_id: id, ...score_data });
 }
 
@@ -1180,6 +1190,21 @@ ${text.slice(0, 25000)}
       } catch { /* テーブル未作成でも採点自体は成功させる */ }
     }
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
+
+    // 採点完了通知 (Lark / Slack)。辻内氏の「反強制的に結果を目に入れる」要件。
+    //   - リーダー面談 (教師データ) は通知しない
+    //   - LARK_WEBHOOK_URL 未設定なら no-op なので環境差で自動 ON/OFF
+    if (!(meeting as { is_leader?: boolean }).is_leader) {
+      const p = parsed as { scores?: Record<string, number>; improvements?: Record<string, string[]> };
+      const appBase = (process.env.APP_BASE_URL ?? "").trim() || undefined;
+      await notifyMeetingScored({
+        consultantName: (meeting as { consultant_name?: string }).consultant_name ?? targetSpeaker ?? null,
+        meetingTitle: ((meeting as { title?: string }).title ?? "面談").replace(/\s*\[mimo:[^\]]+\]/, ""),
+        scores: p.scores ?? null,
+        improvements: p.improvements ?? null,
+        appBaseUrl: appBase,
+      });
+    }
   } else if (parseError) {
     // 原因切り分けのため Gemini の生レスポンス先頭を error 文字列に含める (フロントが raw を捨てるため)
     return {
