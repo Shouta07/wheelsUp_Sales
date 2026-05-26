@@ -14,6 +14,33 @@ function isLark(url: string): boolean {
   return url.includes("larksuite") || url.includes("feishu");
 }
 
+/**
+ * CA 名 → Lark ユーザー ID (open_id) のマッピング。
+ * 環境変数 LARK_USER_IDS に JSON で設定する:
+ *   LARK_USER_IDS={"小林":"ou_xxx","西村":"ou_yyy","辻内":"ou_zzz","安藤":"ou_aaa","村上":"ou_bbb"}
+ *
+ * 設定されていれば該当メンバーを個別メンション、無ければ名前テキストのみ。
+ */
+const LARK_USER_IDS: Record<string, string> = (() => {
+  try {
+    const raw = (process.env.LARK_USER_IDS ?? "").trim();
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+})();
+
+// LARK_MENTION_ALL=1 なら、個別 ID が無くても全員メンション (@all) する
+const MENTION_ALL = (process.env.LARK_MENTION_ALL ?? "").trim() === "1";
+
+/** Lark メンションのプレフィックスを組み立てる。個別 ID 優先、無ければ @all、それも無ければ空。 */
+function larkMentionPrefix(name: string | null): string {
+  if (!isLark(WEBHOOK)) return "";
+  if (name && LARK_USER_IDS[name]) return `<at user_id="${LARK_USER_IDS[name]}"></at> `;
+  if (MENTION_ALL) return `<at user_id="all"></at> `;
+  return "";
+}
+
 /** プレーンテキストを Lark / Slack に送る。失敗しても例外を投げない (採点処理を止めない)。 */
 export async function sendChatNotification(text: string): Promise<void> {
   if (!WEBHOOK) return;
@@ -81,7 +108,9 @@ export async function notifyMeetingScored(s: ScoreSummary): Promise<void> {
   }
 
   const link = s.appBaseUrl ? `\n\n${s.appBaseUrl}` : "";
-  const text = `📊 ${who}の面談が採点されました\n「${s.meetingTitle}」\n\n合計 ${total}/50\n${scoreLine}${nextTip}${link}`;
+  // 担当 CA を個別メンション (LARK_USER_IDS 設定時)。本人に確実に気づかせる。
+  const mention = larkMentionPrefix(s.consultantName);
+  const text = `${mention}📊 ${who}の面談が採点されました\n「${s.meetingTitle}」\n\n合計 ${total}/50\n${scoreLine}${nextTip}${link}`;
 
   await sendChatNotification(text);
 }
