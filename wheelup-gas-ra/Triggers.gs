@@ -12,6 +12,23 @@
  *        edit body and send manually
  */
 
+/**
+ * 246 社固定スコープ用の時間予算。GAS の実行上限は 6 分 (360s)。
+ * 各ステージに絶対締切を割り当て、超えたら途中で打ち切る (kill されない)。
+ * あるステージが早く終われば、残り時間は次のステージが自動で使う
+ * (締切は累積タイムラインのため)。
+ *
+ *   enrich : t0 〜 t0+120s  (4層フォールバックで重いので 2 分)
+ *   crawl  : 〜 t0+240s     (Jina + Gemini 1 回ずつ、比較的軽い)
+ *   match  : 〜 t0+320s     (求人 × 4 候補者)
+ *   残り 40s は stale / rebuild / マージン
+ */
+var CRON_BUDGET = {
+  enrichMs: 120 * 1000,
+  crawlMs:  240 * 1000,
+  matchMs:  320 * 1000,
+};
+
 function dailyCron() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5 * 1000)) {
@@ -20,9 +37,10 @@ function dailyCron() {
   }
   try {
     var t0 = Date.now();
-    var e = safe_(function () { return runEnrich(10); });
-    var c = safe_(function () { return runCrawl(15); });
-    var m = safe_(function () { return runMatch(15); });
+    // limit は大きめにして、実際の打ち切りは締切 (deadline) に任せる
+    var e = safe_(function () { return runEnrich(60, t0 + CRON_BUDGET.enrichMs); });
+    var c = safe_(function () { return runCrawl(60, t0 + CRON_BUDGET.crawlMs); });
+    var m = safe_(function () { return runMatch(40, t0 + CRON_BUDGET.matchMs); });
     var staleClosed = safe_(function () { return closeStaleJobs(30); });
     var readyCount = safe_(function () { return rebuildReady(); });
     var elapsedSec = Math.round((Date.now() - t0) / 1000);
@@ -32,6 +50,21 @@ function dailyCron() {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * 初回一括処理 — 246 社をできるだけ早く埋めるためのメニュー実行用。
+ * 1 回で 5 分ぶんの enrich → crawl → match を回す。
+ * URL もマッチも埋まるまで「数回クリック」する想定 (各クリック = 5 分前進)。
+ */
+function bulkProcess() {
+  var t0 = Date.now();
+  var e = safe_(function () { return runEnrich(80, t0 + 150 * 1000); });   // 0〜150s
+  var c = safe_(function () { return runCrawl(80, t0 + 270 * 1000); });    // 〜270s
+  var m = safe_(function () { return runMatch(50, t0 + 330 * 1000); });    // 〜330s
+  var readyCount = safe_(function () { return rebuildReady(); });
+  return { enrich: e, crawl: c, match: m, ready: readyCount,
+           elapsedSec: Math.round((Date.now() - t0) / 1000) };
 }
 
 function safe_(fn) {
