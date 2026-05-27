@@ -19,12 +19,13 @@ Vercel + Supabase 版と同じ思想を Google Spreadsheet + GAS だけで実現
 
 ```
 wheelup-gas-ra/
-├ Main.gs        — Gemini / fetch / sheet I/O / runEnrich/Crawl/Match/Discover
-├ Triggers.gs    — dailyCron + onEdit
-├ Bootstrap.gs   — ensureSheets + 候補者シード + CSV取込
-├ Menu.gs        — onOpen でカスタムメニュー
+├ Main.gs           — Gemini / fetch / sheet I/O / runEnrich/Crawl/Match/Discover
+├ Triggers.gs       — dailyCron + onEdit + bulkProcess
+├ Bootstrap.gs      — ensureSheets + 候補者シード + CSV取込
+├ Menu.gs           — onOpen でカスタムメニュー
+├ CompaniesSeed.gs  — 246 社の内蔵シード (コピペ不要でワンクリック投入)
 └ data/
-   ├ companies_seed.csv     (246 社、CSV ペースト用)
+   ├ companies_seed.csv     (246 社、参考 / 手動取込用)
    └ candidates_seed.json   (4 候補者、参考)
 ```
 
@@ -39,11 +40,12 @@ wheelup-gas-ra/
 
 開いた Spreadsheet で **拡張機能 → Apps Script**。エディタが開く。
 
-左ペイン「ファイル」の `+` から、4 つのファイルを作成:
+左ペイン「ファイル」の `+` から、5 つのファイルを作成:
 - `Main.gs` ← このリポジトリの `Main.gs` を全部コピペ
 - `Triggers.gs` ← 同じく
 - `Bootstrap.gs` ← 同じく
 - `Menu.gs` ← 同じく
+- `CompaniesSeed.gs` ← 同じく (246 社の内蔵データ)
 
 (自動で生成された `Code.gs` は削除しても OK)
 
@@ -74,13 +76,15 @@ Spreadsheet 側に戻る → ページをリロード → 上のメニューに 
 
 → 7 タブが作成され、4 候補者が「候補者」タブに入る。
 
-### 6. 246 社を投入 (1 分)
+### 6. 246 社を投入 (10 秒)
 
-`data/companies_seed.csv` をテキストエディタで開く → 全部コピー (Cmd+A → Cmd+C)。
+メニュー **🤖 RA → 📥 企業マスタ 246社 投入 (内蔵・推奨)** をクリックするだけ。
 
-メニュー **🤖 RA → 📥 企業マスタ CSV 取り込み** → 開いたダイアログに貼り付け → OK。
+→ `CompaniesSeed.gs` に内蔵された 246 社が「企業マスタ」タブに入る。
 
-→ 「企業マスタ」タブに 246 行入る。
+> CSV を手で貼り付ける必要はありません (20KB の貼り付けは GAS のダイアログ制約で
+> 失敗しやすいため、内蔵データからの投入を推奨)。
+> 自分で編集した CSV を使いたい場合のみ「📥 企業マスタ CSV 取り込み (手動貼付)」を利用。
 
 ### 7. トリガーを設定 (30 秒)
 

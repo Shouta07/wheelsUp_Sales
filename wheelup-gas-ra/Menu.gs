@@ -7,7 +7,8 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🤖 RA')
     .addItem('📥 初回セットアップ (タブ + 候補者)', 'doInitialSetup')
-    .addItem('📥 企業マスタ CSV 取り込み', 'seedCompaniesFromCsv')
+    .addItem('📥 企業マスタ 246社 投入 (内蔵・推奨)', 'doSeedCompanies')
+    .addItem('📥 企業マスタ CSV 取り込み (手動貼付)', 'seedCompaniesFromCsv')
     .addSeparator()
     .addItem('🚀 初回一括処理 (5分・繰り返し推奨)', 'doBulk')
     .addSeparator()
@@ -27,6 +28,10 @@ function onOpen() {
 function doInitialSetup() {
   ensureSheets();
   seedCandidates();
+}
+
+function doSeedCompanies() {
+  seedCompaniesBuiltin();
 }
 
 function doBulk() {
