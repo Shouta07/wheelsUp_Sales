@@ -370,7 +370,14 @@ export default function MeetingHub() {
           </div>
         )}
 
-        {(meetings || []).map((m: MeetingTranscript) => (
+        {groupByDate(meetings || []).map((group) => (
+          <div key={group.dateKey} className="space-y-3">
+            {/* 日付ヘッダー (Mimo 風の日付区切り) */}
+            <div className="sticky top-0 z-10 bg-[#f0f4ff] px-3 py-1.5 rounded-lg">
+              <span className="text-[11px] font-extrabold text-[#4b6bff]">{group.dateLabel}</span>
+              <span className="text-[10px] font-bold text-[#aaa] ml-2">{group.items.length} 件</span>
+            </div>
+            {group.items.map((m: MeetingTranscript) => (
           <MeetingEntry
             key={m.id}
             meeting={m}
@@ -384,10 +391,35 @@ export default function MeetingHub() {
             isScoringThis={scoringId === m.id}
             isScoringOther={scoringId !== null && scoringId !== m.id}
           />
+            ))}
+          </div>
         ))}
       </div>
     </div>
   );
+}
+
+// 面談を日付ごとにグループ化 (新しい日付が上)。Mimo 風の日付区切り表示用。
+function groupByDate(meetings: MeetingTranscript[]): Array<{ dateKey: string; dateLabel: string; items: MeetingTranscript[] }> {
+  const sorted = [...meetings].sort(
+    (a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime(),
+  );
+  const groups = new Map<string, MeetingTranscript[]>();
+  for (const m of sorted) {
+    const d = new Date(m.recorded_at);
+    const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(m);
+  }
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  return [...groups.entries()].map(([dateKey, items]) => {
+    const d = new Date(items[0].recorded_at);
+    return {
+      dateKey,
+      dateLabel: `${d.getMonth() + 1}月${d.getDate()}日(${weekdays[d.getDay()]})`,
+      items,
+    };
+  });
 }
 
 function MeetingEntry({
@@ -624,17 +656,20 @@ function MeetingEntry({
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
           )}
 
-          {/* Evidence */}
+          {/* Evidence = 各項目の点数理由 */}
           {score?.evidence && (
             <div className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3 space-y-1.5">
-              <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">採点根拠（面談からの引用）</div>
+              <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">なぜこの点数か（各項目の理由）</div>
               {DIMS.map(({ key, label, color }) => {
                 const ev = score.evidence?.[key as keyof typeof score.evidence];
+                const sc = score.scores?.[key as keyof typeof score.scores];
                 if (!ev) return null;
                 return (
                   <div key={key} className="flex items-start gap-2">
-                    <span className="text-[10px] font-bold shrink-0 w-10 mt-0.5" style={{ color }}>{label}</span>
-                    <p className="text-[10px] font-bold text-[#555] leading-relaxed">「{ev}」</p>
+                    <span className="text-[10px] font-bold shrink-0 w-14 mt-0.5" style={{ color }}>
+                      {label} {typeof sc === "number" ? `${sc}点` : ""}
+                    </span>
+                    <p className="text-[10px] font-bold text-[#555] leading-relaxed">{ev}</p>
                   </div>
                 );
               })}
