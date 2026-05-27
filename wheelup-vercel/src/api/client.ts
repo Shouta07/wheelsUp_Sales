@@ -988,6 +988,7 @@ export interface MeetingScore {
   scores: { needs: number; proposal: number; trust: number; closing: number; intel: number };
   total: number;
   grade: string;
+  overall?: string;
   evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
   strengths: string[];
   improvements: string[];

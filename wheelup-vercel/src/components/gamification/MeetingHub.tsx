@@ -651,6 +651,14 @@ function MeetingEntry({
             </div>
           )}
 
+          {/* 総合所感 (なぜこの評価かを一言で) */}
+          {score?.overall && (
+            <div className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3">
+              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1">総合所感</div>
+              <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{score.overall}</p>
+            </div>
+          )}
+
           {/* Score details */}
           {score?.scores && (
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
@@ -829,15 +837,15 @@ function OutcomeButtons({ meeting, onSaved }: { meeting: MeetingTranscript; onSa
   return (
     <div className="rounded-xl bg-[#f7f7f7] border border-[#e5e5e5] p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider">📊 この面談の結果 (CVR 計測用)</span>
+        <span className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider">📊 この初回面談の結果 (CVR 計測用)</span>
         {outcome.recorded_at && (
           <span className="text-[9px] font-bold text-[#aaa]">記録: {new Date(outcome.recorded_at).toLocaleDateString("ja-JP")}</span>
         )}
       </div>
+      {/* 初回面談の CVR に絞る。採用決定は初回からは発生しないため項目から除外 (西村氏FB)。 */}
       <div className="flex flex-wrap gap-1.5">
         <Btn flag="next_meeting" label="次回予約取れた" emoji="📅" color="#1CB0F6" />
         <Btn flag="applied" label="求人応募に進んだ" emoji="📨" color="#58CC02" />
-        <Btn flag="hired" label="採用決定" emoji="🎉" color="#FFC800" />
         <Btn flag="lost" label="不成立" emoji="❌" color="#FF4B4B" />
       </div>
       {isLost && (

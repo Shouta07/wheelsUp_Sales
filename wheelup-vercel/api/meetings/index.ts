@@ -873,11 +873,19 @@ async function scoreMeetingInternal(
     : "";
 
   const requestBody = JSON.stringify({
-      contents: [{ parts: [{ text: `建築技術者専門の人材紹介で、リーダー (小林) の面談スタイルを基準に、メンバーの面談を 5 軸で採点してください。各軸 0〜10 点の整数。
+      contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介を統括するトップキャリアコンサルタントです。
+メンバーの面談を「キャリアコンサルタントとしての絶対的な力量」で 5 軸採点してください。各軸 0〜10 点の整数。
 
-## 採点の基準 = リーダー (小林) の面談 (これに近いほど高得点)
+## 重要: 採点の考え方
+- 採点は下記ルーブリック (絶対基準) に **厳密に** 従う。「リーダーに似ているか」では測らない。
+- リーダー (小林) の面談例は「優れた技術が実際どう現れるかの参考」として読む。
+  ただしリーダーの面談も完璧ではなく、弱い軸は低く付くのが正常。似ているだけで加点しない。
+- **面談の主観的な印象 (盛り上がった等) ではなく、ルーブリックの各条件を満たした証拠があるかで判定する。**
+  証拠が議事録に無ければ、たとえ会話が和やかでも点は伸びない。
+
+## 参考: リーダー (小林) の面談例 (優れた技術の現れ方を掴むための参照。似せること自体は目的ではない)
 <LEADER_REFERENCE>
-${leaderRefs || "（リーダー面談データなし。汎用ベストプラクティスで採点）"}
+${leaderRefs || "（リーダー面談データなし。下記ルーブリックの絶対基準のみで採点）"}
 </LEADER_REFERENCE>
 
 ${leaderCoaching ? `## リーダーが過去に残した指導コメント (採点・改善案でこの方針に揃えること)\n<LEADER_COACHING>\n${leaderCoaching}\n</LEADER_COACHING>\n` : ""}${speakerNote}## 採点対象 (メンバーの面談・最大25000字)
@@ -966,13 +974,16 @@ ${text.slice(0, 25000)}
    ① 面談からの具体的な発言/事実の引用 ② その結果なぜこの点数なのか (特に "満点に届かない理由" or "高得点の決め手")。
    例: 「『年収上げたい理由は?』と1度聞けたが真因の家庭事情まで掘れず、盲点の投げかけも無いため7点 (10点は3層掘り+盲点提示が必要)」。
    単なる出来事の描写で終わらせず、必ず点数と紐づける。
-3. improvements は 2 件・各 50 字以内。
-4. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
-5. JSON 1 オブジェクトのみ。前置きも結語も禁止。
+3. overall は総合所感 (120 字以内)。この面談全体で「何が良く・何が課題で・総合的にどのレベルか」を
+   現場が腹落ちする言葉で。点数の合計だけでなく、面談の流れを踏まえた一言を書く。
+4. improvements は 2 件・各 50 字以内。最も点数の低い軸を優先し、次の面談で即実践できる具体策を書く。
+5. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
+6. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
 ## JSON 形式:
 {
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
+  "overall": "ニーズの初動は良いが提案が単発で前進が弱い。信頼は高く土台はある。総合B：次は二軸提案と期限合意を意識すると一段上がる。",
   "evidence": {
     "needs": "...",
     "proposal": "...",
@@ -997,6 +1008,7 @@ ${text.slice(0, 25000)}
         responseSchema: {
           type: "object",
           properties: {
+            overall: { type: "string" },
             scores: {
               type: "object",
               properties: {
@@ -1329,17 +1341,13 @@ async function extractPlaybook(
     return `[面談${i + 1}] ${m.title}\n${body}`;
   }).join("\n\n");
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  const geminiRes = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介のセールスコーチです。
+  const playbookBody = JSON.stringify({
+    contents: [{ parts: [{ text: `あなたは建築技術者専門の人材紹介のセールスコーチです。
 以下はリーダーの面談記録${meetings.length}件です。パターンを分析し、状況別プレイブックを生成してください。
 
 ${transcriptSummaries.slice(0, 8000)}
 
-## 出力形式（JSON配列）:
+## 出力 (JSON 配列のみ。前置き・コメント禁止):
 [
   {
     "situation": "候補者が年収ダウンを嫌がる",
@@ -1351,13 +1359,34 @@ ${transcriptSummaries.slice(0, 8000)}
   }
 ]
 
-建築技術者の転職市場を踏まえて、最低8つの状況をカバーしてください。
-例: 年収交渉、転勤拒否、資格不足、現職引き留め、競合他社比較、決定先延ばし、企業の求人条件厳しい、候補者の温度感が低い` }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
-    }),
+建築技術者の転職市場を踏まえ、6〜8 個の状況をカバー。
+例: 年収交渉、転勤拒否、資格不足、現職引き留め、競合他社比較、決定先延ばし、求人条件が厳しい、温度感が低い` }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 4096,
+      responseMimeType: "application/json",
+    },
   });
 
-  if (!geminiRes.ok) return res.status(500).json({ error: "Gemini API error" });
+  // 採点と同じく多段フォールバック。1 モデルが quota/503 でも次で粘る。
+  const pbModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+  let geminiRes: Response | null = null;
+  let lastErr = "";
+  for (const model of pbModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: playbookBody,
+      });
+      if (r.ok) { geminiRes = r; break; }
+      lastErr = `${model}: ${r.status} ${(await r.text()).slice(0, 200)}`;
+    } catch (e) {
+      lastErr = `${model}: ${(e as Error).message}`;
+    }
+  }
+  if (!geminiRes) return res.status(502).json({ error: `プレイブック生成失敗 (Gemini): ${lastErr}` });
 
   const geminiData = await geminiRes.json();
   const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
