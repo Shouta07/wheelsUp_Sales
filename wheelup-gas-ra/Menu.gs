@@ -9,6 +9,8 @@ function onOpen() {
     .addItem('📥 初回セットアップ (タブ + 候補者)', 'doInitialSetup')
     .addItem('📥 企業マスタ CSV 取り込み', 'seedCompaniesFromCsv')
     .addSeparator()
+    .addItem('🚀 初回一括処理 (5分・繰り返し推奨)', 'doBulk')
+    .addSeparator()
     .addItem('🤖 URL 自動補完 (10 社)', 'doEnrich')
     .addItem('🕸 求人クロール (15 社)', 'doCrawl')
     .addItem('🎯 候補者マッチ (15 求人)', 'doMatch')
@@ -25,6 +27,21 @@ function onOpen() {
 function doInitialSetup() {
   ensureSheets();
   seedCandidates();
+}
+
+function doBulk() {
+  toast_('一括処理を開始しました (最大 5 分)。完了までお待ちください…');
+  var r = bulkProcess();
+  var msg =
+    'URL補完 ' + (r.enrich && r.enrich.enriched != null ? r.enrich.enriched : '-') + ' / ' +
+    'クロール新規 ' + (r.crawl && r.crawl.newJobs != null ? r.crawl.newJobs : '-') + ' / ' +
+    '採点 ' + (r.match && r.match.scored != null ? r.match.scored : '-') + ' → ' +
+    '実行待ち ' + r.ready + ' 件 (' + r.elapsedSec + 's)';
+  SpreadsheetApp.getUi().alert(
+    '一括処理が完了しました。\n\n' + msg + '\n\n' +
+    'まだ「企業マスタ」に recruit_page_url が空の行が残っている場合は、\n' +
+    'もう一度「🚀 初回一括処理」を押すと続きから処理します。'
+  );
 }
 
 function doEnrich() {

@@ -175,7 +175,7 @@ function updateRow_(name, rowIdx, patch) {
 // ENRICH — Gemini guesses URLs for companies with no recruit_page_url
 // =============================================================================
 
-function runEnrich(limit) {
+function runEnrich(limit, deadline) {
   var n = limit || 10;
   var companies = readSheet_(SHEETS.companies);
   var targets = [];
@@ -186,6 +186,7 @@ function runEnrich(limit) {
   }
   var enriched = 0, failed = 0;
   for (var k = 0; k < targets.length; k++) {
+    if (deadline && Date.now() >= deadline) break;   // 6分制限ガード
     var t = targets[k];
     try {
       var r = enrichOne_(t.c.name);
@@ -409,7 +410,7 @@ function geminiSingleShotAll_(name) {
 // CRAWL — fetch recruit_page_url, extract jobs with Gemini
 // =============================================================================
 
-function runCrawl(limit) {
+function runCrawl(limit, deadline) {
   var n = limit || 10;
   var companies = readSheet_(SHEETS.companies)
     .map(function (c, i) { return { c: c, i: i }; })
@@ -429,6 +430,7 @@ function runCrawl(limit) {
 
   var newJobs = 0, updated = 0, failed = 0;
   for (var k = 0; k < companies.length; k++) {
+    if (deadline && Date.now() >= deadline) break;   // 6分制限ガード
     var t = companies[k];
     try {
       var body = fetchPage_(t.c.recruit_page_url);
@@ -497,7 +499,7 @@ function extractJobs_(companyName, body) {
 // MATCH — open jobs × active candidates → ◎○△×
 // =============================================================================
 
-function runMatch(limit) {
+function runMatch(limit, deadline) {
   var n = limit || 10;
   var jobs = readSheet_(SHEETS.jobs)
     .filter(function (j) { return j.is_open === true || j.is_open === 'TRUE'; })
@@ -518,7 +520,9 @@ function runMatch(limit) {
 
   var scored = 0, skipped = 0, failed = 0;
   for (var i = 0; i < jobs.length; i++) {
+    if (deadline && Date.now() >= deadline) break;   // 6分制限ガード
     for (var k = 0; k < candidates.length; k++) {
+      if (deadline && Date.now() >= deadline) break;
       var j = jobs[i], c = candidates[k];
       var key = j.company_name + '|' + j.title + '|' + c.name;
       if (matched[key]) { skipped++; continue; }
