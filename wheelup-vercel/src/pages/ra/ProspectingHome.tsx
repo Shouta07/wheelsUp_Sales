@@ -4,6 +4,7 @@ import type { ApproachStatus, CompanyEnriched } from "../../lib/ra/queries";
 import type { ReadyRow, Priority } from "../../lib/ra/types";
 import { supabase } from "../../lib/supabase";
 import SendModal from "./SendModal";
+import { LoadError } from "./RaErrorBoundary";
 
 /**
  * RA トップ画面 — タブ切替なしで「全部 1 画面で完結」する統合ダッシュボード。
@@ -40,15 +41,18 @@ export default function ProspectingHome({
   const [ready, setReady] = useState<ReadyRow[]>([]);
   const [follows, setFollows] = useState<FollowUpRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const [openSend, setOpenSend] = useState<ReadyRow | null>(null);
   const [sentLocal, setSentLocal] = useState<Record<string, boolean>>({});
   const [statusFilter, setStatusFilter] = useState<"" | ApproachStatus>("");
   const [q, setQ] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<"" | Priority>("");
+  const [candidateFilter, setCandidateFilter] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    setError(null);
     (async () => {
       try {
         const [co, rd, fu] = await Promise.all([
@@ -60,6 +64,8 @@ export default function ProspectingHome({
         setCompanies(co);
         setReady(rd);
         setFollows(fu);
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e : new Error(String(e)));
       } finally {
         if (alive) setLoading(false);
       }
@@ -95,16 +101,27 @@ export default function ProspectingHome({
     return c;
   }, [companies]);
 
-  // ready のソート (◎ → ○ → △、スコア降順)
+  // 候補者一覧 (ready 行から distinct) — 候補者ごとの絞り込み用
+  const candidateNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of ready) if (r.candidate_name) s.add(r.candidate_name);
+    return Array.from(s).sort();
+  }, [ready]);
+
+  // ready のフィルタ (候補者) + ソート (◎ → ○ → △、スコア降順)
   const sortedReady = useMemo(() => {
-    return [...ready].sort((a, b) => {
+    const filtered = candidateFilter
+      ? ready.filter((r) => r.candidate_name === candidateFilter)
+      : ready;
+    return [...filtered].sort((a, b) => {
       const gw = (g: string) => g === "◎" ? 0 : g === "○" ? 1 : 2;
       if (gw(a.grade) !== gw(b.grade)) return gw(a.grade) - gw(b.grade);
       return (b.score ?? 0) - (a.score ?? 0);
     });
-  }, [ready]);
+  }, [ready, candidateFilter]);
 
   if (loading) return <div className="text-sm text-gray-500">読み込み中…</div>;
+  if (error) return <LoadError error={error} onRetry={() => setReloadKey((k) => k + 1)} />;
 
   return (
     <div className="space-y-4">
@@ -156,11 +173,24 @@ export default function ProspectingHome({
 
       {/* ─── 3. 🎯 今日のアタック対象 ─────────────────── */}
       <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-2 justify-between">
           <span className="text-xs font-black text-[#4b4b4b]">
             🎯 今日のアタック対象 ({sortedReady.length} 件)
           </span>
-          <span className="text-[10px] text-[#afafaf]">◎○ × 未送信、◎ → ○ → △ の優先順</span>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-[10px] font-bold text-[#777]">
+              候補者で絞る
+              <select
+                value={candidateFilter}
+                onChange={(e) => setCandidateFilter(e.target.value)}
+                className="rounded-lg border border-gray-200 px-2 py-1 text-[11px]"
+              >
+                <option value="">全候補者</option>
+                {candidateNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <span className="text-[10px] text-[#afafaf]">◎ → ○ → △ 優先順</span>
+          </div>
         </div>
         {sortedReady.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-gray-400">

@@ -405,6 +405,40 @@ async function authParts(): Promise<{ headers: Record<string, string>; querySuff
   return { headers: {}, querySuffix: "" };
 }
 
+/**
+ * サーバ応答 / ネットワークエラーを現場ユーザーにも分かる日本語に変換する。
+ * 「何が起きたか + どうすればいいか」をセットで返すのが方針。
+ */
+function toFriendlyError(status: number, rawMessage: string): string {
+  const msg = rawMessage.toLowerCase();
+  // AI のレート制限 (最頻出)
+  if (status === 429 || msg.includes("429") || msg.includes("rate-limit") || msg.includes("quota")) {
+    return "AI の無料利用枠の上限に達しました。1〜2 分ほど待ってから、もう一度お試しください。";
+  }
+  // 認証
+  if (status === 401 || status === 403) {
+    return "アクセス権限がありません。ページを再読み込みしても直らない場合は、管理者に連絡してください。";
+  }
+  // 設定不足
+  if (status === 412) {
+    return "AI 連携が未設定のため、この操作は実行できません (管理者向け: GEMINI_API_KEY を設定してください)。";
+  }
+  // タイムアウト / サーバ過負荷
+  if (status === 504 || status === 503 || msg.includes("timeout") || msg.includes("invocation")) {
+    return "処理に時間がかかりすぎました。対象件数を減らすか、少し待ってから再実行してください。";
+  }
+  // 入力不正
+  if (status === 400) {
+    return `入力内容に問題があります${rawMessage ? `（${rawMessage}）` : ""}。内容を確認してやり直してください。`;
+  }
+  // その他サーバエラー
+  if (status >= 500) {
+    return "サーバ側で問題が発生しました。少し待ってから再度お試しください。";
+  }
+  // フォールバック (生メッセージを添える)
+  return rawMessage || "不明なエラーが発生しました。ページを再読み込みしてください。";
+}
+
 async function call<T>(path: string, init: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
   const { headers: authHeaders, querySuffix } = await authParts();
 
@@ -414,13 +448,23 @@ async function call<T>(path: string, init: { method?: "GET" | "POST"; body?: unk
     url += (path.includes("?") ? "&" : "?") + querySuffix;
   }
 
-  const res = await fetch(url, {
-    method: init.method ?? "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders },
-    body: init.body == null ? undefined : JSON.stringify(init.body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: init.method ?? "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: init.body == null ? undefined : JSON.stringify(init.body),
+    });
+  } catch {
+    // fetch 自体が失敗 = ネットワーク断 / オフライン
+    throw new Error("ネットワークに接続できませんでした。通信環境を確認して、もう一度お試しください。");
+  }
+
   const json = (await res.json().catch(() => ({}))) as { error?: string; reason?: string } & T;
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}${json.reason ? ` (${json.reason})` : ""}`);
+  if (!res.ok) {
+    const raw = json.error || json.reason || `HTTP ${res.status}`;
+    throw new Error(toFriendlyError(res.status, raw));
+  }
   return json;
 }
 

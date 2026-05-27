@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { isLive, listOpenJobsWithContact } from "../../lib/ra/queries";
 import type { JobWithCompany, Priority } from "../../lib/ra/types";
+import { LoadError } from "./RaErrorBoundary";
 
 /**
  * 募集ポジション一覧 — フラットな "1 ポジション = 1 行" のリスト。
@@ -16,6 +17,8 @@ export default function ProspectingJobs({
 }) {
   const [rows, setRows] = useState<JobWithCompany[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [q, setQ] = useState("");
   const [priority, setPriority] = useState<"" | Priority>("");
   const [grade, setGrade] = useState<"" | "◎" | "○" | "△">("");
@@ -24,11 +27,13 @@ export default function ProspectingJobs({
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setError(null);
     listOpenJobsWithContact()
       .then((d) => { if (alive) setRows(d); })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e : new Error(String(e))); })
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -48,6 +53,7 @@ export default function ProspectingJobs({
   }, [rows, q, priority, grade, onlyWithContact]);
 
   if (loading) return <div className="text-sm text-gray-500">読み込み中…</div>;
+  if (error) return <LoadError error={error} onRetry={() => setReloadKey((k) => k + 1)} />;
 
   return (
     <div className="space-y-3">

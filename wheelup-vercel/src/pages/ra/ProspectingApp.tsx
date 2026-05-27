@@ -6,6 +6,7 @@ import ProspectingCandidates from "./ProspectingCandidates";
 import ProspectingJobs from "./ProspectingJobs";
 import RunToolbar from "./RunToolbar";
 import HowToPanel from "./HowToPanel";
+import RaErrorBoundary from "./RaErrorBoundary";
 import { isLive } from "../../lib/ra/queries";
 
 type Tab = "home" | "jobs" | "candidates" | "discovery";
@@ -74,7 +75,8 @@ export default function ProspectingApp() {
           </div>
         )}
 
-        {/* 企業詳細を開いてる時は他を隠す */}
+        {/* 企業詳細を開いてる時は他を隠す。全体をエラーバウンダリで保護 */}
+        <RaErrorBoundary>
         {openCompanyId ? (
           <ProspectingCompanyDetail
             id={openCompanyId}
@@ -110,6 +112,7 @@ export default function ProspectingApp() {
             )}
           </div>
         )}
+        </RaErrorBoundary>
       </div>
     </div>
   );
