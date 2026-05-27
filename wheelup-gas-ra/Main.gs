@@ -53,6 +53,7 @@ function callGemini_(prompt, opts) {
       generationConfig: {
         temperature: (opts && opts.temperature) != null ? opts.temperature : 0.2,
         responseMimeType: 'application/json',
+        maxOutputTokens: (opts && opts.maxOutputTokens) || 2048,
       },
     }),
     muteHttpExceptions: true,
