@@ -373,8 +373,12 @@ async function diagnoseSpeaker(
   if (!target) return res.status(400).json({ error: "target を指定するか議事録に consultant_name を設定してください" });
 
   const extracted = extractSpeakerUtterances(text, target);
-  // 議事録の冒頭 5 行を返してユーザーがフォーマットを目視確認できるようにする
-  const sampleLines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 5);
+  // 議事録の冒頭 40 行を返してユーザーがフォーマットを目視確認できるようにする (本文部分まで届くように)
+  const allLines = text.split(/\r?\n/);
+  const sampleLinesHead = allLines.filter((l) => l.trim()).slice(0, 40);
+  // 中盤 (本文があるはずのところ) の 20 行も返す
+  const midStart = Math.floor(allLines.length * 0.3);
+  const sampleLinesMid = allLines.slice(midStart, midStart + 20).filter((l) => l.trim());
 
   return res.json({
     meeting_id: id,
@@ -383,9 +387,12 @@ async function diagnoseSpeaker(
     target,
     detected_speakers: extracted.foundSpeakers,
     extracted_chars: extracted.utterances.length,
-    extracted_preview: extracted.utterances.slice(0, 400),
+    extracted_preview: extracted.utterances.slice(0, 600),
     filter_will_apply: extracted.utterances.length >= 50,
-    sample_transcript_head: sampleLines,
+    transcript_total_chars: text.length,
+    transcript_total_lines: allLines.length,
+    sample_transcript_head: sampleLinesHead,
+    sample_transcript_mid: sampleLinesMid,
     diagnosis: extracted.utterances.length >= 50
       ? `✅ ${target} の発言を ${extracted.utterances.length} 字抽出。フィルタは効きます。`
       : `⚠️ ${target} の発言が抽出できません (${extracted.utterances.length} 字)。議事録の話者ラベル形式を確認してください。検出された話者: ${extracted.foundSpeakers.join(" / ") || "なし"}`,
@@ -677,7 +684,38 @@ function extractSpeakerUtterances(text: string, target: string): {
   const normalized = target.trim().replace(/\s/g, "");
   // 「小林」「小林さん」「小林氏」「小林 様」等を等価とみなす
   const honorifics = ["さん", "様", "氏", "君", "ちゃん", "先生"];
-  const targetVariants = [normalized, ...honorifics.map((h) => normalized + h)];
+  // Google Meet は議事録エクスポートで「自分」を「あなた」と表記するため、
+  // 議事録の保存元アカウント (= ファイルの所属 CA フォルダ) と target が一致する場合、
+  // 「あなた」を target の別名として扱う必要がある。
+  // 本関数では target を CA 名として呼び出される前提なので、常に「あなた」を別名に含める。
+  // (これにより誤検出が起きるケースは、CA フォルダに別人がアップした稀なケースのみ。)
+  const targetVariants = [
+    normalized,
+    "あなた",  // Google Meet 「自分」表記
+    "You",     // 英語版 Meet
+    ...honorifics.map((h) => normalized + h),
+  ];
+
+  // Google Meet 等の議事録冒頭メタデータを話者と誤認識しないためのブラックリスト。
+  // これらが label として検出されても無視する (実話者ではない)。
+  const METADATA_LABELS = new Set([
+    "https", "http", "url", "リンク",
+    "ソフトウェア", "ミーティング名", "ミーティングid", "ミーティングID",
+    "開始", "終了", "開始時刻", "終了時刻", "日時",
+    "招待した人", "出席者", "参加者", "主催者", "ホスト",
+    "録画", "文字起こし", "字幕", "翻訳",
+    "本文", "概要", "要約", "アジェンダ", "議題",
+    "transcript", "meeting", "host", "participants", "agenda",
+  ]);
+  const isMetadataLabel = (label: string): boolean => {
+    const lower = label.toLowerCase();
+    if (METADATA_LABELS.has(lower)) return true;
+    if (METADATA_LABELS.has(label)) return true;
+    if (/^\d+$/.test(label)) return true;             // 数字だけ
+    if (label.length > 20) return true;               // 人名にしては長すぎ
+    if (/^[a-z0-9_\-\.]+$/i.test(label) && label.length > 10) return true; // 英数記号だけの長い文字列
+    return false;
+  };
 
   // 行ごとに分割。元の改行を保つことで Gemini への入力が読みやすくなる。
   const lines = text.split(/\r?\n/);
@@ -686,19 +724,22 @@ function extractSpeakerUtterances(text: string, target: string): {
   let currentSpeaker: string | null = null;
 
   // 1 行から話者ラベルを取り出すパターン。順番が重要 (より specific なものを先に試す)。
-  // Google Meet の自動文字起こし形式 (名前 HH:MM AM/PM)、字幕形式、社内議事録の多様な形式に対応。
+  // Google Meet の自動文字起こし形式、字幕形式、社内議事録の多様な形式に対応。
   const labelPatterns: RegExp[] = [
-    // 1. Google Meet: "山本 翔太 12:34 PM" (姓+名+時刻+AM/PM, 改行で本文)
+    // 1. Google Meet 議事録エクスポート形式: "あなた (17:55:10)" / "小林駿佑 (17:58:48)"
+    //    最も一般的なケース。本文は次行にあるので body は "" にする。
+    /^\s*([^\(（\d][^\(（]{0,30})\s*[\(（]\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)）]\s*$/,
+    // 2. Google Meet 旧式: "山本翔太 12:34 PM" (時刻+AM/PM)
     /^\s*([^\d\s:：][^\d:：]{0,30})\s+\d{1,2}:\d{2}\s*(?:AM|PM|午前|午後)?\s*$/i,
-    // 2. Google Meet 旧式: "山本 翔太	12:34" (タブ区切り)
+    // 3. Google Meet タブ区切り: "山本翔太\t12:34"
     /^\s*([^\d\s:：][^\d:：\t]{0,30})\s*\t\s*\d{1,2}:\d{2}\s*$/,
-    // 3. 字幕系: "12:34:56 - 山本 翔太" or "12:34:56 山本翔太"
+    // 4. 字幕系: "12:34:56 - 山本翔太" or "12:34:56 山本翔太"
     /^\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\-–—]?\s*([^\d:：][^:：]{0,30})\s*$/,
-    // 4. 既存: タイムスタンプ + 話者: "(12:34) 山本: ..."
+    // 5. 既存: タイムスタンプ + 話者: "(12:34) 山本: ..."
     /^\s*[\(\[【（［]?\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)\]】）］]?\s*([^\s:：]+?)\s*[:：]\s*/,
-    // 5. 既存: [山本] / 【山本】
+    // 6. 既存: [山本] / 【山本】
     /^\s*[\[\【［（]\s*([^\]\】］）]+?)\s*[\]\】］）]\s*/,
-    // 6. 既存: "山本: 発言内容"
+    // 7. 既存: "山本: 発言内容"
     /^\s*([^\s:：]{1,15})\s*[:：]\s*/,
   ];
 
@@ -718,15 +759,24 @@ function extractSpeakerUtterances(text: string, target: string): {
     }
 
     if (label) {
-      foundSpeakers.add(label);
-      currentSpeaker = label;
-      // ラベル付き行: 話者が一致したら本文だけ採用
-      if (targetVariants.some((v) => label === v || label.startsWith(v))) {
-        if (body) result.push(body);
+      // メタデータラベル (ソフトウェア / 開始 / 終了 等) は無視。話者扱いしない。
+      if (isMetadataLabel(label)) {
+        label = null;
+        body = line;
+      } else {
+        const lbl: string = label;
+        foundSpeakers.add(lbl);
+        currentSpeaker = lbl;
+        // ラベル付き行: 話者が一致したら本文だけ採用
+        if (targetVariants.some((v) => lbl === v || lbl.startsWith(v))) {
+          if (body) result.push(body);
+        }
       }
-    } else {
+    }
+    if (!label) {
       // ラベルなし行: 直前の話者の継続発言とみなす
-      if (currentSpeaker && targetVariants.some((v) => currentSpeaker === v || currentSpeaker!.startsWith(v))) {
+      const cs = currentSpeaker;
+      if (cs && targetVariants.some((v) => cs === v || cs.startsWith(v))) {
         result.push(line);
       }
     }
