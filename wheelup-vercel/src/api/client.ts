@@ -877,6 +877,7 @@ export interface MeetingTranscript {
   created_at: string;
   updated_at: string;
   leader_feedback?: string;
+  calibration?: MeetingCalibration | null;
   outcome?: {
     next_meeting?: boolean;
     applied?: boolean;
@@ -1036,6 +1037,21 @@ export async function scoreMeeting(
       ...(opts.targetSpeaker ? { target_speaker: opts.targetSpeaker } : {}),
     }),
   });
+}
+
+// リーダー校正: 「良い面談 / 悪い面談」マーキング (採点アンカーとして AI に学習させる)
+export interface MeetingCalibration {
+  quality: "good" | "bad";
+  comment: string;
+  target_scores: Record<string, number> | null;
+  marked_by: string;
+  marked_at: string;
+}
+export async function calibrateMeeting(
+  id: string,
+  data: { quality: "good" | "bad" | null; comment?: string; target_scores?: Record<string, number> },
+): Promise<{ ok: true; calibration: MeetingCalibration | null }> {
+  return request(`/meetings/${id}/calibrate`, { method: "POST", body: JSON.stringify(data) });
 }
 
 // 面談アウトカム (この面談から応募/採用に進んだか) を記録。CVR 分析の基礎データ。

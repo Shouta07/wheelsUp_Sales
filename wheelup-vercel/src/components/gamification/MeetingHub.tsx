@@ -8,6 +8,7 @@ import {
   createMeeting,
   summarizeMeeting,
   addLeaderFeedback,
+  calibrateMeeting,
   scoreMeeting,
   manualScoreMeeting,
   saveMeetingOutcome,
@@ -462,6 +463,9 @@ function MeetingEntry({
   const [expanded, setExpanded] = useState(false);
   const [fbText, setFbText] = useState("");
   const [fbSaving, setFbSaving] = useState(false);
+  // リーダー校正 (採点アンカー) UI 状態
+  const [calComment, setCalComment] = useState(m.calibration?.comment ?? "");
+  const [calSaving, setCalSaving] = useState<"good" | "bad" | "clear" | null>(null);
   const [rescoreError, setRescoreError] = useState<string | null>(null);
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
   const [manualOpen, setManualOpen] = useState(false);
@@ -516,6 +520,18 @@ function MeetingEntry({
       onFeedbackSaved();
     } catch { /* ignore */ }
     setFbSaving(false);
+  };
+
+  // リーダー校正の保存。quality=null で解除。
+  const handleCalibrate = async (quality: "good" | "bad" | null) => {
+    setCalSaving(quality === null ? "clear" : quality);
+    try {
+      await calibrateMeeting(m.id, { quality, comment: calComment.trim() });
+      onFeedbackSaved();
+    } catch (err) {
+      window.alert(`校正の保存に失敗: ${(err as Error).message}`);
+    }
+    setCalSaving(null);
   };
 
   return (
@@ -806,6 +822,89 @@ function MeetingEntry({
               >
                 {fbSaving ? "保存中..." : "コメント保存"}
               </button>
+            </div>
+          )}
+
+          {/* ─── リーダー校正パネル: 採点アンカー (リーダーのみ) ─── */}
+          {isLeaderUser && (
+            <div className="rounded-xl border-2 border-purple-300 bg-purple-50 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-extrabold text-purple-800 uppercase tracking-wider">
+                  🎯 リーダー校正 (採点アンカー)
+                </div>
+                {m.calibration && (
+                  <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
+                    m.calibration.quality === "good"
+                      ? "bg-green-100 text-green-700 border border-green-300"
+                      : "bg-red-100 text-red-700 border border-red-300"
+                  }`}>
+                    {m.calibration.quality === "good" ? "👍 良い面談として登録中" : "👎 悪い面談として登録中"}
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] font-bold text-purple-700 leading-relaxed">
+                「良い面談」「悪い面談」とマークすると、AI が新規採点時にこれを基準として参照します。
+                マークするほど現場感覚と AI 評価のズレが解消されていきます。
+              </p>
+              <textarea
+                value={calComment}
+                onChange={(e) => setCalComment(e.target.value)}
+                placeholder="なぜ良い/悪いと判断したか (任意・最大500字)"
+                className="w-full rounded-lg border border-purple-200 bg-white px-2 py-1.5 text-[11px] font-bold text-[#4b4b4b] h-14 focus:border-purple-500 focus:outline-none resize-none"
+              />
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => handleCalibrate("good")}
+                  disabled={calSaving !== null}
+                  className={`flex-1 text-[10px] font-extrabold px-3 py-1.5 rounded-lg transition-all disabled:opacity-40 ${
+                    m.calibration?.quality === "good"
+                      ? "bg-green-600 text-white"
+                      : "bg-white border-2 border-green-300 text-green-700 hover:bg-green-50"
+                  }`}
+                >
+                  {calSaving === "good" ? "保存中..." : "👍 良い面談として登録"}
+                </button>
+                <button
+                  onClick={() => handleCalibrate("bad")}
+                  disabled={calSaving !== null}
+                  className={`flex-1 text-[10px] font-extrabold px-3 py-1.5 rounded-lg transition-all disabled:opacity-40 ${
+                    m.calibration?.quality === "bad"
+                      ? "bg-red-600 text-white"
+                      : "bg-white border-2 border-red-300 text-red-700 hover:bg-red-50"
+                  }`}
+                >
+                  {calSaving === "bad" ? "保存中..." : "👎 改善の余地ありとして登録"}
+                </button>
+                {m.calibration && (
+                  <button
+                    onClick={() => handleCalibrate(null)}
+                    disabled={calSaving !== null}
+                    className="text-[10px] font-bold px-2 py-1.5 rounded-lg bg-white border-2 border-purple-200 text-purple-700 hover:bg-purple-50 disabled:opacity-40"
+                  >
+                    {calSaving === "clear" ? "..." : "解除"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 校正済み議事録には常時バッジ表示 (リーダー以外も「これはアンカー」と分かる) */}
+          {!isLeaderUser && m.calibration && (
+            <div className={`rounded-xl border p-2.5 ${
+              m.calibration.quality === "good"
+                ? "bg-green-50 border-green-200"
+                : "bg-red-50 border-red-200"
+            }`}>
+              <div className={`text-[10px] font-extrabold leading-relaxed ${
+                m.calibration.quality === "good" ? "text-green-800" : "text-red-800"
+              }`}>
+                {m.calibration.quality === "good"
+                  ? "👍 リーダーが「良い面談」と判定 (採点アンカーとして AI に反映中)"
+                  : "👎 リーダーが「改善余地あり」と判定 (採点アンカーとして AI に反映中)"}
+                {m.calibration.comment && (
+                  <span className="block mt-1 font-bold opacity-80">「{m.calibration.comment}」</span>
+                )}
+              </div>
             </div>
           )}
         </div>
