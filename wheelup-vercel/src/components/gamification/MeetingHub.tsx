@@ -9,6 +9,8 @@ import {
   summarizeMeeting,
   addLeaderFeedback,
   calibrateMeeting,
+  bulkRescore,
+  autoCalibrate,
   scoreMeeting,
   manualScoreMeeting,
   saveMeetingOutcome,
@@ -116,6 +118,10 @@ export default function MeetingHub() {
   // 採点中の面談ID。null なら誰も採点していない。1 件ずつ採点する制約をフロントで強制する。
   const [scoringId, setScoringId] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  // 全件再採点 (リーダー専用) の進捗
+  const [bulkRescoreState, setBulkRescoreState] = useState<{ running: boolean; done: number; total: number; lastError?: string } | null>(null);
+  // 自動校正の結果メッセージ
+  const [autoCalState, setAutoCalState] = useState<{ running: boolean; message?: string } | null>(null);
   // Gemini クォータ枯渇 / 過負荷を検出した場合に UI に持続表示するためのフラグ。
   const [aiUnavailable, setAiUnavailable] = useState<null | "quota" | "overloaded">(null);
 
@@ -162,6 +168,46 @@ export default function MeetingHub() {
       if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 5000));
     }
     setBulkProgress(null);
+  };
+
+  // 全件再採点 (新ロジックで全議事録を更新): 4 件ずつ has_more=false までループ。
+  // リーダーがクリックすると、画面表示中のスコアが全部新ロジックに統一される。
+  const runBulkRescoreAll = async () => {
+    if (bulkRescoreState?.running) return;
+    if (!window.confirm("画面に表示中の全議事録 (メンバー分) を新ロジックで再採点します。1 件あたり 15-20 秒、合計数分かかります。続行しますか？")) return;
+    let offset = 0;
+    let done = 0;
+    let total = 0;
+    setBulkRescoreState({ running: true, done: 0, total: 0 });
+    try {
+      while (true) {
+        const r = await bulkRescore({ offset, limit: 4, force: true, include_leader: false });
+        done += r.processed;
+        total = r.total_in_db;
+        setBulkRescoreState({ running: true, done, total });
+        qc.invalidateQueries({ queryKey: ["meetings"] });
+        if (!r.has_more) break;
+        offset = r.next_offset;
+        await new Promise((res) => setTimeout(res, 2000)); // バッチ間も 2 秒
+      }
+      setBulkRescoreState({ running: false, done, total, lastError: undefined });
+    } catch (e) {
+      setBulkRescoreState({ running: false, done, total, lastError: (e as Error).message });
+    }
+  };
+
+  // 自動校正: リーダー面談から良/悪アンカーを自動登録
+  const runAutoCalibrate = async () => {
+    if (autoCalState?.running) return;
+    setAutoCalState({ running: true });
+    try {
+      const r = await autoCalibrate({ top: 3, bottom: 2, overwrite: false });
+      const msg = `✅ 良いアンカー ${r.good_count} 件 / 悪いアンカー ${r.bad_count} 件 を自動登録しました (スコア範囲: ${r.score_range.lowest}-${r.score_range.highest})`;
+      setAutoCalState({ running: false, message: msg });
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+    } catch (e) {
+      setAutoCalState({ running: false, message: `❌ ${(e as Error).message}` });
+    }
   };
 
   const handleDelete = async (id: string, title: string) => {
@@ -286,6 +332,61 @@ export default function MeetingHub() {
           {errorMsg && (
             <div className="rounded-xl bg-duo-red/10 border border-duo-red/30 p-2.5">
               <p className="text-[11px] font-bold text-duo-red leading-snug">{errorMsg}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 精度向上ツール (リーダーのみ・常時表示) */}
+      {isLeaderUser && (
+        <div className="mb-3 rounded-2xl border-2 border-purple-300 bg-purple-50 p-3 space-y-2">
+          <div className="text-xs font-extrabold text-purple-800">🎯 採点精度を一段上げる (リーダー専用)</div>
+
+          {/* 自動校正 */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-[11px] font-extrabold text-[#4b4b4b]">① リーダー面談から自動でアンカー登録</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                リーダー面談のうちスコア上位 3 件を「良いアンカー」、下位 2 件を「悪いアンカー」として自動登録。
+                校正アンカーが 0 件の状態を即座に解消し、AI 採点の基準を立ち上げます。
+                (既に手動マーク済みの面談は上書きしません)
+              </p>
+            </div>
+            <button
+              onClick={runAutoCalibrate}
+              disabled={autoCalState?.running}
+              className="shrink-0 text-[11px] font-extrabold px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-40"
+            >
+              {autoCalState?.running ? "実行中..." : "🎯 自動校正"}
+            </button>
+          </div>
+          {autoCalState?.message && (
+            <div className="text-[10px] font-bold text-purple-700 bg-white border border-purple-200 rounded-lg px-2 py-1">
+              {autoCalState.message}
+            </div>
+          )}
+
+          {/* 全件再採点 */}
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-purple-200">
+            <div className="flex-1">
+              <p className="text-[11px] font-extrabold text-[#4b4b4b]">② メンバー面談を全件再採点 (新ロジック)</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                旧採点が残っている議事録を、新採点ロジック (話者フィルタ + 校正アンカー + 印象点排除) で
+                上書きします。画面に表示中の全スコアが最新化されます。数分かかります。
+              </p>
+            </div>
+            <button
+              onClick={runBulkRescoreAll}
+              disabled={bulkRescoreState?.running}
+              className="shrink-0 text-[11px] font-extrabold px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-40"
+            >
+              {bulkRescoreState?.running ? `実行中 ${bulkRescoreState.done}/${bulkRescoreState.total}` : "♻️ 全件再採点"}
+            </button>
+          </div>
+          {bulkRescoreState && !bulkRescoreState.running && bulkRescoreState.done > 0 && (
+            <div className="text-[10px] font-bold text-purple-700 bg-white border border-purple-200 rounded-lg px-2 py-1">
+              ✅ 完了: {bulkRescoreState.done}/{bulkRescoreState.total} 件を再採点しました
+              {bulkRescoreState.lastError && <span className="block text-red-600 mt-1">エラー: {bulkRescoreState.lastError}</span>}
             </div>
           )}
         </div>

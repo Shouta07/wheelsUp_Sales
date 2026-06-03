@@ -10,6 +10,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+// 一括再採点は 1 件 ~15 秒 × 数件で長め。Hobby プラン上限の 60 秒まで延ばす。
+export const config = { maxDuration: 60 };
+
 /**
  * 統合 Meetings API（Gemini 文字起こし + AI要約）
  *
@@ -58,6 +61,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/reseed-leader ---
     if (segments[0] === "reseed-leader" && req.method === "POST") {
       return await reseedLeaderMeetings(db, req, res);
+    }
+    // --- /api/meetings/bulk-rescore (全議事録を新ロジックで再採点・リーダーのみ) ---
+    if (segments[0] === "bulk-rescore" && req.method === "POST") {
+      return await bulkRescore(db, req, res);
+    }
+    // --- /api/meetings/auto-calibrate (リーダー面談から良/悪アンカーを自動登録) ---
+    if (segments[0] === "auto-calibrate" && req.method === "POST") {
+      return await autoCalibrate(db, req, res);
     }
     // --- /api/meetings/drive-import (ミモが Drive に格納する議事録を取り込み) ---
     if (segments[0] === "drive-import" && req.method === "POST") {
@@ -347,6 +358,173 @@ async function calibrateMeeting(
   if (error) return res.status(500).json({ error: error.message });
 
   return res.json({ ok: true, calibration });
+}
+
+/**
+ * 全議事録を新ロジックで一括再採点 (リーダー専用)。
+ * 旧スコアが残っている議事録を新採点ロジック (絶対基準 + 話者フィルタ + 校正アンカー) で
+ * 上書きする。これにより画面に表示されるスコアがすべて最新ロジックの結果に揃う。
+ *
+ * - リーダーのみ実行可能
+ * - body: { limit?: number (default 30), force?: boolean (default true), include_leader?: boolean }
+ * - 採点間 8 秒スリープで Gemini RPM 制限を回避
+ * - 1 リクエスト 30 件上限 (Vercel 60 秒タイムアウト + Gemini 制限)
+ */
+async function bulkRescore(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "一括再採点はリーダー (小林) のみ実行可能です");
+
+  const body = (req.body ?? {}) as { limit?: number; force?: boolean; include_leader?: boolean; offset?: number };
+  // 1 件 ~15-20 秒 (Gemini 呼び出し + 8 秒スリープ) なので 60 秒タイムアウト内に 4 件。
+  // 全件処理は frontend がループで呼び出すことで対応。
+  const limit = Math.max(1, Math.min(4, Number(body.limit ?? 4)));
+  const offset = Math.max(0, Number(body.offset ?? 0));
+  const force = body.force !== false; // デフォルト true
+  const includeLeader = body.include_leader === true;
+
+  // 採点済みかつ削除されていない議事録を対象に。リーダー面談は除外がデフォルト。
+  let query = db.from("meeting_transcripts")
+    .select("id, consultant_name, is_leader, title")
+    .is("deleted_at", null)
+    .not("transcript_text", "is", null);
+  if (!includeLeader) query = query.eq("is_leader", false);
+  const { data: targets, error } = await query.order("recorded_at", { ascending: false }).range(offset, offset + limit - 1);
+  if (error) return res.status(500).json({ error: error.message });
+
+  // 残件数も返してフロントが次の offset を決められるように
+  const { count: totalCount } = await db.from("meeting_transcripts")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null)
+    .not("transcript_text", "is", null)
+    .eq("is_leader", includeLeader ? true : false);
+
+  const results: Array<{ id: string; title: string; ok: boolean; error?: string }> = [];
+  let rescored = 0, errors = 0;
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  for (let i = 0; i < (targets ?? []).length; i++) {
+    const t = targets![i];
+    try {
+      if (i > 0) await sleep(8000); // Gemini RPM 制限保護
+      const r = await scoreMeetingInternal(db, t.id as string, {
+        force,
+        targetSpeaker: (t.consultant_name as string) || null,
+      });
+      if ("error" in r) {
+        errors += 1;
+        results.push({ id: t.id as string, title: (t.title as string) || "", ok: false, error: r.error as string });
+      } else {
+        rescored += 1;
+        results.push({ id: t.id as string, title: (t.title as string) || "", ok: true });
+      }
+    } catch (e) {
+      errors += 1;
+      results.push({ id: t.id as string, title: (t.title as string) || "", ok: false, error: (e as Error).message.slice(0, 200) });
+    }
+  }
+
+  return res.json({
+    ok: errors === 0,
+    rescored,
+    errors,
+    processed: (targets ?? []).length,
+    total_in_db: totalCount ?? 0,
+    next_offset: offset + (targets ?? []).length,
+    has_more: offset + (targets ?? []).length < (totalCount ?? 0),
+    results,
+  });
+}
+
+/**
+ * リーダー面談の AI スコアから自動的に「良/悪アンカー」を登録する (リーダー専用)。
+ * 校正データがゼロの初期状態でも採点精度を一段上げるための bootstrap。
+ *
+ * 動作: AI 採点済みのリーダー面談を total スコア降順で並べ、
+ *   - 上位 N 件 (default 3) を「良い面談」アンカーに自動登録
+ *   - 下位 M 件 (default 2) を「悪い面談」アンカーに自動登録
+ * 既存の calibration があれば上書きしない (手動マークを尊重)。
+ */
+async function autoCalibrate(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "自動校正はリーダーのみ実行可能です");
+
+  const body = (req.body ?? {}) as { top?: number; bottom?: number; overwrite?: boolean };
+  const topN = Math.max(1, Math.min(10, Number(body.top ?? 3)));
+  const botN = Math.max(1, Math.min(10, Number(body.bottom ?? 2)));
+  const overwrite = body.overwrite === true;
+
+  // リーダー面談で採点済みのものを取得
+  const { data: rows, error } = await db.from("meeting_transcripts")
+    .select("id, title, score_data, calibration")
+    .eq("is_leader", true)
+    .is("deleted_at", null)
+    .not("score_data", "is", null);
+  if (error) return res.status(500).json({ error: error.message });
+
+  // total スコアで並べる
+  const withTotal = (rows ?? [])
+    .map((r) => {
+      const sd = r.score_data as { total?: number; scores?: Record<string, number> } | null;
+      let total = sd?.total ?? 0;
+      if (!total && sd?.scores) {
+        total = ["needs", "proposal", "trust", "closing", "intel"]
+          .reduce((s, k) => s + (sd.scores?.[k] ?? 0), 0);
+      }
+      return { ...r, _total: total };
+    })
+    .filter((r) => r._total > 0)
+    .sort((a, b) => b._total - a._total);
+
+  if (withTotal.length < topN + botN) {
+    return res.status(400).json({
+      error: `リーダー面談の採点済みデータが不足 (${withTotal.length} 件)。最低 ${topN + botN} 件必要`,
+      hint: "面談ライブラリでリーダー面談をいくつか採点してから再実行してください",
+    });
+  }
+
+  const goods = withTotal.slice(0, topN);
+  const bads = withTotal.slice(-botN);
+  const actions: Array<{ id: string; title: string; before?: string; after: string }> = [];
+
+  const markOne = async (r: typeof withTotal[number], quality: "good" | "bad") => {
+    const existing = r.calibration as { quality?: string } | null;
+    if (existing && !overwrite) {
+      actions.push({ id: r.id as string, title: r.title as string, before: existing.quality, after: "skipped (already calibrated)" });
+      return;
+    }
+    const calibration = {
+      quality,
+      comment: quality === "good"
+        ? `自動登録: リーダー面談の中で総合スコア上位 (${r._total}/50)`
+        : `自動登録: リーダー面談の中で総合スコア下位 (${r._total}/50)`,
+      target_scores: null,
+      marked_by: user,
+      marked_at: new Date().toISOString(),
+      auto: true,
+    };
+    await db.from("meeting_transcripts").update({ calibration }).eq("id", r.id);
+    actions.push({ id: r.id as string, title: r.title as string, before: existing?.quality, after: quality });
+  };
+
+  for (const r of goods) await markOne(r, "good");
+  for (const r of bads) await markOne(r, "bad");
+
+  return res.json({
+    ok: true,
+    good_count: goods.length,
+    bad_count: bads.length,
+    score_range: { highest: withTotal[0]?._total, lowest: withTotal[withTotal.length - 1]?._total },
+    actions,
+    note: "校正データが登録されました。次回以降の採点でアンカーとして参照されます。",
+  });
 }
 
 /**
@@ -1247,7 +1425,9 @@ ${text.slice(0, 25000)}
 
 注: timestamp は議事録の該当発言の直前にある括弧内の時刻 (例: 午前10:05 / 午後06:23) をそのまま記載。後でユーザーが議事録該当箇所にジャンプするのに使う。` }] }],
       generationConfig: {
-        temperature: 0.5,
+        // 採点の安定化: 0.5 → 0.3 で同じ議事録の揺れ幅を抑える
+        // (creativity より consistency 優先。校正アンカーと組み合わせることで効く)
+        temperature: 0.3,
         topP: 0.9,
         maxOutputTokens: 2600,
         responseMimeType: "application/json",

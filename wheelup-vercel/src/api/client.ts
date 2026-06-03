@@ -1056,6 +1056,34 @@ export async function calibrateMeeting(
   return request(`/meetings/${id}/calibrate`, { method: "POST", body: JSON.stringify(data) });
 }
 
+// 一括再採点 (リーダー専用)。1 リクエスト最大 4 件。
+// has_more=true なら offset を進めて再度呼び出す。
+export interface BulkRescoreResponse {
+  ok: boolean;
+  rescored: number;
+  errors: number;
+  processed: number;
+  total_in_db: number;
+  next_offset: number;
+  has_more: boolean;
+  results: Array<{ id: string; title: string; ok: boolean; error?: string }>;
+}
+export async function bulkRescore(opts: { offset?: number; limit?: number; force?: boolean; include_leader?: boolean } = {}): Promise<BulkRescoreResponse> {
+  return request(`/meetings/bulk-rescore`, { method: "POST", body: JSON.stringify(opts) });
+}
+
+// 自動校正: リーダー面談の上位/下位を自動でアンカー登録 (リーダー専用)
+export async function autoCalibrate(opts: { top?: number; bottom?: number; overwrite?: boolean } = {}): Promise<{
+  ok: boolean;
+  good_count: number;
+  bad_count: number;
+  score_range: { highest?: number; lowest?: number };
+  actions: Array<{ id: string; title: string; before?: string; after: string }>;
+  note: string;
+}> {
+  return request(`/meetings/auto-calibrate`, { method: "POST", body: JSON.stringify(opts) });
+}
+
 // 面談アウトカム (この面談から応募/採用に進んだか) を記録。CVR 分析の基礎データ。
 export async function saveMeetingOutcome(
   id: string,
