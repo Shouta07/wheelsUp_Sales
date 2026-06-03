@@ -128,19 +128,9 @@ export default function MeetingHub() {
     try {
       // 安藤・村上からの FB「2 人体制の面談で本人だけ採点できているか不安」への対応:
       // consultantName を target_speaker として渡し、同席者 (小林) の発言を必ず除外する。
-      // 発話者ラベルが議事録に無い場合は API 側で 422 を返すので、その時のみフィルタなしで再試行。
+      // 発話者ラベルが議事録に無い場合は API 側でフラグを返し、UI で警告表示する (沈黙のフォールバック禁止)。
       const targetSpeaker = consultantName || null;
-      try {
-        await scoreMeeting(id, { force, targetSpeaker });
-      } catch (e) {
-        const msg = (e as Error).message || "";
-        // 話者抽出できなければ全体採点で再試行 (議事録にラベルなし議事録の救済)
-        if (msg.includes("抽出できません") || msg.includes("422")) {
-          await scoreMeeting(id, { force });
-        } else {
-          throw e;
-        }
-      }
+      await scoreMeeting(id, { force, targetSpeaker });
       setAiUnavailable(null); // 成功したらバナー解除
       qc.invalidateQueries({ queryKey: ["meetings"] });
     } catch (err) {
@@ -682,18 +672,39 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* 発話者フィルタの透明性表示 (2 人体制の面談で本人だけ採点していることを明示) */}
+          {/* 発話者フィルタの透明性表示 — 成功時 / 失敗時で明確に区別 */}
           {score?.target_speaker && (
-            <div className="rounded-xl bg-amber-50 border border-amber-200 p-2.5">
-              <div className="text-[10px] font-extrabold text-amber-800 leading-relaxed">
-                🎯 採点対象: <span className="font-black">{score.target_speaker}さんの発言のみ</span>
-                {score.detected_speakers && score.detected_speakers.length > 0 && (
-                  <span className="text-[9px] font-bold text-amber-700 ml-1">
-                    (議事録から検出: {score.detected_speakers.join(" / ")})
-                  </span>
-                )}
-              </div>
-            </div>
+            <>
+              {score.speaker_filter_applied && (
+                <div className="rounded-xl bg-green-50 border border-green-300 p-2.5">
+                  <div className="text-[10px] font-extrabold text-green-800 leading-relaxed">
+                    ✅ 採点対象: <span className="font-black">{score.target_speaker}さんの発言のみ</span>
+                    （同席者の発言は除外済み）
+                    {score.detected_speakers && score.detected_speakers.length > 0 && (
+                      <span className="block text-[9px] font-bold text-green-700 mt-0.5">
+                        議事録から検出した話者: {score.detected_speakers.join(" / ")}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {score.speaker_filter_failed && (
+                <div className="rounded-xl bg-red-50 border-2 border-red-300 p-2.5">
+                  <div className="text-[10px] font-extrabold text-red-800 leading-relaxed">
+                    ⚠️ 注意: 議事録から {score.target_speaker}さんの発言を分離できませんでした。
+                    <span className="block text-[10px] font-bold text-red-700 mt-1">
+                      この採点には<span className="font-black">同席者 (小林さん等) の発言も含まれている可能性</span>があります。
+                      議事録に「{score.target_speaker}: ...」のような話者ラベルを追加するか、Google Meet の自動文字起こし形式 (名前 HH:MM AM/PM) でご投入ください。
+                    </span>
+                    {score.detected_speakers && score.detected_speakers.length > 0 && (
+                      <span className="block text-[9px] font-bold text-red-600 mt-1">
+                        実際に検出された話者: {score.detected_speakers.join(" / ")}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* 総合所感 (なぜこの評価かを一言で) */}

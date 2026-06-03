@@ -991,8 +991,10 @@ export interface MeetingScore {
   grade: string;
   overall?: string;
   evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
-  target_speaker?: string;       // 採点対象に絞り込んだ発話者名
-  detected_speakers?: string[];  // 議事録から検出された全話者 (透明性確認用)
+  target_speaker?: string;            // 採点対象に絞り込んだ発話者名
+  detected_speakers?: string[];       // 議事録から検出された全話者 (透明性確認用)
+  speaker_filter_applied?: boolean;   // 実際に発話者フィルタが効いたか
+  speaker_filter_failed?: boolean;    // target 指定したが抽出できず全話者で採点 (要警告)
   strengths: string[];
   improvements: string[];
   leader_would: string;

@@ -121,6 +121,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (sub === "calibrate" && req.method === "POST") {
       return await calibrateMeeting(db, id, req, res);
     }
+    // --- /api/meetings/:id/diagnose-speaker (話者抽出の動作確認) ---
+    if (sub === "diagnose-speaker" && req.method === "GET") {
+      return await diagnoseSpeaker(db, id, req, res);
+    }
     // --- /api/meetings/:id/leader-feedback ---
     if (sub === "leader-feedback" && req.method === "POST") {
       return await addLeaderFeedback(db, id, req, res);
@@ -343,6 +347,49 @@ async function calibrateMeeting(
   if (error) return res.status(500).json({ error: error.message });
 
   return res.json({ ok: true, calibration });
+}
+
+/**
+ * 話者抽出の動作確認エンドポイント。
+ * 「2 人体制で本人の発言だけ採点できているか」を可視化するため、
+ * 議事録から実際にどの話者が検出され、どの話者の何文字が抽出されたかを返す。
+ *
+ * GET /api/meetings/:id/diagnose-speaker?target=安藤
+ */
+async function diagnoseSpeaker(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const { data: meeting } = await db.from("meeting_transcripts").select("transcript_text, consultant_name, title").eq("id", id).single();
+  if (!meeting) return res.status(404).json({ error: "議事録が見つかりません" });
+  const text = (meeting.transcript_text as string) || "";
+  if (!text) return res.status(400).json({ error: "本文がありません" });
+
+  const target = (typeof req.query.target === "string" && req.query.target.trim())
+    || (meeting.consultant_name as string)
+    || "";
+  if (!target) return res.status(400).json({ error: "target を指定するか議事録に consultant_name を設定してください" });
+
+  const extracted = extractSpeakerUtterances(text, target);
+  // 議事録の冒頭 5 行を返してユーザーがフォーマットを目視確認できるようにする
+  const sampleLines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 5);
+
+  return res.json({
+    meeting_id: id,
+    title: meeting.title,
+    consultant_name: meeting.consultant_name,
+    target,
+    detected_speakers: extracted.foundSpeakers,
+    extracted_chars: extracted.utterances.length,
+    extracted_preview: extracted.utterances.slice(0, 400),
+    filter_will_apply: extracted.utterances.length >= 50,
+    sample_transcript_head: sampleLines,
+    diagnosis: extracted.utterances.length >= 50
+      ? `✅ ${target} の発言を ${extracted.utterances.length} 字抽出。フィルタは効きます。`
+      : `⚠️ ${target} の発言が抽出できません (${extracted.utterances.length} 字)。議事録の話者ラベル形式を確認してください。検出された話者: ${extracted.foundSpeakers.join(" / ") || "なし"}`,
+  });
 }
 
 // 採点履歴を返す (DB が無い時はエラーじゃなく空配列)。
@@ -639,10 +686,20 @@ function extractSpeakerUtterances(text: string, target: string): {
   let currentSpeaker: string | null = null;
 
   // 1 行から話者ラベルを取り出すパターン。順番が重要 (より specific なものを先に試す)。
+  // Google Meet の自動文字起こし形式 (名前 HH:MM AM/PM)、字幕形式、社内議事録の多様な形式に対応。
   const labelPatterns: RegExp[] = [
-    /^\s*[\(\[【（［]?\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)\]】）］]?\s*([^\s:：]+?)\s*[:：]\s*/, // タイムスタンプ + 話者
-    /^\s*[\[\【［（]\s*([^\]\】］）]+?)\s*[\]\】］）]\s*/,                                   // [話者] / 【話者】
-    /^\s*([^\s:：]{1,15})\s*[:：]\s*/,                                                       // 話者: ...
+    // 1. Google Meet: "山本 翔太 12:34 PM" (姓+名+時刻+AM/PM, 改行で本文)
+    /^\s*([^\d\s:：][^\d:：]{0,30})\s+\d{1,2}:\d{2}\s*(?:AM|PM|午前|午後)?\s*$/i,
+    // 2. Google Meet 旧式: "山本 翔太	12:34" (タブ区切り)
+    /^\s*([^\d\s:：][^\d:：\t]{0,30})\s*\t\s*\d{1,2}:\d{2}\s*$/,
+    // 3. 字幕系: "12:34:56 - 山本 翔太" or "12:34:56 山本翔太"
+    /^\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\-–—]?\s*([^\d:：][^:：]{0,30})\s*$/,
+    // 4. 既存: タイムスタンプ + 話者: "(12:34) 山本: ..."
+    /^\s*[\(\[【（［]?\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)\]】）］]?\s*([^\s:：]+?)\s*[:：]\s*/,
+    // 5. 既存: [山本] / 【山本】
+    /^\s*[\[\【［（]\s*([^\]\】］）]+?)\s*[\]\】］）]\s*/,
+    // 6. 既存: "山本: 発言内容"
+    /^\s*([^\s:：]{1,15})\s*[:：]\s*/,
   ];
 
   for (const raw of lines) {
@@ -820,20 +877,20 @@ async function scoreMeetingInternal(
   //   - 抽出後の本文が極端に短ければ警告を返して採点 skip (誤抽出で 0 点になる事故を防ぐ)。
   const targetSpeaker = (opts.targetSpeaker ?? "").trim();
   let speakerFilterApplied = false;
+  let speakerFilterFailed = false;  // target 指定したが抽出失敗 (発話者ラベルなし等)
   let extractedSpeakers: string[] = [];
   if (targetSpeaker) {
     const extracted = extractSpeakerUtterances(text, targetSpeaker);
     extractedSpeakers = extracted.foundSpeakers;
-    if (extracted.utterances.length < 80) {
-      // 抽出結果が短すぎる: 議事録に発話者ラベルがない or 名前表記が違う
-      return {
-        error: `指定された発話者 "${targetSpeaker}" の発言が議事録から抽出できません (${extracted.utterances.length} 字)。議事録に「${targetSpeaker}: ...」のような話者ラベルが含まれているか確認してください。`,
-        status: 422,
-        detected_speakers: extracted.foundSpeakers,
-      };
+    extractedSpeakers = extracted.foundSpeakers;
+    if (extracted.utterances.length < 50) {
+      // 発話者ラベルなし or 形式不一致 → 全話者で採点する fallback。
+      // 「発話者分離失敗」フラグを残して UI で警告表示する (沈黙のフォールバックを禁止)。
+      speakerFilterFailed = true;
+    } else {
+      text = extracted.utterances;
+      speakerFilterApplied = true;
     }
-    text = extracted.utterances;
-    speakerFilterApplied = true;
   }
 
   // リーダー (=小林) の過去面談を「教師データ」として注入。
@@ -935,7 +992,6 @@ async function scoreMeetingInternal(
     return {
       meeting_id: id, cached: true,
       ...(meeting.score_data as Record<string, unknown>),
-      ...(speakerFilterApplied ? { target_speaker: targetSpeaker, detected_speakers: extractedSpeakers } : {}),
     };
   }
 
@@ -1352,9 +1408,11 @@ ${text.slice(0, 25000)}
     }
     // 発話者フィルタの監査情報を score_data に埋め込んで UI から「誰の発言を採点したか」を確認可能にする。
     // 安藤・村上の「2 人体制で本人だけ採点できているか不安」FB への透明化。
-    if (speakerFilterApplied) {
+    if (targetSpeaker) {
       (parsed as Record<string, unknown>).target_speaker = targetSpeaker;
       (parsed as Record<string, unknown>).detected_speakers = extractedSpeakers;
+      (parsed as Record<string, unknown>).speaker_filter_applied = speakerFilterApplied;
+      (parsed as Record<string, unknown>).speaker_filter_failed = speakerFilterFailed;
     }
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
 
@@ -1384,7 +1442,14 @@ ${text.slice(0, 25000)}
   return {
     meeting_id: id,
     ...parsed,
-    ...(speakerFilterApplied ? { target_speaker: targetSpeaker, detected_speakers: extractedSpeakers } : {}),
+    ...(targetSpeaker
+      ? {
+          target_speaker: targetSpeaker,
+          detected_speakers: extractedSpeakers,
+          speaker_filter_applied: speakerFilterApplied,
+          speaker_filter_failed: speakerFilterFailed,
+        }
+      : {}),
   };
 }
 
