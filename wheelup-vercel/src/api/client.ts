@@ -990,6 +990,8 @@ export interface MeetingScore {
   grade: string;
   overall?: string;
   evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
+  target_speaker?: string;       // 採点対象に絞り込んだ発話者名
+  detected_speakers?: string[];  // 議事録から検出された全話者 (透明性確認用)
   strengths: string[];
   improvements: string[];
   leader_would: string;

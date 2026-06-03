@@ -883,6 +883,21 @@ async function scoreMeetingInternal(
 - **面談の主観的な印象 (盛り上がった等) ではなく、ルーブリックの各条件を満たした証拠があるかで判定する。**
   証拠が議事録に無ければ、たとえ会話が和やかでも点は伸びない。
 
+## ⚠️ 厳禁: 印象点で水増ししない (採点逆転防止)
+以下のような「主観的に良さそう」な要素では絶対に点を伸ばさない:
+  × 会話が和やか / 候補者が話してくれた / コンサルが丁寧 / 雰囲気が良い
+  × 面談が長い / 候補者が満足そう / 「ありがとう」と言われた
+これらが揃っていても、ルーブリックの具体条件 (3 層掘り、二軸提案、期限合意 等) を
+満たしていなければ点数は伸びない。
+**逆に、淡々とした面談でも条件を満たしていれば高得点になる**。
+採点は「印象」ではなく「観察可能な行動の有無」で決める。
+
+## 採点プロセス (順守):
+1. 各軸のルーブリック条件を 1 つずつチェックし、議事録に証拠があるか確認
+2. 証拠が無い条件は「未達成」としてカウント
+3. 達成した条件数に応じて 0〜10 を決める (達成 0 個=0-2点、半分=4-6点、ほぼ全部=8-10点)
+4. evidence には「証拠が満たした条件 / 満たせなかった条件」を必ず両方書く
+
 ## 参考: リーダー (小林) の面談例 (優れた技術の現れ方を掴むための参照。似せること自体は目的ではない)
 <LEADER_REFERENCE>
 ${leaderRefs || "（リーダー面談データなし。下記ルーブリックの絶対基準のみで採点）"}
@@ -1207,6 +1222,12 @@ ${text.slice(0, 25000)}
           scored_by: (meeting.score_data as { _scored_by?: string })._scored_by || null,
         });
       } catch { /* テーブル未作成でも採点自体は成功させる */ }
+    }
+    // 発話者フィルタの監査情報を score_data に埋め込んで UI から「誰の発言を採点したか」を確認可能にする。
+    // 安藤・村上の「2 人体制で本人だけ採点できているか不安」FB への透明化。
+    if (speakerFilterApplied) {
+      (parsed as Record<string, unknown>).target_speaker = targetSpeaker;
+      (parsed as Record<string, unknown>).detected_speakers = extractedSpeakers;
     }
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
 

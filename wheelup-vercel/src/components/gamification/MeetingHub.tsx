@@ -118,14 +118,28 @@ export default function MeetingHub() {
   // Gemini クォータ枯渇 / 過負荷を検出した場合に UI に持続表示するためのフラグ。
   const [aiUnavailable, setAiUnavailable] = useState<null | "quota" | "overloaded">(null);
 
-  const handleRescore = async (id: string) => {
+  const handleRescore = async (id: string, consultantName?: string | null) => {
     if (scoringId) return; // 他の採点中はクリック無視 (運用面のクォータ保護)
     // 通常クリック: キャッシュ尊重 (テキスト未変更なら Gemini を呼ばない)
     // Shift+クリック: 強制再生成 (Gemini を必ず呼ぶ)
     const force = (window.event as MouseEvent | undefined)?.shiftKey === true;
     setScoringId(id);
     try {
-      await scoreMeeting(id, { force });
+      // 安藤・村上からの FB「2 人体制の面談で本人だけ採点できているか不安」への対応:
+      // consultantName を target_speaker として渡し、同席者 (小林) の発言を必ず除外する。
+      // 発話者ラベルが議事録に無い場合は API 側で 422 を返すので、その時のみフィルタなしで再試行。
+      const targetSpeaker = consultantName || null;
+      try {
+        await scoreMeeting(id, { force, targetSpeaker });
+      } catch (e) {
+        const msg = (e as Error).message || "";
+        // 話者抽出できなければ全体採点で再試行 (議事録にラベルなし議事録の救済)
+        if (msg.includes("抽出できません") || msg.includes("422")) {
+          await scoreMeeting(id, { force });
+        } else {
+          throw e;
+        }
+      }
       setAiUnavailable(null); // 成功したらバナー解除
       qc.invalidateQueries({ queryKey: ["meetings"] });
     } catch (err) {
@@ -437,7 +451,7 @@ function MeetingEntry({
   meeting: MeetingTranscript;
   leaderAvg: Record<string, number> | null;
   onSummarize: (id: string) => void;
-  onRescore: (id: string) => Promise<void>;
+  onRescore: (id: string, consultantName?: string | null) => Promise<void>;
   onDelete: (id: string, title: string) => Promise<void>;
   isLeaderUser: boolean;
   currentUser: string;
@@ -486,7 +500,8 @@ function MeetingEntry({
     if (isScoringOther) return;
     setRescoreError(null);
     try {
-      await onRescore(m.id);
+      // 担当 CA を target_speaker として渡す (同席者発言の混入を防ぐ)
+      await onRescore(m.id, m.consultant_name);
     } catch (err) {
       setRescoreError(`採点に失敗: ${(err as Error).message}`);
     }
@@ -648,6 +663,20 @@ function MeetingEntry({
           {m.summary && (
             <div className="rounded-xl bg-[#f7f7f7] p-3 prose prose-sm max-w-none text-xs text-[#4b4b4b]">
               <ReactMarkdown>{m.summary}</ReactMarkdown>
+            </div>
+          )}
+
+          {/* 発話者フィルタの透明性表示 (2 人体制の面談で本人だけ採点していることを明示) */}
+          {score?.target_speaker && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-2.5">
+              <div className="text-[10px] font-extrabold text-amber-800 leading-relaxed">
+                🎯 採点対象: <span className="font-black">{score.target_speaker}さんの発言のみ</span>
+                {score.detected_speakers && score.detected_speakers.length > 0 && (
+                  <span className="text-[9px] font-bold text-amber-700 ml-1">
+                    (議事録から検出: {score.detected_speakers.join(" / ")})
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
