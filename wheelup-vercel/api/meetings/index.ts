@@ -1402,7 +1402,17 @@ ${text.slice(0, 25000)}
    単なる出来事の描写で終わらせず、必ず点数と紐づける。
 3. overall は総合所感 (120 字以内)。この面談全体で「何が良く・何が課題で・総合的にどのレベルか」を
    現場が腹落ちする言葉で。点数の合計だけでなく、面談の流れを踏まえた一言を書く。
-4. improvements は 2 件・各 50 字以内。最も点数の低い軸を優先し、次の面談で即実践できる具体策を書く。
+4. **【最重要】coaching は各軸ごとの「この面談に固有」の改善アドバイス**。一般論・教科書的な助言は禁止。
+   必ず次の 3 要素を埋める:
+     - quote: この面談で **実際にあった発言や場面** をそのまま引用 (改変禁止・40字以内)。良かった場面でも改善場面でも可。
+     - issue: その場面の何が惜しかったか / 何が良かったか (この面談の文脈に即して・60字以内)
+     - rewrite: **次回この場面でどう言えば点が伸びるか、具体的なセリフ例** (60字以内)。
+   ❌ 悪い例 (一般論なので禁止):「お客様の信頼を掴みましょう」「ヒアリングは簡潔に」「他社状況を聞きましょう」
+   ⭕ 良い例:
+     quote「具体的にどれとかあんまりないんですけど」(候補者がピンと来ていない場面)
+     issue「送った求人3社に候補者が反応薄。なぜその3社を選んだか提案ロジックを語れていない」
+     rewrite「『この3社は〇〇さんの△△経験が活きる順に選びました。特にA社は〜』と選定理由を言語化」
+   点数が低い軸ほど rewrite を具体的に。**全5軸について必ず書く**。
 5. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
 6. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
@@ -1411,13 +1421,15 @@ ${text.slice(0, 25000)}
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "overall": "ニーズの初動は良いが提案が単発で前進が弱い。信頼は高く土台はある。総合B：次は二軸提案と期限合意を意識すると一段上がる。",
   "evidence": {
-    "needs": "...",
-    "proposal": "...",
-    "trust": "...",
-    "closing": "...",
-    "intel": "..."
+    "needs": "...", "proposal": "...", "trust": "...", "closing": "...", "intel": "..."
   },
-  "improvements": ["改善点1", "改善点2"],
+  "coaching": {
+    "needs":   { "quote": "この面談の実際の発言", "issue": "この場面の何が惜しい/良い", "rewrite": "次はこう言うと伸びる具体セリフ" },
+    "proposal":{ "quote": "...", "issue": "...", "rewrite": "..." },
+    "trust":   { "quote": "...", "issue": "...", "rewrite": "..." },
+    "closing": { "quote": "...", "issue": "...", "rewrite": "..." },
+    "intel":   { "quote": "...", "issue": "...", "rewrite": "..." }
+  },
   "key_moments": [
     { "text": "面談記録からの実際の発言", "axis": "needs", "speaker": "コンサル", "timestamp": "午後06:23" }
   ]
@@ -1429,7 +1441,8 @@ ${text.slice(0, 25000)}
         // (creativity より consistency 優先。校正アンカーと組み合わせることで効く)
         temperature: 0.3,
         topP: 0.9,
-        maxOutputTokens: 2600,
+        // coaching (5軸×3要素) を足したので上限を引き上げ。途中切れで JSON 破損を防ぐ。
+        maxOutputTokens: 3600,
         responseMimeType: "application/json",
         // スキーマを最小限に絞る (フィールド多いと flash-lite が反復ループしやすいため)。
         // scores + evidence + improvements の 3 つだけ。それ以外は別フィードバック画面で生成。
@@ -1459,7 +1472,16 @@ ${text.slice(0, 25000)}
               },
               required: ["needs", "proposal", "trust", "closing", "intel"],
             },
-            improvements: { type: "array", items: { type: "string" } },
+            coaching: {
+              type: "object",
+              properties: {
+                needs:    { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+                proposal: { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+                trust:    { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+                closing:  { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+                intel:    { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+              },
+            },
             key_moments: {
               type: "array",
               items: {
@@ -1621,6 +1643,25 @@ ${text.slice(0, 25000)}
         .filter((r) => r.title);
     } else {
       parsed.learning_resources = [];
+    }
+
+    // coaching (軸ごとの面談固有アドバイス) のサニタイズ。西村 FB「固定の一般論ではダメ」対応。
+    const coachingRaw = (parsed as { coaching?: unknown }).coaching;
+    if (coachingRaw && typeof coachingRaw === "object") {
+      const clean: Record<string, { quote: string; issue: string; rewrite: string }> = {};
+      for (const axis of ["needs", "proposal", "trust", "closing", "intel"]) {
+        const c = (coachingRaw as Record<string, unknown>)[axis];
+        if (c && typeof c === "object") {
+          const cc = c as Record<string, unknown>;
+          const quote = String(cc.quote || "").slice(0, 120);
+          const issue = String(cc.issue || "").slice(0, 200);
+          const rewrite = String(cc.rewrite || "").slice(0, 200);
+          if (quote || issue || rewrite) clean[axis] = { quote, issue, rewrite };
+        }
+      }
+      parsed.coaching = clean;
+    } else {
+      parsed.coaching = {};
     }
 
     // 旧スコアを score_history に退避してから更新 (成長推移を残す・面談メタも snapshot)

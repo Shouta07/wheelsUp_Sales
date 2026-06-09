@@ -841,6 +841,42 @@ function MeetingEntry({
             </div>
           )}
 
+          {/* この面談固有のコーチング (西村 FB: 一般論ではなく実際の発言ベースの改善案) */}
+          {score?.coaching && Object.keys(score.coaching).length > 0 && (
+            <div className="rounded-xl bg-amber-50 border-2 border-amber-200 p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-amber-800 uppercase tracking-wider mb-1">
+                🎯 この面談の改善ポイント（実際の発言ベース）
+              </div>
+              {DIMS.map(({ key, label, color }) => {
+                const c = score.coaching?.[key as keyof typeof score.coaching];
+                const sc = score.scores?.[key as keyof typeof score.scores];
+                if (!c || (!c.quote && !c.issue && !c.rewrite)) return null;
+                return (
+                  <div key={key} className="rounded-lg bg-white border border-amber-200 p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "20", color }}>
+                        {label} {typeof sc === "number" ? `${sc}点` : ""}
+                      </span>
+                    </div>
+                    {c.quote && (
+                      <p className="text-[11px] font-bold text-[#777] mb-1 leading-relaxed">
+                        💬 面談中：<span className="text-[#4b4b4b]">「{c.quote}」</span>
+                      </p>
+                    )}
+                    {c.issue && (
+                      <p className="text-[11px] font-bold text-[#4b4b4b] mb-1 leading-relaxed">{c.issue}</p>
+                    )}
+                    {c.rewrite && (
+                      <p className="text-[11px] font-bold text-green-700 leading-relaxed bg-green-50 rounded px-2 py-1">
+                        ✅ 次回はこう：「{c.rewrite}」
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Leader would */}
           {score?.leader_would && (
             <div className="rounded-xl bg-duo-purple/5 border border-duo-purple/20 p-3">
@@ -854,10 +890,10 @@ function MeetingEntry({
             <DigestTimeline moments={score.key_moments} onJumpToTranscript={(text) => jumpToTranscript(text, m.transcript_text || "")} />
           )}
 
-          {/* Learning Resources (学習リソース) */}
+          {/* Learning Resources (参考プレイブック・補助的位置づけ) */}
           {score?.learning_resources && score.learning_resources.length > 0 && (
-            <div className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
-              <div className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1">弱点強化トレーニング</div>
+            <details className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
+              <summary className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1 cursor-pointer select-none">📚 参考プレイブック（軸別の基礎）</summary>
               {score.learning_resources.map((lr, idx) => {
                 const dim = DIMS.find(d => d.key === lr.axis);
                 const typeIcon = lr.source_type === "video" ? "▶" : lr.source_type === "article" ? "📄" : "📖";
@@ -904,7 +940,7 @@ function MeetingEntry({
                   </div>
                 );
               })}
-            </div>
+            </details>
           )}
 
           {/* Leader Feedback */}

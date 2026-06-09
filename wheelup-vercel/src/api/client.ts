@@ -991,6 +991,8 @@ export interface MeetingScore {
   grade: string;
   overall?: string;
   evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
+  // 軸ごとの「この面談に固有」のコーチング (実際の発言引用 → 言い換え提案)。西村 FB 対応。
+  coaching?: Partial<Record<"needs" | "proposal" | "trust" | "closing" | "intel", { quote?: string; issue?: string; rewrite?: string }>>;
   target_speaker?: string;            // 採点対象に絞り込んだ発話者名
   detected_speakers?: string[];       // 議事録から検出された全話者 (透明性確認用)
   speaker_filter_applied?: boolean;   // 実際に発話者フィルタが効いたか
