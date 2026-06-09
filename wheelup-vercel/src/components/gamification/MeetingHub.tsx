@@ -262,11 +262,13 @@ export default function MeetingHub() {
         </button>
       </div>
 
-      {/* Tabs - リーダー面談タブはリーダー本人のみに表示 */}
+      {/* Tabs - 西村 FB: リーダー面談はメンバーが参考にするべき。
+            リーダー本人には「自分の面談」と重複するので非表示。
+            メンバーには「自分の面談」+「リーダーの面談 (参考)」の 2 タブを表示。 */}
       <div className="flex gap-1 mb-4">
         {([
           { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          ...(isLeaderUser
+          ...(!isLeaderUser
             ? [{ key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 }]
             : []),
         ]).map(({ key, label, count }) => (
@@ -678,7 +680,9 @@ function MeetingEntry({
                 AI要約
               </button>
             )}
-            {!score && m.transcript_text && !rescoring && (
+            {/* メンバーがリーダー面談を見ている時は採点ボタンを出さない (教師データなので読み取り専用)。
+                リーダー自身またはメンバー自分の面談の時だけ表示。 */}
+            {!score && m.transcript_text && !rescoring && (isLeaderUser || !m.is_leader) && (
               <button
                 onClick={handleRescoreClick}
                 disabled={isScoringOther}
@@ -694,7 +698,7 @@ function MeetingEntry({
                 採点中...
               </span>
             )}
-            {score && m.transcript_text && (
+            {score && m.transcript_text && (isLeaderUser || !m.is_leader) && (
               <button
                 onClick={handleRescoreClick}
                 disabled={rescoring || isScoringOther}
@@ -806,6 +810,18 @@ function MeetingEntry({
                 </div>
               )}
             </>
+          )}
+
+          {/* 西村 FB「リーダーの面談が34点で出るのは設計矛盾では」への説明バナー。
+              絶対基準で採点するルールなので、リーダーも面談ごとに伸びしろあり、と明示。 */}
+          {m.is_leader && score?.scores && (
+            <div className="rounded-xl bg-amber-50 border border-amber-300 p-2.5">
+              <p className="text-[10px] font-bold text-amber-900 leading-relaxed">
+                ⓘ これはリーダー(教師データ)の面談です。AI 採点は<b>絶対基準</b>(各軸の条件達成度)で行うため、
+                リーダーでも軸ごとに伸びしろが出ます。50/50 が前提ではありません。
+                <b>「印象が良い面談」より「条件を満たした面談」</b>の方が高得点になります。
+              </p>
+            </div>
           )}
 
           {/* 総合所感 (なぜこの評価かを一言で) */}

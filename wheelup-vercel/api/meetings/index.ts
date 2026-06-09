@@ -153,12 +153,12 @@ async function listTranscripts(db: ReturnType<typeof getSupabaseAdmin>, req: Ver
   const { deal_id, candidate_id, consultant_name, is_leader } = req.query;
   const currentUser = getRequestUser(req);
 
-  // リーダー面談の閲覧はリーダー本人のみ。consultant_name が一致しないリーダーの面談も見せない。
+  // リーダー面談はメンバーも教師データとして閲覧可 (西村 FB)。
+  // ただし consultant_name 指定でなりすまし的なリーダー面談取得は引き続き拒否。
   if (is_leader === "true") {
-    if (!isLeader(currentUser)) {
-      return res.json({ transcripts: [], total: 0 });
-    }
-    if (consultant_name && typeof consultant_name === "string" && consultant_name !== currentUser) {
+    if (consultant_name && typeof consultant_name === "string"
+        && isLeader(currentUser) && consultant_name !== currentUser) {
+      // リーダー本人が他リーダーの面談を取りに来た時のみ拒否 (現状リーダー1名なので実質発生しない)
       return res.json({ transcripts: [], total: 0 });
     }
   }
