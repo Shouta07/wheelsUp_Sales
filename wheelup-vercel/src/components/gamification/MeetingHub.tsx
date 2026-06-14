@@ -893,59 +893,112 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* 観察ファースト採点の根拠 (西村 FB「精度に届いてない」対応: スコアの透明性を担保) */}
+          {/* 商談タイムライン: フェーズ別の◎/△/打ち手 (西村 FB「全体のどこがどう良く悪かったか + 打ち手」対応) */}
           {score?.observations && score.observations.length > 0 && (
-            <details className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-              <summary className="cursor-pointer select-none text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">
-                🔬 採点の根拠 (抽出された観察 {score.observations.length} 件)
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+              <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
+                <span className="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">
+                  🧭 商談タイムライン ({score.observations.length} 場面)
+                </span>
                 {score._score_audit && typeof score._score_audit.adjusted_axes === "number" && score._score_audit.adjusted_axes > 0 && (
-                  <span className="ml-2 text-[9px] font-bold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5 normal-case tracking-normal">
+                  <span className="text-[9px] font-bold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
                     観察集計でスコアを {score._score_audit.adjusted_axes} 軸補正
                   </span>
                 )}
                 {score._score_audit && ((score._score_audit.dropped_fake_observations || 0) + (score._score_audit.dropped_fake_coaching || 0)) > 0 && (
-                  <span className="ml-2 text-[9px] font-bold text-red-700 bg-red-100 rounded px-1.5 py-0.5 normal-case tracking-normal">
+                  <span className="text-[9px] font-bold text-red-700 bg-red-100 rounded px-1.5 py-0.5">
                     捏造引用 {(score._score_audit.dropped_fake_observations || 0) + (score._score_audit.dropped_fake_coaching || 0)} 件を除外
                   </span>
                 )}
-              </summary>
-              <p className="text-[10px] text-slate-500 mt-1.5 mb-2 leading-relaxed">
-                AI は「印象→点数」ではなく「議事録から具体観察を抽出→strong/weak 集計→点数」の順で採点しています。<br />
-                AI スコアと観察集計が 2 点以上ズレた軸はサーバ側で観察ベースの値に上書きされます (甘採点防止)。
-              </p>
-              <div className="space-y-2 mt-2">
-                {DIMS.map(({ key, label, color }) => {
-                  const obs = (score.observations || []).filter((o) => o.axis === key);
-                  if (obs.length === 0) return null;
-                  const strongCount = obs.filter((o) => o.assessment === "strong").length;
-                  const weakCount = obs.filter((o) => o.assessment === "weak").length;
-                  return (
-                    <div key={key} className="rounded-lg bg-white border border-slate-200 p-2">
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "20", color }}>
-                          {label}
-                        </span>
-                        <span className="text-[9px] font-bold text-green-700 bg-green-50 rounded px-1.5">◎ {strongCount}</span>
-                        <span className="text-[9px] font-bold text-red-700 bg-red-50 rounded px-1.5">△ {weakCount}</span>
-                      </div>
-                      <ul className="space-y-1">
-                        {obs.map((o, idx) => (
-                          <li key={idx} className="text-[10px] leading-relaxed flex items-start gap-1.5">
-                            <span className={`shrink-0 mt-[1px] inline-block w-3.5 text-center font-extrabold rounded ${
-                              o.assessment === "strong" ? "text-green-700 bg-green-50" : "text-red-700 bg-red-50"
-                            }`}>{o.assessment === "strong" ? "◎" : "△"}</span>
-                            <span className="flex-1">
-                              <span className="text-[#4b4b4b] font-bold">「{o.quote}」</span>
-                              {o.why && <span className="text-slate-500 ml-1">— {o.why}</span>}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  );
-                })}
               </div>
-            </details>
+              <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
+                冒頭 → ヒアリング → 提案 → クロージング → 振り返りの順で、◎ 良かった場面・△ 惜しかった場面と、△ には次回こう言うべきという「打ち手」を表示します。引用は議事録に存在するかサーバ側で照合済み。
+              </p>
+              {(() => {
+                const PHASE_DEFS: Array<{ key: NonNullable<NonNullable<typeof score.observations>[number]["phase"]>; label: string; emoji: string }> = [
+                  { key: "opening",  label: "冒頭",         emoji: "🚪" },
+                  { key: "hearing",  label: "ヒアリング",   emoji: "👂" },
+                  { key: "proposal", label: "提案",         emoji: "📋" },
+                  { key: "closing",  label: "クロージング", emoji: "🎯" },
+                  { key: "wrap",     label: "振り返り",     emoji: "📝" },
+                ];
+                return (
+                  <div className="space-y-3">
+                    {PHASE_DEFS.map(({ key: pKey, label: pLabel, emoji: pEmoji }) => {
+                      const phaseObs = (score.observations || []).filter((o) => (o.phase || "hearing") === pKey);
+                      const phaseNote = score.phase_summary?.[pKey];
+                      if (phaseObs.length === 0 && !phaseNote) return null;
+                      const phaseStrong = phaseObs.filter((o) => o.assessment === "strong").length;
+                      const phaseWeak = phaseObs.filter((o) => o.assessment === "weak").length;
+                      return (
+                        <div key={pKey} className="rounded-lg bg-white border border-slate-200 overflow-hidden">
+                          <div className="flex items-center gap-2 bg-slate-100 px-2.5 py-1.5 border-b border-slate-200">
+                            <span className="text-[11px] font-extrabold text-slate-700">{pEmoji} {pLabel}</span>
+                            {phaseObs.length > 0 && (
+                              <>
+                                <span className="text-[9px] font-bold text-green-700 bg-green-50 rounded px-1.5">◎ {phaseStrong}</span>
+                                <span className="text-[9px] font-bold text-red-700 bg-red-50 rounded px-1.5">△ {phaseWeak}</span>
+                              </>
+                            )}
+                          </div>
+                          {phaseNote && (
+                            <div className="px-2.5 py-1.5 bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-600 leading-relaxed">
+                              {phaseNote}
+                            </div>
+                          )}
+                          {phaseObs.length > 0 && (
+                            <ul className="divide-y divide-slate-100">
+                              {phaseObs.map((o, idx) => {
+                                const dim = DIMS.find((d) => d.key === o.axis);
+                                const isStrong = o.assessment === "strong";
+                                return (
+                                  <li key={idx} className="px-2.5 py-2">
+                                    <div className="flex items-start gap-2">
+                                      <span className={`shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full font-extrabold text-[11px] ${
+                                        isStrong ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"
+                                      }`}>{isStrong ? "◎" : "△"}</span>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                                          {dim && (
+                                            <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: dim.color + "20", color: dim.color }}>
+                                              {dim.label}
+                                            </span>
+                                          )}
+                                          {o.timestamp && (
+                                            <button
+                                              onClick={() => jumpToTranscript(o.quote, m.transcript_text || "")}
+                                              className="text-[9px] font-bold text-slate-500 hover:text-slate-900 underline tabular-nums"
+                                              title="議事録の該当箇所にジャンプ"
+                                            >
+                                              {o.timestamp}
+                                            </button>
+                                          )}
+                                        </div>
+                                        <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">
+                                          「{o.quote}」
+                                        </p>
+                                        {o.why && (
+                                          <p className="text-[10px] text-slate-500 leading-relaxed mt-0.5">— {o.why}</p>
+                                        )}
+                                        {!isStrong && o.next_move && (
+                                          <p className="mt-1 text-[10px] font-bold text-green-700 leading-relaxed bg-green-50 border border-green-200 rounded px-1.5 py-1">
+                                            ✅ 次回はこう：「{o.next_move}」
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
           )}
 
           {/* Leader would */}

@@ -1287,13 +1287,18 @@ async function scoreMeetingInternal(
 採点は「印象」ではなく「観察可能な行動の有無」で決める。
 
 ## 採点プロセス (順守・厳密に "観察 → 集計 → 採点" の順で):
-**Step 1 (観察強制):** 議事録から具体的観察 (observations) を **最低 12 件** 抽出。各観察に必須:
-  - quote: 議事録の実際の発言 (20〜80 字、改変・要約禁止)
+**Step 1 (観察強制):** 議事録から具体的観察 (observations) を **最低 12 件、商談の最初から最後まで時系列順** で抽出。各観察に必須:
+  - quote: 議事録の実際の発言 (20〜80 字、改変・要約禁止・連続 10 字以上は議事録と一致させる)
+  - timestamp: 議事録上の時刻 (例: "午前10:05" "12:34:56" など、直近の時刻ラベルをそのまま)
+  - phase: 商談のフェーズ ("opening" 冒頭/アイスブレイク | "hearing" ヒアリング | "proposal" 提案 | "closing" クロージング/次回設計 | "wrap" 振り返り)
   - axis: needs / proposal / trust / closing / intel
   - assessment: "strong" (下記ルーブリックの strong 条件を満たす) or "weak" (満たさない)
   - why: なぜその判定か (50 字以内・条件名を参照)
+  - **next_move** (weak のみ必須): この場面で「次回こう言えば点が伸びる」具体的なセリフ。60 字以内、教科書的な抽象論禁止。
+    例 (悪): "より深く掘る"  →  良: "『5 年後同じポジションでいる自分は想像できますか?』と未来視点で問い直す"
   ※ 各軸につき strong/weak 合わせて最低 2 件以上。
   ※ **印象 (和やか・丁寧・長い) は strong にしない**。条件達成の事実のみ strong。
+  ※ observations は **時系列順** (議事録に出てくる順) で配列に入れること。UI が会話の流れを再現する。
 
 **Step 2 (集計):** 各軸の strong / weak 件数から機械的に点を決める。
   - strong 3+ & weak 0 → 9-10 点
@@ -1304,7 +1309,12 @@ async function scoreMeetingInternal(
 
 **Step 3 (evidence):** その軸の strong/weak 件数を踏まえて「N strong / M weak: 〜が良かったが〜が惜しく X 点」と書く (100 字以内)。
 
-**Step 4 (coaching):** 各軸の weak の中で改善余地が最大のものを 1 件選び、quote/issue/rewrite を出す。
+**Step 4 (phase_summary):** 商談フェーズごとに「ここまでで何が良く・何が惜しかったか」を 1 文ずつ (各 80 字以内):
+  - opening / hearing / proposal / closing / wrap の 5 フェーズ
+  - そのフェーズに observation が無いなら空文字で OK
+  - 「○○分頃の××で〜」のように **観察に紐付いた事実描写** を必ず入れる。「全体的に丁寧」は禁止。
+
+**Step 5 (coaching):** 各軸の weak の中で改善余地が最大のものを 1 件選び、quote/issue/rewrite を出す。
 ※ 一般論の coaching は強制で却下される (サーバ側で監査)。 weak observations の引用に紐づいた具体的なセリフだけを出す。
 
 ## 参考: リーダー (小林) の面談例 (優れた技術の現れ方を掴むための参照。似せること自体は目的ではない)
@@ -1434,10 +1444,18 @@ ${text.slice(0, 25000)}
 ## JSON 形式 (observations が無いと採点が却下される):
 {
   "observations": [
-    { "quote": "実際の発言20-80字", "axis": "needs",    "assessment": "weak",   "why": "1度しか掘れず3層 (strong条件) に届かず" },
-    { "quote": "実際の発言20-80字", "axis": "proposal", "assessment": "strong", "why": "具体企業名+マッチ理由を業界構造で説明" },
-    ...合計12件以上...
+    { "quote": "実際の発言20-80字", "timestamp": "午前10:05", "phase": "opening",  "axis": "trust",    "assessment": "strong", "why": "業界構造の前提共有で土台作り" },
+    { "quote": "実際の発言20-80字", "timestamp": "午前10:18", "phase": "hearing",  "axis": "needs",    "assessment": "weak",   "why": "1度しか掘れず3層に届かず", "next_move": "『5年後同じポジションは想像できますか?』と未来視点で問い直す" },
+    { "quote": "実際の発言20-80字", "timestamp": "午前10:42", "phase": "proposal", "axis": "proposal", "assessment": "strong", "why": "具体企業名+マッチ理由を業界構造で説明" },
+    ...合計12件以上、議事録の出現順に並べる...
   ],
+  "phase_summary": {
+    "opening":  "10:05 業界構造の前提共有で和やかな入りに成功。一方で本日のゴール共有がなく時間配分が散漫に。",
+    "hearing":  "...",
+    "proposal": "...",
+    "closing":  "...",
+    "wrap":     "..."
+  },
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "overall": "ニーズの初動は良いが提案が単発で前進が弱い。信頼は高く土台はある。総合B：次は二軸提案と期限合意を意識すると一段上がる。",
   "evidence": {
@@ -1468,8 +1486,8 @@ ${text.slice(0, 25000)}
         // (creativity より consistency 優先。校正アンカーと組み合わせることで効く)
         temperature: 0.3,
         topP: 0.9,
-        // coaching + observations 12件 を足したので上限を更に引き上げ。途中切れで JSON 破損を防ぐ。
-        maxOutputTokens: 5000,
+        // coaching + observations 12件 + phase_summary + per-obs next_move を含むので更に余裕を持たせる。
+        maxOutputTokens: 6500,
         responseMimeType: "application/json",
         responseSchema: {
           type: "object",
@@ -1480,11 +1498,24 @@ ${text.slice(0, 25000)}
                 type: "object",
                 properties: {
                   quote: { type: "string" },
+                  timestamp: { type: "string" },   // 議事録上の時刻ラベル
+                  phase: { type: "string" },       // opening|hearing|proposal|closing|wrap
                   axis: { type: "string" },        // needs|proposal|trust|closing|intel
                   assessment: { type: "string" },  // strong|weak
                   why: { type: "string" },
+                  next_move: { type: "string" },   // weak のみ: 次回こう言うべきセリフ
                 },
                 required: ["quote", "axis", "assessment"],
+              },
+            },
+            phase_summary: {
+              type: "object",
+              properties: {
+                opening:  { type: "string" },
+                hearing:  { type: "string" },
+                proposal: { type: "string" },
+                closing:  { type: "string" },
+                wrap:     { type: "string" },
               },
             },
             overall: { type: "string" },
@@ -1732,6 +1763,7 @@ ${text.slice(0, 25000)}
       return false;
     };
 
+    const PHASES = ["opening", "hearing", "proposal", "closing", "wrap"] as const;
     let droppedFakeObs = 0;
     if (Array.isArray(obsRaw)) {
       parsed.observations = obsRaw
@@ -1741,6 +1773,8 @@ ${text.slice(0, 25000)}
           const axisRaw = typeof o.axis === "string" ? o.axis : "needs";
           const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
           const assessment = o.assessment === "strong" ? "strong" : "weak";
+          const phaseRaw = typeof o.phase === "string" ? o.phase : "hearing";
+          const phase = (PHASES as readonly string[]).includes(phaseRaw) ? phaseRaw : "hearing";
           const quote = String(o.quote || "").slice(0, 200);
           const verified = quoteInTranscript(quote);
           if (!verified) {
@@ -1750,14 +1784,31 @@ ${text.slice(0, 25000)}
           obsCounts[axis][assessment]++;
           return {
             quote,
+            timestamp: String(o.timestamp || "").slice(0, 30),
+            phase,
             axis,
             assessment,
             why: String(o.why || "").slice(0, 120),
+            // next_move は weak のみ採用 (strong に rewrite は不要)
+            next_move: assessment === "weak" ? String(o.next_move || "").slice(0, 200) : "",
           };
         })
-        .filter((o): o is { quote: string; axis: string; assessment: string; why: string } => !!o && !!o.quote);
+        .filter((o): o is { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string } => !!o && !!o.quote);
     } else {
       parsed.observations = [];
+    }
+
+    // phase_summary のサニタイズ
+    const psRaw = (parsed as { phase_summary?: unknown }).phase_summary;
+    if (psRaw && typeof psRaw === "object") {
+      const ps: Record<string, string> = {};
+      for (const p of PHASES) {
+        const v = (psRaw as Record<string, unknown>)[p];
+        if (typeof v === "string" && v.trim()) ps[p] = v.slice(0, 200);
+      }
+      parsed.phase_summary = ps;
+    } else {
+      parsed.phase_summary = {};
     }
 
     // coaching の quote も議事録に存在するか検証。捏造なら axis ごと丸ごとドロップ (一般論残留防止)。

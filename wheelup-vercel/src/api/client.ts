@@ -994,7 +994,18 @@ export interface MeetingScore {
   // 軸ごとの「この面談に固有」のコーチング (実際の発言引用 → 言い換え提案)。西村 FB 対応。
   coaching?: Partial<Record<"needs" | "proposal" | "trust" | "closing" | "intel", { quote?: string; issue?: string; rewrite?: string }>>;
   // 観察ファースト採点: AI が議事録から抜き出した具体的観察。スコアの根拠として表示。
-  observations?: Array<{ quote: string; axis: "needs" | "proposal" | "trust" | "closing" | "intel"; assessment: "strong" | "weak"; why?: string }>;
+  // timestamp/phase/next_move を含むので時系列タイムライン + 各観察に対する打ち手が出せる。
+  observations?: Array<{
+    quote: string;
+    timestamp?: string;
+    phase?: "opening" | "hearing" | "proposal" | "closing" | "wrap";
+    axis: "needs" | "proposal" | "trust" | "closing" | "intel";
+    assessment: "strong" | "weak";
+    why?: string;
+    next_move?: string;
+  }>;
+  // 商談フェーズごとの「何が良く・何が惜しかったか」(80字×5フェーズ)
+  phase_summary?: Partial<Record<"opening" | "hearing" | "proposal" | "closing" | "wrap", string>>;
   // サーバ側スコア再集計の監査ログ (観察と AI スコアが乖離した時に再計算した記録)
   _score_audit?: {
     ai_scores?: { needs: number; proposal: number; trust: number; closing: number; intel: number };
