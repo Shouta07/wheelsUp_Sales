@@ -1123,10 +1123,12 @@ async function scoreMeetingInternal(
 
   // リーダー (=小林) の過去面談を「教師データ」として注入。
   // これにより Gemini の汎用判断ではなく "小林流の採点基準" でスコアリングされる。
+  // ★ 6000 字の素の議事録を流し込むと「丁寧・長い・専門用語」のような表層パターンを学習してしまう。
+  //   そこで本文は 2500 字に絞り、代わりに observations を「ゴールド観察ライブラリ」として
+  //   構造化注入する (下記 goldObservations)。
   let leaderRefs = "";
-  let leaderRefsKey = ""; // キャッシュキー専用: ID + updated_at だけのコンパクト識別子
+  let leaderRefsKey = "";
   try {
-    // 5 件のリーダー面談を取得 (論理削除されたものは除外)。各議事録の本文を 6000 字まで参照。
     const { data: leaderRows } = await db.from("meeting_transcripts")
       .select("id, title, transcript_text, score_data, updated_at")
       .eq("is_leader", true)
@@ -1136,7 +1138,7 @@ async function scoreMeetingInternal(
     if (leaderRows && leaderRows.length > 0) {
       leaderRefs = leaderRows
         .map((r, i) => {
-          const body = ((r.transcript_text as string) || "").slice(0, 6000);
+          const body = ((r.transcript_text as string) || "").slice(0, 2500);
           const score = r.score_data as { scores?: Record<string, number>; total?: number } | null;
           const scoreLine = score?.scores
             ? `[リーダー自己採点: needs ${score.scores.needs} / proposal ${score.scores.proposal} / trust ${score.scores.trust} / closing ${score.scores.closing} / intel ${score.scores.intel}]`
@@ -1144,10 +1146,62 @@ async function scoreMeetingInternal(
           return `--- リーダー面談例 ${i + 1}: 「${r.title}」 ${scoreLine}\n${body}`;
         })
         .join("\n\n");
-      // キャッシュキーは ID + updated_at の組だけ (本文ハッシュより安定)。
       leaderRefsKey = leaderRows.map((r) => `${r.id}:${r.updated_at}`).sort().join("|");
     }
   } catch { /* ignore */ }
+
+  // ─── ゴールド観察ライブラリ (構造化教師データ) ────────────────
+  // リーダー自身の面談 + 「良い」と判定されたメンバー面談の observations から、
+  // strong/weak でタグ付け済みの観察を抽出して few-shot として注入する。
+  // これにより AI は「表層パターン (丁寧さ・長さ)」ではなく「具体行動の有無」を学習できる。
+  // 西村 FB「そもそもの学習データから精度の高いアウトプット出せてる?」に対する根本対応。
+  let goldObservations = "";
+  let goldObsKey = "";
+  try {
+    const { data: goldSrc } = await db.from("meeting_transcripts")
+      .select("id, title, score_data, is_leader, calibration, updated_at")
+      .or("is_leader.eq.true,calibration->>quality.eq.good")
+      .is("deleted_at", null)
+      .limit(20);
+    if (goldSrc && goldSrc.length > 0) {
+      type Obs = { quote: string; axis: string; assessment: string; why?: string };
+      const collected: Array<{ source: string; isLeader: boolean; o: Obs }> = [];
+      for (const m of goldSrc) {
+        const obs = (m.score_data as { observations?: Obs[] } | null)?.observations;
+        if (!Array.isArray(obs)) continue;
+        const title = ((m as { title?: string }).title || "面談").slice(0, 30);
+        for (const o of obs) {
+          if (!o?.quote || !o?.axis || !o?.assessment) continue;
+          collected.push({ source: title, isLeader: !!m.is_leader, o });
+        }
+      }
+      if (collected.length > 0) {
+        const AXES_GO = ["needs", "proposal", "trust", "closing", "intel"];
+        const lines: string[] = [];
+        for (const axis of AXES_GO) {
+          // strong はリーダー面談を優先・最大 3 件
+          const strongs = collected
+            .filter((c) => c.o.axis === axis && c.o.assessment === "strong")
+            .sort((a, b) => Number(b.isLeader) - Number(a.isLeader))
+            .slice(0, 3);
+          // weak は学びになる典型例を 1 件
+          const weaks = collected
+            .filter((c) => c.o.axis === axis && c.o.assessment === "weak")
+            .slice(0, 1);
+          if (strongs.length === 0 && weaks.length === 0) continue;
+          lines.push(`【${axis}】`);
+          for (const c of strongs) {
+            lines.push(`  ◎ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source}${c.isLeader ? "/リーダー" : ""})`);
+          }
+          for (const c of weaks) {
+            lines.push(`  △ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source})`);
+          }
+        }
+        goldObservations = lines.join("\n");
+        goldObsKey = goldSrc.map((m) => `${m.id}:${m.updated_at}`).sort().join("|");
+      }
+    }
+  } catch { /* observations 未生成のソースのみのケース */ }
 
   // リーダーが過去に他メンバー面談に残したコメント (leader_feedback) を学習材料として注入。
   // "リーダーはこの場面でこう指導している" を AI が踏まえて採点・改善案を出せるようにする。
@@ -1189,10 +1243,18 @@ async function scoreMeetingInternal(
 
       const formatOne = (r: typeof sorted[number]) => {
         const cal = r.calibration as { comment?: string; target_scores?: Record<string, number> };
-        const body = ((r.transcript_text as string) || "").slice(0, 2000);
+        // 本文は 2000 → 1200 字に削減。「印象パターン」より「構造化観察」優先のため。
+        const body = ((r.transcript_text as string) || "").slice(0, 1200);
         const cmt = cal.comment ? `リーダー所感: ${cal.comment}` : "";
         const tgt = cal.target_scores ? `参考スコア: ${JSON.stringify(cal.target_scores)}` : "";
-        return `[「${(r as { title?: string }).title || "面談"}」]\n${cmt}${tgt ? "\n" + tgt : ""}\n本文抜粋:\n${body}`;
+        // calibration 対象の observations が score_data にあれば、構造化観察も列挙する
+        const obs = (r.score_data as { observations?: Array<{ quote: string; axis: string; assessment: string; why?: string }> } | null)?.observations;
+        const obsBlock = Array.isArray(obs) && obs.length > 0
+          ? "\n抽出済み観察 (この面談の良し悪しの根拠):\n" + obs.slice(0, 8).map((o) =>
+              `  ${o.assessment === "strong" ? "◎" : "△"} [${o.axis}] 「${(o.quote || "").slice(0, 80)}」${o.why ? " — " + o.why.slice(0, 60) : ""}`
+            ).join("\n")
+          : "";
+        return `[「${(r as { title?: string }).title || "面談"}」]\n${cmt}${tgt ? "\n" + tgt : ""}${obsBlock}\n本文抜粋:\n${body}`;
       };
 
       const parts: string[] = [];
@@ -1212,7 +1274,7 @@ async function scoreMeetingInternal(
   // 本文の細かい改行差異や leader meeting 追加でキャッシュが頻繁に飛ぶのを防ぐ。
   // キャッシュキーに speaker filter + calibration も含める: 校正を変えたら必ず再採点される。
   const inputHash = createHash("sha256")
-    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}`)
+    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}`)
     .digest("hex");
 
   // (旧 inputHash は上に新版で置き換え済み)
@@ -1317,7 +1379,18 @@ async function scoreMeetingInternal(
 **Step 5 (coaching):** 各軸の weak の中で改善余地が最大のものを 1 件選び、quote/issue/rewrite を出す。
 ※ 一般論の coaching は強制で却下される (サーバ側で監査)。 weak observations の引用に紐づいた具体的なセリフだけを出す。
 
-## 参考: リーダー (小林) の面談例 (優れた技術の現れ方を掴むための参照。似せること自体は目的ではない)
+${goldObservations ? `## ⭐⭐ ゴールド観察ライブラリ (確認済み strong/weak 行動例・最優先で参照)
+リーダー自身の面談 + リーダーが「良い」と判定したメンバー面談から、過去の採点で
+**strong/weak タグ付け済み** の具体的観察を軸別に列挙します。
+これは "現場が実際に良い/悪いと判定した行動" のリスト。新しい面談の observation を作る際、
+これらと **同じ構造・同じレベル感** の strong/weak を抽出すること。
+教科書的な抽象例ではなく、ここに並ぶ具体的な発言パターンを基準にする。
+
+<GOLD_OBSERVATIONS>
+${goldObservations}
+</GOLD_OBSERVATIONS>
+
+` : ""}## 参考: リーダー (小林) の面談例 (流れ・呼吸感を掴むための参照。表層 (丁寧さ・長さ) ではなく、上の GOLD_OBSERVATIONS のような行動が議事録上どこで発火しているかを観察すること)
 <LEADER_REFERENCE>
 ${leaderRefs || "（リーダー面談データなし。下記ルーブリックの絶対基準のみで採点）"}
 </LEADER_REFERENCE>
