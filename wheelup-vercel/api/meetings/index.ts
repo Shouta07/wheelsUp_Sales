@@ -1286,11 +1286,26 @@ async function scoreMeetingInternal(
 **逆に、淡々とした面談でも条件を満たしていれば高得点になる**。
 採点は「印象」ではなく「観察可能な行動の有無」で決める。
 
-## 採点プロセス (順守):
-1. 各軸のルーブリック条件を 1 つずつチェックし、議事録に証拠があるか確認
-2. 証拠が無い条件は「未達成」としてカウント
-3. 達成した条件数に応じて 0〜10 を決める (達成 0 個=0-2点、半分=4-6点、ほぼ全部=8-10点)
-4. evidence には「証拠が満たした条件 / 満たせなかった条件」を必ず両方書く
+## 採点プロセス (順守・厳密に "観察 → 集計 → 採点" の順で):
+**Step 1 (観察強制):** 議事録から具体的観察 (observations) を **最低 12 件** 抽出。各観察に必須:
+  - quote: 議事録の実際の発言 (20〜80 字、改変・要約禁止)
+  - axis: needs / proposal / trust / closing / intel
+  - assessment: "strong" (下記ルーブリックの strong 条件を満たす) or "weak" (満たさない)
+  - why: なぜその判定か (50 字以内・条件名を参照)
+  ※ 各軸につき strong/weak 合わせて最低 2 件以上。
+  ※ **印象 (和やか・丁寧・長い) は strong にしない**。条件達成の事実のみ strong。
+
+**Step 2 (集計):** 各軸の strong / weak 件数から機械的に点を決める。
+  - strong 3+ & weak 0 → 9-10 点
+  - strong 2+ & strong が weak の 2 倍以上 → 7-8 点
+  - strong と weak が同数 → 5-6 点
+  - weak > strong → 3-4 点
+  - 観察ゼロ or weak のみ → 0-2 点
+
+**Step 3 (evidence):** その軸の strong/weak 件数を踏まえて「N strong / M weak: 〜が良かったが〜が惜しく X 点」と書く (100 字以内)。
+
+**Step 4 (coaching):** 各軸の weak の中で改善余地が最大のものを 1 件選び、quote/issue/rewrite を出す。
+※ 一般論の coaching は強制で却下される (サーバ側で監査)。 weak observations の引用に紐づいた具体的なセリフだけを出す。
 
 ## 参考: リーダー (小林) の面談例 (優れた技術の現れ方を掴むための参照。似せること自体は目的ではない)
 <LEADER_REFERENCE>
@@ -1416,15 +1431,24 @@ ${text.slice(0, 25000)}
 5. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
 6. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
-## JSON 形式:
+## JSON 形式 (observations が無いと採点が却下される):
 {
+  "observations": [
+    { "quote": "実際の発言20-80字", "axis": "needs",    "assessment": "weak",   "why": "1度しか掘れず3層 (strong条件) に届かず" },
+    { "quote": "実際の発言20-80字", "axis": "proposal", "assessment": "strong", "why": "具体企業名+マッチ理由を業界構造で説明" },
+    ...合計12件以上...
+  ],
   "scores": { "needs": 7, "proposal": 5, "trust": 8, "closing": 4, "intel": 6 },
   "overall": "ニーズの初動は良いが提案が単発で前進が弱い。信頼は高く土台はある。総合B：次は二軸提案と期限合意を意識すると一段上がる。",
   "evidence": {
-    "needs": "...", "proposal": "...", "trust": "...", "closing": "...", "intel": "..."
+    "needs":    "2 strong / 1 weak: 真因まで掘れた場面はあったが盲点提示なく 7 点",
+    "proposal": "...",
+    "trust":    "...",
+    "closing":  "...",
+    "intel":    "..."
   },
   "coaching": {
-    "needs":   { "quote": "この面談の実際の発言", "issue": "この場面の何が惜しい/良い", "rewrite": "次はこう言うと伸びる具体セリフ" },
+    "needs":   { "quote": "observations から weak 観察の引用", "issue": "なぜ条件未達か", "rewrite": "次回こう言う具体セリフ" },
     "proposal":{ "quote": "...", "issue": "...", "rewrite": "..." },
     "trust":   { "quote": "...", "issue": "...", "rewrite": "..." },
     "closing": { "quote": "...", "issue": "...", "rewrite": "..." },
@@ -1435,20 +1459,33 @@ ${text.slice(0, 25000)}
   ]
 }
 
-注: timestamp は議事録の該当発言の直前にある括弧内の時刻 (例: 午前10:05 / 午後06:23) をそのまま記載。後でユーザーが議事録該当箇所にジャンプするのに使う。` }] }],
+注:
+- observations の集計と scores が大きく食い違う場合、サーバ側で観察ベースの再計算値で上書きされる (AI が後から甘く付け直すのを防止)。
+- timestamp は議事録の該当発言の直前にある括弧内の時刻 (例: 午前10:05 / 午後06:23) をそのまま記載。後でユーザーが議事録該当箇所にジャンプするのに使う。` }] }],
       generationConfig: {
         // 採点の安定化: 0.5 → 0.3 で同じ議事録の揺れ幅を抑える
         // (creativity より consistency 優先。校正アンカーと組み合わせることで効く)
         temperature: 0.3,
         topP: 0.9,
-        // coaching (5軸×3要素) を足したので上限を引き上げ。途中切れで JSON 破損を防ぐ。
-        maxOutputTokens: 3600,
+        // coaching + observations 12件 を足したので上限を更に引き上げ。途中切れで JSON 破損を防ぐ。
+        maxOutputTokens: 5000,
         responseMimeType: "application/json",
-        // スキーマを最小限に絞る (フィールド多いと flash-lite が反復ループしやすいため)。
-        // scores + evidence + improvements の 3 つだけ。それ以外は別フィードバック画面で生成。
         responseSchema: {
           type: "object",
           properties: {
+            observations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  quote: { type: "string" },
+                  axis: { type: "string" },        // needs|proposal|trust|closing|intel
+                  assessment: { type: "string" },  // strong|weak
+                  why: { type: "string" },
+                },
+                required: ["quote", "axis", "assessment"],
+              },
+            },
             overall: { type: "string" },
             scores: {
               type: "object",
@@ -1662,6 +1699,86 @@ ${text.slice(0, 25000)}
       parsed.coaching = clean;
     } else {
       parsed.coaching = {};
+    }
+
+    // observations のサニタイズ + サーバ側 score 再集計 (西村 FB「精度に届いてない」根本対応)
+    // AI が観察を出した後にスコアを甘く付け直すのを防ぐため、
+    // observations の strong/weak 件数から機械的に再計算し、AI スコアと 2 点以上乖離したら上書き。
+    const AXES = ["needs", "proposal", "trust", "closing", "intel"] as const;
+    const obsRaw = (parsed as { observations?: unknown }).observations;
+    const obsCounts: Record<string, { strong: number; weak: number }> = {
+      needs:    { strong: 0, weak: 0 },
+      proposal: { strong: 0, weak: 0 },
+      trust:    { strong: 0, weak: 0 },
+      closing:  { strong: 0, weak: 0 },
+      intel:    { strong: 0, weak: 0 },
+    };
+    if (Array.isArray(obsRaw)) {
+      parsed.observations = obsRaw
+        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+        .slice(0, 30)
+        .map((o) => {
+          const axisRaw = typeof o.axis === "string" ? o.axis : "needs";
+          const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
+          const assessment = o.assessment === "strong" ? "strong" : "weak";
+          obsCounts[axis][assessment]++;
+          return {
+            quote: String(o.quote || "").slice(0, 200),
+            axis,
+            assessment,
+            why: String(o.why || "").slice(0, 120),
+          };
+        })
+        .filter((o) => o.quote);
+    } else {
+      parsed.observations = [];
+    }
+
+    // 観察集計からの再計算スコア
+    const recomputeAxisScore = (cs: { strong: number; weak: number }): number => {
+      const { strong, weak } = cs;
+      if (strong === 0 && weak === 0) return 0;
+      if (strong >= 3 && weak === 0) return 10;
+      if (strong >= 3 && weak <= 1) return 9;
+      if (strong >= 2 && strong >= weak * 2) return 8;
+      if (strong >= 1 && strong >= weak * 2) return 7;
+      if (strong === weak && strong >= 1) return 6;
+      if (strong === weak) return 5;
+      if (weak > strong && strong >= 1) return 4;
+      return 2;
+    };
+    if (Array.isArray(obsRaw) && obsRaw.length >= 5) {
+      // 観察数が一定以上ある時だけ再集計を適用 (観察が少なすぎる場合は AI スコアを信用)
+      const aiScores = { ...s };
+      const adjusted: Record<string, number> = {};
+      let adjustedCount = 0;
+      for (const axis of AXES) {
+        const recomp = recomputeAxisScore(obsCounts[axis]);
+        const aiScore = typeof s[axis] === "number" ? s[axis] : 0;
+        if (Math.abs(recomp - aiScore) >= 2) {
+          adjusted[axis] = recomp;
+          adjustedCount++;
+        } else {
+          adjusted[axis] = aiScore;
+        }
+      }
+      if (adjustedCount > 0) {
+        parsed.scores = adjusted;
+        // 監査情報: なぜスコアが変わったか確認できるよう保存
+        parsed._score_audit = {
+          ai_scores: aiScores,
+          observation_counts: obsCounts,
+          recomputed_scores: adjusted,
+          adjusted_axes: adjustedCount,
+          note: "観察集計と AI スコアが 2 点以上乖離した軸を観察ベースで上書き",
+        };
+        // total も再計算
+        parsed.total = AXES.reduce((acc, k) => acc + adjusted[k], 0);
+        const t = parsed.total as number;
+        parsed.grade = t >= 40 ? "S" : t >= 35 ? "A" : t >= 25 ? "B" : t >= 15 ? "C" : "D";
+      } else {
+        parsed._score_audit = { ai_scores: aiScores, observation_counts: obsCounts, adjusted_axes: 0, note: "AI スコアと観察集計が一致" };
+      }
     }
 
     // 旧スコアを score_history に退避してから更新 (成長推移を残す・面談メタも snapshot)

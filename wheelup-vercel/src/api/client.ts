@@ -993,6 +993,16 @@ export interface MeetingScore {
   evidence?: { needs?: string; proposal?: string; trust?: string; closing?: string; intel?: string };
   // 軸ごとの「この面談に固有」のコーチング (実際の発言引用 → 言い換え提案)。西村 FB 対応。
   coaching?: Partial<Record<"needs" | "proposal" | "trust" | "closing" | "intel", { quote?: string; issue?: string; rewrite?: string }>>;
+  // 観察ファースト採点: AI が議事録から抜き出した具体的観察。スコアの根拠として表示。
+  observations?: Array<{ quote: string; axis: "needs" | "proposal" | "trust" | "closing" | "intel"; assessment: "strong" | "weak"; why?: string }>;
+  // サーバ側スコア再集計の監査ログ (観察と AI スコアが乖離した時に再計算した記録)
+  _score_audit?: {
+    ai_scores?: { needs: number; proposal: number; trust: number; closing: number; intel: number };
+    observation_counts?: Record<string, { strong: number; weak: number }>;
+    recomputed_scores?: Record<string, number>;
+    adjusted_axes?: number;
+    note?: string;
+  };
   target_speaker?: string;            // 採点対象に絞り込んだ発話者名
   detected_speakers?: string[];       // 議事録から検出された全話者 (透明性確認用)
   speaker_filter_applied?: boolean;   // 実際に発話者フィルタが効いたか

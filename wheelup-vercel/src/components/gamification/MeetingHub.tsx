@@ -893,6 +893,56 @@ function MeetingEntry({
             </div>
           )}
 
+          {/* 観察ファースト採点の根拠 (西村 FB「精度に届いてない」対応: スコアの透明性を担保) */}
+          {score?.observations && score.observations.length > 0 && (
+            <details className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+              <summary className="cursor-pointer select-none text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">
+                🔬 採点の根拠 (抽出された観察 {score.observations.length} 件)
+                {score._score_audit && typeof score._score_audit.adjusted_axes === "number" && score._score_audit.adjusted_axes > 0 && (
+                  <span className="ml-2 text-[9px] font-bold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5 normal-case tracking-normal">
+                    観察集計でスコアを {score._score_audit.adjusted_axes} 軸補正
+                  </span>
+                )}
+              </summary>
+              <p className="text-[10px] text-slate-500 mt-1.5 mb-2 leading-relaxed">
+                AI は「印象→点数」ではなく「議事録から具体観察を抽出→strong/weak 集計→点数」の順で採点しています。<br />
+                AI スコアと観察集計が 2 点以上ズレた軸はサーバ側で観察ベースの値に上書きされます (甘採点防止)。
+              </p>
+              <div className="space-y-2 mt-2">
+                {DIMS.map(({ key, label, color }) => {
+                  const obs = (score.observations || []).filter((o) => o.axis === key);
+                  if (obs.length === 0) return null;
+                  const strongCount = obs.filter((o) => o.assessment === "strong").length;
+                  const weakCount = obs.filter((o) => o.assessment === "weak").length;
+                  return (
+                    <div key={key} className="rounded-lg bg-white border border-slate-200 p-2">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "20", color }}>
+                          {label}
+                        </span>
+                        <span className="text-[9px] font-bold text-green-700 bg-green-50 rounded px-1.5">◎ {strongCount}</span>
+                        <span className="text-[9px] font-bold text-red-700 bg-red-50 rounded px-1.5">△ {weakCount}</span>
+                      </div>
+                      <ul className="space-y-1">
+                        {obs.map((o, idx) => (
+                          <li key={idx} className="text-[10px] leading-relaxed flex items-start gap-1.5">
+                            <span className={`shrink-0 mt-[1px] inline-block w-3.5 text-center font-extrabold rounded ${
+                              o.assessment === "strong" ? "text-green-700 bg-green-50" : "text-red-700 bg-red-50"
+                            }`}>{o.assessment === "strong" ? "◎" : "△"}</span>
+                            <span className="flex-1">
+                              <span className="text-[#4b4b4b] font-bold">「{o.quote}」</span>
+                              {o.why && <span className="text-slate-500 ml-1">— {o.why}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          )}
+
           {/* Leader would */}
           {score?.leader_would && (
             <div className="rounded-xl bg-duo-purple/5 border border-duo-purple/20 p-3">
