@@ -903,6 +903,11 @@ function MeetingEntry({
                     観察集計でスコアを {score._score_audit.adjusted_axes} 軸補正
                   </span>
                 )}
+                {score._score_audit && ((score._score_audit.dropped_fake_observations || 0) + (score._score_audit.dropped_fake_coaching || 0)) > 0 && (
+                  <span className="ml-2 text-[9px] font-bold text-red-700 bg-red-100 rounded px-1.5 py-0.5 normal-case tracking-normal">
+                    捏造引用 {(score._score_audit.dropped_fake_observations || 0) + (score._score_audit.dropped_fake_coaching || 0)} 件を除外
+                  </span>
+                )}
               </summary>
               <p className="text-[10px] text-slate-500 mt-1.5 mb-2 leading-relaxed">
                 AI は「印象→点数」ではなく「議事録から具体観察を抽出→strong/weak 集計→点数」の順で採点しています。<br />

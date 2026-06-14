@@ -1001,6 +1001,8 @@ export interface MeetingScore {
     observation_counts?: Record<string, { strong: number; weak: number }>;
     recomputed_scores?: Record<string, number>;
     adjusted_axes?: number;
+    dropped_fake_observations?: number;
+    dropped_fake_coaching?: number;
     note?: string;
   };
   target_speaker?: string;            // 採点対象に絞り込んだ発話者名

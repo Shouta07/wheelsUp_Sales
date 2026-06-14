@@ -1461,6 +1461,7 @@ ${text.slice(0, 25000)}
 
 注:
 - observations の集計と scores が大きく食い違う場合、サーバ側で観察ベースの再計算値で上書きされる (AI が後から甘く付け直すのを防止)。
+- **quote は議事録に存在する発言の連続 10 文字以上をそのまま含めること**。要約・改変・捏造はサーバ側の照合で検出され、その observation / coaching は丸ごと削除される。
 - timestamp は議事録の該当発言の直前にある括弧内の時刻 (例: 午前10:05 / 午後06:23) をそのまま記載。後でユーザーが議事録該当箇所にジャンプするのに使う。` }] }],
       generationConfig: {
         // 採点の安定化: 0.5 → 0.3 で同じ議事録の揺れ幅を抑える
@@ -1713,6 +1714,25 @@ ${text.slice(0, 25000)}
       closing:  { strong: 0, weak: 0 },
       intel:    { strong: 0, weak: 0 },
     };
+
+    // 引用ハルシネーション検出: 議事録に存在しない quote (AI が捏造した発言) を排除する。
+    // 西村 FB「当たり前のこと言われてる感」の根本要因の 1 つは捏造引用に基づく一般論コーチング。
+    // 議事録テキストを正規化 (空白・記号除去) し、quote から連続 10 文字以上のスニペットが含まれるか確認。
+    const normalize = (s: string) => s.replace(/[\s　\p{P}\p{S}]+/gu, "").toLowerCase();
+    const normalizedTranscript = normalize(text || "");
+    const quoteInTranscript = (q: string): boolean => {
+      if (!q) return false;
+      const nq = normalize(q);
+      if (nq.length < 6) return false; // 短すぎる引用は誤判定が多いので素通り (UI で判定難)
+      // 連続 10 文字スニペット (10 字 < nq の場合は nq 全体)
+      const win = Math.min(10, nq.length);
+      for (let i = 0; i + win <= nq.length; i++) {
+        if (normalizedTranscript.includes(nq.slice(i, i + win))) return true;
+      }
+      return false;
+    };
+
+    let droppedFakeObs = 0;
     if (Array.isArray(obsRaw)) {
       parsed.observations = obsRaw
         .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
@@ -1721,17 +1741,36 @@ ${text.slice(0, 25000)}
           const axisRaw = typeof o.axis === "string" ? o.axis : "needs";
           const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
           const assessment = o.assessment === "strong" ? "strong" : "weak";
+          const quote = String(o.quote || "").slice(0, 200);
+          const verified = quoteInTranscript(quote);
+          if (!verified) {
+            droppedFakeObs++;
+            return null; // 捏造引用は集計にもカウントしない
+          }
           obsCounts[axis][assessment]++;
           return {
-            quote: String(o.quote || "").slice(0, 200),
+            quote,
             axis,
             assessment,
             why: String(o.why || "").slice(0, 120),
           };
         })
-        .filter((o) => o.quote);
+        .filter((o): o is { quote: string; axis: string; assessment: string; why: string } => !!o && !!o.quote);
     } else {
       parsed.observations = [];
+    }
+
+    // coaching の quote も議事録に存在するか検証。捏造なら axis ごと丸ごとドロップ (一般論残留防止)。
+    let droppedFakeCoaching = 0;
+    if (parsed.coaching && typeof parsed.coaching === "object") {
+      const c = parsed.coaching as Record<string, { quote: string; issue: string; rewrite: string }>;
+      for (const axis of AXES) {
+        const item = c[axis];
+        if (item && item.quote && !quoteInTranscript(item.quote)) {
+          delete c[axis];
+          droppedFakeCoaching++;
+        }
+      }
     }
 
     // 観察集計からの再計算スコア
@@ -1770,6 +1809,8 @@ ${text.slice(0, 25000)}
           observation_counts: obsCounts,
           recomputed_scores: adjusted,
           adjusted_axes: adjustedCount,
+          dropped_fake_observations: droppedFakeObs,
+          dropped_fake_coaching: droppedFakeCoaching,
           note: "観察集計と AI スコアが 2 点以上乖離した軸を観察ベースで上書き",
         };
         // total も再計算
@@ -1777,8 +1818,23 @@ ${text.slice(0, 25000)}
         const t = parsed.total as number;
         parsed.grade = t >= 40 ? "S" : t >= 35 ? "A" : t >= 25 ? "B" : t >= 15 ? "C" : "D";
       } else {
-        parsed._score_audit = { ai_scores: aiScores, observation_counts: obsCounts, adjusted_axes: 0, note: "AI スコアと観察集計が一致" };
+        parsed._score_audit = {
+          ai_scores: aiScores,
+          observation_counts: obsCounts,
+          adjusted_axes: 0,
+          dropped_fake_observations: droppedFakeObs,
+          dropped_fake_coaching: droppedFakeCoaching,
+          note: "AI スコアと観察集計が一致",
+        };
       }
+    } else if (droppedFakeObs > 0 || droppedFakeCoaching > 0) {
+      // 観察が少なくスコア再計算は行わない場合でも、引用検証の結果は記録する。
+      parsed._score_audit = {
+        adjusted_axes: 0,
+        dropped_fake_observations: droppedFakeObs,
+        dropped_fake_coaching: droppedFakeCoaching,
+        note: "引用ハルシネーション検出 (議事録に無い発言を排除)",
+      };
     }
 
     // 旧スコアを score_history に退避してから更新 (成長推移を残す・面談メタも snapshot)
