@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
@@ -11,6 +11,8 @@ import {
   calibrateMeeting,
   bulkRescore,
   autoCalibrate,
+  fetchTrainingHealth,
+  type TrainingHealth,
   scoreMeeting,
   manualScoreMeeting,
   saveMeetingOutcome,
@@ -122,6 +124,19 @@ export default function MeetingHub() {
   const [bulkRescoreState, setBulkRescoreState] = useState<{ running: boolean; done: number; total: number; lastError?: string } | null>(null);
   // 自動校正の結果メッセージ
   const [autoCalState, setAutoCalState] = useState<{ running: boolean; message?: string } | null>(null);
+
+  // 学習データ健全性 (リーダー専用パネル) ── ゴールド観察ライブラリの軸別カバレッジ可視化
+  const [trainingHealth, setTrainingHealth] = useState<TrainingHealth | null>(null);
+  const refreshTrainingHealth = useCallback(async () => {
+    try {
+      setTrainingHealth(await fetchTrainingHealth());
+    } catch { /* table 未マイグレーション or 権限なしなら静かにスキップ */ }
+  }, []);
+  useEffect(() => {
+    if (isLeaderRole(currentUser)) {
+      void refreshTrainingHealth();
+    }
+  }, [currentUser, refreshTrainingHealth]);
   // Gemini クォータ枯渇 / 過負荷を検出した場合に UI に持続表示するためのフラグ。
   const [aiUnavailable, setAiUnavailable] = useState<null | "quota" | "overloaded">(null);
 
@@ -389,6 +404,52 @@ export default function MeetingHub() {
             <div className="text-[10px] font-bold text-purple-700 bg-white border border-purple-200 rounded-lg px-2 py-1">
               ✅ 完了: {bulkRescoreState.done}/{bulkRescoreState.total} 件を再採点しました
               {bulkRescoreState.lastError && <span className="block text-red-600 mt-1">エラー: {bulkRescoreState.lastError}</span>}
+            </div>
+          )}
+
+          {/* ③ 学習データ健全性 (ゴールド観察ライブラリの軸別カバレッジ可視化) */}
+          {trainingHealth && (
+            <div className="pt-2 border-t border-purple-200">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex-1">
+                  <p className="text-[11px] font-extrabold text-[#4b4b4b]">③ 学習データ健全性 (ゴールド観察ライブラリ)</p>
+                  <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                    リーダー面談 + 「良い」マーク面談 計 {trainingHealth.summary.source_meetings} 件から、
+                    strong 観察 {trainingHealth.summary.total_strong} 件 / weak 観察 {trainingHealth.summary.total_weak} 件 を抽出して教師データに使用中。
+                    軸ごとのカバレッジを下に表示。「薄い」軸は採点精度が安定しないため、その軸が顕著な面談を 1 件校正してください。
+                  </p>
+                </div>
+                <button
+                  onClick={() => void refreshTrainingHealth()}
+                  className="shrink-0 text-[10px] font-extrabold px-2 py-1.5 rounded-lg bg-white border border-purple-300 text-purple-700 hover:bg-purple-100"
+                  title="再読込"
+                >🔄</button>
+              </div>
+              <div className="grid grid-cols-5 gap-1 mt-1.5">
+                {trainingHealth.axes.map((a) => {
+                  const label = { needs: "ニーズ", proposal: "提案", trust: "信頼", closing: "前進", intel: "情報" }[a.axis];
+                  const bg = a.status === "good" ? "bg-green-100 border-green-400" : a.status === "fair" ? "bg-amber-100 border-amber-400" : "bg-red-100 border-red-400";
+                  const fg = a.status === "good" ? "text-green-800" : a.status === "fair" ? "text-amber-800" : "text-red-800";
+                  return (
+                    <div key={a.axis} className={`rounded-lg border-2 p-1.5 text-center ${bg}`}>
+                      <div className={`text-[10px] font-extrabold ${fg}`}>{label}</div>
+                      <div className="text-[10px] font-bold text-[#4b4b4b] tabular-nums mt-0.5">
+                        ◎ {a.strong} / △ {a.weak}
+                      </div>
+                      <div className={`text-[9px] font-extrabold ${fg} mt-0.5`}>
+                        {a.status === "good" ? "充実" : a.status === "fair" ? "標準" : "薄い"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {trainingHealth.suggestions.length > 0 && (
+                <ul className="mt-2 space-y-0.5">
+                  {trainingHealth.suggestions.map((s, idx) => (
+                    <li key={idx} className="text-[10px] font-bold text-purple-800 leading-relaxed">・ {s}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
         </div>

@@ -70,6 +70,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (segments[0] === "auto-calibrate" && req.method === "POST") {
       return await autoCalibrate(db, req, res);
     }
+    // --- /api/meetings/training-health (学習データの軸別カバレッジ可視化) ---
+    if (segments[0] === "training-health" && req.method === "GET") {
+      return await trainingHealth(db, res);
+    }
     // --- /api/meetings/drive-import (ミモが Drive に格納する議事録を取り込み) ---
     if (segments[0] === "drive-import" && req.method === "POST") {
       return await driveImport(db, req, res);
@@ -448,6 +452,83 @@ async function bulkRescore(
  *   - 下位 M 件 (default 2) を「悪い面談」アンカーに自動登録
  * 既存の calibration があれば上書きしない (手動マークを尊重)。
  */
+/**
+ * /api/meetings/training-health
+ * ゴールド観察ライブラリの軸別カバレッジを返す。リーダーが「どの軸の教師データが
+ * 薄いか」を一目で把握し、補強すべき面談を判断するための可視化エンドポイント。
+ * 西村 FB「学習データから精度の高い出力出てる?」への運用面の答え。
+ */
+async function trainingHealth(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  res: VercelResponse,
+) {
+  type Obs = { quote: string; axis: string; assessment: string };
+  const AXES = ["needs", "proposal", "trust", "closing", "intel"] as const;
+
+  const counts: Record<string, { strong: number; weak: number }> = {
+    needs:    { strong: 0, weak: 0 },
+    proposal: { strong: 0, weak: 0 },
+    trust:    { strong: 0, weak: 0 },
+    closing:  { strong: 0, weak: 0 },
+    intel:    { strong: 0, weak: 0 },
+  };
+  let sourceMeetings = 0;
+  let leaderMeetings = 0;
+  let calibratedGood = 0;
+  let calibratedBad = 0;
+
+  try {
+    const { data: rows } = await db.from("meeting_transcripts")
+      .select("id, title, score_data, is_leader, calibration")
+      .or("is_leader.eq.true,calibration->>quality.eq.good,calibration->>quality.eq.bad")
+      .is("deleted_at", null)
+      .limit(50);
+
+    if (rows) {
+      for (const r of rows) {
+        sourceMeetings++;
+        if (r.is_leader) leaderMeetings++;
+        const q = (r.calibration as { quality?: string } | null)?.quality;
+        if (q === "good") calibratedGood++;
+        if (q === "bad") calibratedBad++;
+        const obs = (r.score_data as { observations?: Obs[] } | null)?.observations;
+        if (!Array.isArray(obs)) continue;
+        for (const o of obs) {
+          if (!o?.quote || !o?.axis || !o?.assessment) continue;
+          if (!(AXES as readonly string[]).includes(o.axis)) continue;
+          const a = o.assessment === "strong" ? "strong" : "weak";
+          counts[o.axis][a]++;
+        }
+      }
+    }
+  } catch { /* テーブル未マイグレーション時はゼロ返す */ }
+
+  // 軸ごとの健全性判定: strong >= 3 かつ weak >= 1 で "充実"
+  const axesHealth = AXES.map((axis) => {
+    const c = counts[axis];
+    const status = c.strong >= 3 && c.weak >= 1
+      ? "good"
+      : c.strong + c.weak >= 2 ? "fair" : "thin";
+    return { axis, strong: c.strong, weak: c.weak, status };
+  });
+  const thinAxes = axesHealth.filter((a) => a.status === "thin").map((a) => a.axis);
+
+  return res.json({
+    summary: {
+      source_meetings: sourceMeetings,
+      leader_meetings: leaderMeetings,
+      calibrated_good: calibratedGood,
+      calibrated_bad: calibratedBad,
+      total_strong: AXES.reduce((acc, a) => acc + counts[a].strong, 0),
+      total_weak: AXES.reduce((acc, a) => acc + counts[a].weak, 0),
+    },
+    axes: axesHealth,
+    suggestions: thinAxes.length === 0
+      ? ["全軸で充実 (strong 3+ かつ weak 1+)。引き続き定期的に面談を校正してください。"]
+      : thinAxes.map((a) => `【${a}】軸の strong/weak 観察が薄い。${a} 軸で良い/悪い場面が顕著な面談を 1 件、校正でマークしてください。`),
+  });
+}
+
 async function autoCalibrate(
   db: ReturnType<typeof getSupabaseAdmin>,
   req: VercelRequest,

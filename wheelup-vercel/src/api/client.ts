@@ -1097,6 +1097,23 @@ export async function bulkRescore(opts: { offset?: number; limit?: number; force
   return request(`/meetings/bulk-rescore`, { method: "POST", body: JSON.stringify(opts) });
 }
 
+// 学習データ健全性: 軸別 strong/weak 観察数 + 補強提案 (リーダー可視化用)
+export type TrainingHealth = {
+  summary: {
+    source_meetings: number;
+    leader_meetings: number;
+    calibrated_good: number;
+    calibrated_bad: number;
+    total_strong: number;
+    total_weak: number;
+  };
+  axes: Array<{ axis: "needs" | "proposal" | "trust" | "closing" | "intel"; strong: number; weak: number; status: "good" | "fair" | "thin" }>;
+  suggestions: string[];
+};
+export async function fetchTrainingHealth(): Promise<TrainingHealth> {
+  return request(`/meetings/training-health`);
+}
+
 // 自動校正: リーダー面談の上位/下位を自動でアンカー登録 (リーダー専用)
 export async function autoCalibrate(opts: { top?: number; bottom?: number; overwrite?: boolean } = {}): Promise<{
   ok: boolean;
