@@ -954,12 +954,17 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* 商談タイムライン: フェーズ別の◎/△/打ち手 (西村 FB「全体のどこがどう良く悪かったか + 打ち手」対応) */}
+          {/* 商談タイムライン: 議事録上の時系列順に ◎/△/打ち手 を並べる
+              西村 FB「議事録ベースで時間別のフィードバックが返ってきて欲しい」対応:
+              - サーバ側で観察を議事録の出現位置でソート済 (AI の順番ミスを補正)
+              - タイムスタンプは議事録の実テキストから直接抽出 (AI 任意フォーマットを補正)
+              - 左列にタイムスタンプを固定幅で並べ、横向きの timeline rail として可視化
+              - フェーズが切り替わるところに区切りラベルを挿入 */}
           {score?.observations && score.observations.length > 0 && (
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
               <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mb-2">
                 <span className="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">
-                  🧭 商談タイムライン ({score.observations.length} 場面)
+                  🧭 商談タイムライン ({score.observations.length} 場面・議事録時系列順)
                 </span>
                 {score._score_audit && typeof score._score_audit.adjusted_axes === "number" && score._score_audit.adjusted_axes > 0 && (
                   <span className="text-[9px] font-bold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
@@ -973,90 +978,90 @@ function MeetingEntry({
                 )}
               </div>
               <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
-                冒頭 → ヒアリング → 提案 → クロージング → 振り返りの順で、◎ 良かった場面・△ 惜しかった場面と、△ には次回こう言うべきという「打ち手」を表示します。引用は議事録に存在するかサーバ側で照合済み。
+                議事録の出現順に並ぶ商談フィードバックです。タイムスタンプをクリックで議事録の該当箇所にジャンプ。
+                各場面は ◎ 良かった / △ 惜しかった の判定。△ には次回こう言うべき具体セリフが付きます。
               </p>
               {(() => {
-                const PHASE_DEFS: Array<{ key: NonNullable<NonNullable<typeof score.observations>[number]["phase"]>; label: string; emoji: string }> = [
-                  { key: "opening",  label: "冒頭",         emoji: "🚪" },
-                  { key: "hearing",  label: "ヒアリング",   emoji: "👂" },
-                  { key: "proposal", label: "提案",         emoji: "📋" },
-                  { key: "closing",  label: "クロージング", emoji: "🎯" },
-                  { key: "wrap",     label: "振り返り",     emoji: "📝" },
-                ];
+                const PHASE_META: Record<string, { label: string; emoji: string }> = {
+                  opening:  { label: "冒頭",         emoji: "🚪" },
+                  hearing:  { label: "ヒアリング",   emoji: "👂" },
+                  proposal: { label: "提案",         emoji: "📋" },
+                  closing:  { label: "クロージング", emoji: "🎯" },
+                  wrap:     { label: "振り返り",     emoji: "📝" },
+                };
+                const obsList = score.observations || [];
+                let lastPhase = "";
                 return (
-                  <div className="space-y-3">
-                    {PHASE_DEFS.map(({ key: pKey, label: pLabel, emoji: pEmoji }) => {
-                      const phaseObs = (score.observations || []).filter((o) => (o.phase || "hearing") === pKey);
-                      const phaseNote = score.phase_summary?.[pKey];
-                      if (phaseObs.length === 0 && !phaseNote) return null;
-                      const phaseStrong = phaseObs.filter((o) => o.assessment === "strong").length;
-                      const phaseWeak = phaseObs.filter((o) => o.assessment === "weak").length;
+                  <ol className="relative border-l-2 border-slate-200 ml-2 space-y-1">
+                    {obsList.map((o, idx) => {
+                      const dim = DIMS.find((d) => d.key === o.axis);
+                      const isStrong = o.assessment === "strong";
+                      const phase = o.phase || "hearing";
+                      const showPhaseHeader = phase !== lastPhase;
+                      lastPhase = phase;
+                      const meta = PHASE_META[phase] || PHASE_META.hearing;
+                      const phaseNote = showPhaseHeader ? score.phase_summary?.[phase] : "";
                       return (
-                        <div key={pKey} className="rounded-lg bg-white border border-slate-200 overflow-hidden">
-                          <div className="flex items-center gap-2 bg-slate-100 px-2.5 py-1.5 border-b border-slate-200">
-                            <span className="text-[11px] font-extrabold text-slate-700">{pEmoji} {pLabel}</span>
-                            {phaseObs.length > 0 && (
-                              <>
-                                <span className="text-[9px] font-bold text-green-700 bg-green-50 rounded px-1.5">◎ {phaseStrong}</span>
-                                <span className="text-[9px] font-bold text-red-700 bg-red-50 rounded px-1.5">△ {phaseWeak}</span>
-                              </>
-                            )}
-                          </div>
-                          {phaseNote && (
-                            <div className="px-2.5 py-1.5 bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-600 leading-relaxed">
-                              {phaseNote}
+                        <li key={idx} className="relative pl-3">
+                          {showPhaseHeader && (
+                            <div className="my-2 -ml-5 pl-3 py-1 bg-slate-100 rounded border-l-4 border-slate-400">
+                              <div className="text-[10px] font-extrabold text-slate-700">
+                                {meta.emoji} {meta.label}
+                              </div>
+                              {phaseNote && (
+                                <div className="text-[10px] font-bold text-slate-600 leading-relaxed mt-0.5">
+                                  {phaseNote}
+                                </div>
+                              )}
                             </div>
                           )}
-                          {phaseObs.length > 0 && (
-                            <ul className="divide-y divide-slate-100">
-                              {phaseObs.map((o, idx) => {
-                                const dim = DIMS.find((d) => d.key === o.axis);
-                                const isStrong = o.assessment === "strong";
-                                return (
-                                  <li key={idx} className="px-2.5 py-2">
-                                    <div className="flex items-start gap-2">
-                                      <span className={`shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full font-extrabold text-[11px] ${
-                                        isStrong ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"
-                                      }`}>{isStrong ? "◎" : "△"}</span>
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                                          {dim && (
-                                            <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: dim.color + "20", color: dim.color }}>
-                                              {dim.label}
-                                            </span>
-                                          )}
-                                          {o.timestamp && (
-                                            <button
-                                              onClick={() => jumpToTranscript(o.quote, m.transcript_text || "")}
-                                              className="text-[9px] font-bold text-slate-500 hover:text-slate-900 underline tabular-nums"
-                                              title="議事録の該当箇所にジャンプ"
-                                            >
-                                              {o.timestamp}
-                                            </button>
-                                          )}
-                                        </div>
-                                        <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">
-                                          「{o.quote}」
-                                        </p>
-                                        {o.why && (
-                                          <p className="text-[10px] text-slate-500 leading-relaxed mt-0.5">— {o.why}</p>
-                                        )}
-                                        {!isStrong && o.next_move && (
-                                          <p className="mt-1 text-[10px] font-bold text-green-700 leading-relaxed bg-green-50 border border-green-200 rounded px-1.5 py-1">
-                                            ✅ 次回はこう：「{o.next_move}」
-                                          </p>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                        </div>
+                          <span className={`absolute -left-[7px] top-2 w-3 h-3 rounded-full border-2 ${
+                            isStrong ? "bg-green-400 border-green-600" : "bg-red-400 border-red-600"
+                          }`} />
+                          <div className="bg-white border border-slate-200 rounded-lg p-2 mb-1">
+                            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                              {o.timestamp ? (
+                                <button
+                                  onClick={() => jumpToTranscript(o.quote, m.transcript_text || "")}
+                                  className="text-[10px] font-extrabold tabular-nums text-slate-700 bg-slate-100 hover:bg-slate-200 rounded px-1.5 py-0.5 underline"
+                                  title="議事録の該当箇所にジャンプ"
+                                >
+                                  ⏱ {o.timestamp}
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => jumpToTranscript(o.quote, m.transcript_text || "")}
+                                  className="text-[10px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 rounded px-1.5 py-0.5 underline"
+                                  title="議事録の該当箇所にジャンプ"
+                                >
+                                  📍 場面 #{idx + 1}
+                                </button>
+                              )}
+                              <span className={`text-[10px] font-extrabold rounded px-1.5 py-0.5 ${
+                                isStrong ? "text-green-700 bg-green-50" : "text-red-700 bg-red-50"
+                              }`}>{isStrong ? "◎ 良かった" : "△ 惜しかった"}</span>
+                              {dim && (
+                                <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: dim.color + "20", color: dim.color }}>
+                                  {dim.label}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">
+                              「{o.quote}」
+                            </p>
+                            {o.why && (
+                              <p className="text-[10px] text-slate-500 leading-relaxed mt-0.5">— {o.why}</p>
+                            )}
+                            {!isStrong && o.next_move && (
+                              <p className="mt-1.5 text-[10px] font-bold text-green-700 leading-relaxed bg-green-50 border border-green-200 rounded px-1.5 py-1">
+                                ✅ 次回はこう：「{o.next_move}」
+                              </p>
+                            )}
+                          </div>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ol>
                 );
               })()}
             </div>

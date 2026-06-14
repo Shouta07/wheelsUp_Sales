@@ -1905,49 +1905,89 @@ ${text.slice(0, 25000)}
     // 議事録テキストを正規化 (空白・記号除去) し、quote から連続 10 文字以上のスニペットが含まれるか確認。
     const normalize = (s: string) => s.replace(/[\s　\p{P}\p{S}]+/gu, "").toLowerCase();
     const normalizedTranscript = normalize(text || "");
-    const quoteInTranscript = (q: string): boolean => {
-      if (!q) return false;
-      const nq = normalize(q);
-      if (nq.length < 6) return false; // 短すぎる引用は誤判定が多いので素通り (UI で判定難)
-      // 連続 10 文字スニペット (10 字 < nq の場合は nq 全体)
-      const win = Math.min(10, nq.length);
-      for (let i = 0; i + win <= nq.length; i++) {
-        if (normalizedTranscript.includes(nq.slice(i, i + win))) return true;
+
+    // 正規化テキストの位置 → 生テキストの位置 を逆引きするマップ。
+    // (タイムスタンプ抽出と時系列ソートに使用する)
+    const rawText = text || "";
+    const normToRawIdx: number[] = [];
+    {
+      let j = 0;
+      for (let i = 0; i < rawText.length; i++) {
+        // normalize と同じ条件で「残る文字」だけインデックスに登録
+        const ch = rawText[i];
+        if (!/[\s　\p{P}\p{S}]/u.test(ch)) {
+          normToRawIdx[j++] = i;
+        }
       }
-      return false;
+    }
+
+    // quote が議事録にあれば normalized 位置を返す。なければ -1。
+    const positionOf = (q: string): number => {
+      if (!q) return -1;
+      const nq = normalize(q);
+      if (nq.length < 6) return -1;
+      const win = Math.min(10, nq.length);
+      let best = -1;
+      for (let i = 0; i + win <= nq.length; i++) {
+        const idx = normalizedTranscript.indexOf(nq.slice(i, i + win));
+        if (idx !== -1 && (best === -1 || idx < best)) best = idx;
+      }
+      return best;
+    };
+    const quoteInTranscript = (q: string): boolean => positionOf(q) !== -1;
+
+    // 議事録の生テキストから、指定位置の直前にあるタイムスタンプを抽出する。
+    // 形式: "午前 10:05" "午後 06:23" "10:05:30" "[00:10:05]" "10:05" 等の混在に対応。
+    // AI が出した timestamp を盲信せず、議事録の実テキストから引き直す (時系列精度の担保)。
+    const TIMESTAMP_RE = /(午[前後]\s*\d{1,2}[:：]\d{1,2}(?:[:：]\d{1,2})?|\d{1,2}[:：]\d{1,2}[:：]\d{1,2}|\[?\d{1,2}[:：]\d{1,2}\]?)/g;
+    const extractNearestTimestamp = (normPos: number): string => {
+      if (normPos < 0) return "";
+      const rawPos = normToRawIdx[normPos] ?? -1;
+      if (rawPos < 0) return "";
+      const window = rawText.slice(Math.max(0, rawPos - 400), rawPos);
+      const matches = window.match(TIMESTAMP_RE);
+      if (!matches || matches.length === 0) return "";
+      // 直近 (= 一番後ろ) のタイムスタンプを採用
+      return matches[matches.length - 1].replace(/[[\]]/g, "").trim();
     };
 
     const PHASES = ["opening", "hearing", "proposal", "closing", "wrap"] as const;
     let droppedFakeObs = 0;
     if (Array.isArray(obsRaw)) {
-      parsed.observations = obsRaw
-        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
-        .slice(0, 30)
-        .map((o) => {
-          const axisRaw = typeof o.axis === "string" ? o.axis : "needs";
-          const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
-          const assessment = o.assessment === "strong" ? "strong" : "weak";
-          const phaseRaw = typeof o.phase === "string" ? o.phase : "hearing";
-          const phase = (PHASES as readonly string[]).includes(phaseRaw) ? phaseRaw : "hearing";
-          const quote = String(o.quote || "").slice(0, 200);
-          const verified = quoteInTranscript(quote);
-          if (!verified) {
-            droppedFakeObs++;
-            return null; // 捏造引用は集計にもカウントしない
-          }
-          obsCounts[axis][assessment]++;
-          return {
-            quote,
-            timestamp: String(o.timestamp || "").slice(0, 30),
-            phase,
-            axis,
-            assessment,
-            why: String(o.why || "").slice(0, 120),
-            // next_move は weak のみ採用 (strong に rewrite は不要)
-            next_move: assessment === "weak" ? String(o.next_move || "").slice(0, 200) : "",
-          };
-        })
-        .filter((o): o is { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string } => !!o && !!o.quote);
+      type ObsEntry = { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string; _pos: number };
+      const built: ObsEntry[] = [];
+      for (const oRaw of obsRaw.slice(0, 30)) {
+        if (!oRaw || typeof oRaw !== "object") continue;
+        const o = oRaw as Record<string, unknown>;
+        const axisRaw = typeof o.axis === "string" ? o.axis : "needs";
+        const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
+        const assessment = o.assessment === "strong" ? "strong" : "weak";
+        const phaseRaw = typeof o.phase === "string" ? o.phase : "hearing";
+        const phase = (PHASES as readonly string[]).includes(phaseRaw) ? phaseRaw : "hearing";
+        const quote = String(o.quote || "").slice(0, 200);
+        const pos = positionOf(quote);
+        if (pos < 0) {
+          droppedFakeObs++;
+          continue; // 捏造引用は集計にもカウントしない
+        }
+        obsCounts[axis][assessment]++;
+        // タイムスタンプは議事録から抽出した値を優先 (AI が間違える/省くのを補正)
+        const tsExtracted = extractNearestTimestamp(pos);
+        const tsAi = String(o.timestamp || "").slice(0, 30);
+        built.push({
+          quote,
+          timestamp: tsExtracted || tsAi,
+          phase,
+          axis,
+          assessment,
+          why: String(o.why || "").slice(0, 120),
+          next_move: assessment === "weak" ? String(o.next_move || "").slice(0, 200) : "",
+          _pos: pos,
+        });
+      }
+      // 議事録上の位置でソート → 完全な時系列順を保証 (AI が並び順を崩しても無効化される)
+      built.sort((a, b) => a._pos - b._pos);
+      parsed.observations = built.map(({ _pos: _unused, ...rest }) => { void _unused; return rest; });
     } else {
       parsed.observations = [];
     }
