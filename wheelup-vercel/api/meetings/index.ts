@@ -2158,6 +2158,36 @@ ${text.slice(0, 25000)}
     built.sort((a, b) => a._pos - b._pos);
     parsed.observations = built.map(({ _pos: _unused, ...rest }) => { void _unused; return rest; });
 
+    // ─── 軸別フィードバック (axis_feedback) をサーバ側で観察から機械合成 ───────────
+    // 西村 FB (再三)「プレイブックのような一般論ではなく、実際の会話と連動した個別具体の
+    // フィードバックを各軸に」直接対応。
+    // AI のフリーテキスト (coaching) に頼らず、検証済み observation (= 議事録に存在する引用) だけから
+    // 5 軸すべての「良かった点 / 惜しかった点 / 次の打ち手」を組み立てる。
+    // これにより:
+    //   - 全フィードバックが必ず実際の発言に紐付く (一般論が構造的に発生しない)
+    //   - 5 軸すべてに必ず何か出る (観察ゼロの軸だけ「観察なし」と明示)
+    {
+      const axisFeedback: Record<string, {
+        score: number;
+        strong: Array<{ quote: string; why: string; timestamp: string }>;
+        weak: Array<{ quote: string; why: string; next_move: string; timestamp: string }>;
+      }> = {};
+      const finalScores = (parsed.scores as Record<string, number>) || {};
+      for (const axis of AXES) {
+        const axisObs = built.filter((b) => b.axis === axis);
+        axisFeedback[axis] = {
+          score: typeof finalScores[axis] === "number" ? finalScores[axis] : 0,
+          strong: axisObs.filter((o) => o.assessment === "strong").map((o) => ({
+            quote: o.quote, why: o.why, timestamp: o.timestamp,
+          })),
+          weak: axisObs.filter((o) => o.assessment === "weak").map((o) => ({
+            quote: o.quote, why: o.why, next_move: o.next_move, timestamp: o.timestamp,
+          })),
+        };
+      }
+      parsed.axis_feedback = axisFeedback;
+    }
+
     // phase_summary のサニタイズ
     const psRaw = (parsed as { phase_summary?: unknown }).phase_summary;
     if (psRaw && typeof psRaw === "object") {

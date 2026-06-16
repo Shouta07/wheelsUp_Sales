@@ -931,41 +931,9 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* この面談固有のコーチング (西村 FB: 一般論ではなく実際の発言ベースの改善案) */}
-          {score?.coaching && Object.keys(score.coaching).length > 0 && (
-            <div className="rounded-xl bg-amber-50 border-2 border-amber-200 p-3 space-y-2">
-              <div className="text-[10px] font-extrabold text-amber-800 uppercase tracking-wider mb-1">
-                🎯 この面談の改善ポイント（実際の発言ベース）
-              </div>
-              {DIMS.map(({ key, label, color }) => {
-                const c = score.coaching?.[key as keyof typeof score.coaching];
-                const sc = score.scores?.[key as keyof typeof score.scores];
-                if (!c || (!c.quote && !c.issue && !c.rewrite)) return null;
-                return (
-                  <div key={key} className="rounded-lg bg-white border border-amber-200 p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "20", color }}>
-                        {label} {typeof sc === "number" ? `${sc}点` : ""}
-                      </span>
-                    </div>
-                    {c.quote && (
-                      <p className="text-[11px] font-bold text-[#777] mb-1 leading-relaxed">
-                        💬 面談中：<span className="text-[#4b4b4b]">「{c.quote}」</span>
-                      </p>
-                    )}
-                    {c.issue && (
-                      <p className="text-[11px] font-bold text-[#4b4b4b] mb-1 leading-relaxed">{c.issue}</p>
-                    )}
-                    {c.rewrite && (
-                      <p className="text-[11px] font-bold text-green-700 leading-relaxed bg-green-50 rounded px-2 py-1">
-                        ✅ 次回はこう：「{c.rewrite}」
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* 旧「この面談固有のコーチング (amber box)」は軸別フィードバック (axis_feedback) に統合済。
+              観察ベースで全 5 軸を機械合成する axis_feedback の方が網羅的で一般論が混じらないため、
+              重複・反復感 (西村 FB「当たり前のこと言われてる感」) を避けて削除した。 */}
 
           {/* 商談タイムライン: 議事録上の時系列順に ◎/△/打ち手 を並べる
               西村 FB「議事録ベースで時間別のフィードバックが返ってきて欲しい」対応:
@@ -1103,57 +1071,73 @@ function MeetingEntry({
             <DigestTimeline moments={score.key_moments} onJumpToTranscript={(text) => jumpToTranscript(text, m.transcript_text || "")} />
           )}
 
-          {/* Learning Resources (参考プレイブック・補助的位置づけ) */}
-          {score?.learning_resources && score.learning_resources.length > 0 && (
-            <details className="rounded-xl bg-duo-blue/5 border border-duo-blue/20 p-3 space-y-2">
-              <summary className="text-[10px] font-extrabold text-duo-blue uppercase tracking-wider mb-1 cursor-pointer select-none">📚 参考プレイブック（軸別の基礎）</summary>
-              {score.learning_resources.map((lr, idx) => {
-                const dim = DIMS.find(d => d.key === lr.axis);
-                const typeIcon = lr.source_type === "video" ? "▶" : lr.source_type === "article" ? "📄" : "📖";
-                const typeColor = lr.source_type === "video" ? "#FF4B4B" : lr.source_type === "article" ? "#1CB0F6" : "#CE82FF";
+          {/* 軸別フィードバック: 5 軸すべてを「この面談の実発言」ベースで提示
+              西村 FB (再三)「プレイブックのような一般論ではなく会話内容と連動した個別具体を各軸に」直接対応。
+              サーバが検証済み observation から機械合成しているので、一般論は構造的に発生しない。 */}
+          {score?.axis_feedback && Object.keys(score.axis_feedback).length > 0 && (
+            <div className="rounded-xl bg-white border-2 border-[#e5e5e5] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#4b4b4b] uppercase tracking-wider mb-1">
+                🧩 軸別フィードバック（この面談の発言ベース）
+              </div>
+              {DIMS.map(({ key, label, color }) => {
+                const af = score.axis_feedback?.[key as keyof typeof score.axis_feedback];
+                if (!af) return null;
+                const hasContent = (af.strong?.length ?? 0) > 0 || (af.weak?.length ?? 0) > 0;
                 return (
-                  <div key={idx} className="rounded-lg bg-white border border-[#e5e5e5] overflow-hidden">
-                    <div className="p-2.5">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span
-                          className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                          style={{
-                            backgroundColor: (dim?.color || "#777") + "20",
-                            color: dim?.color || "#777",
-                          }}
-                        >
-                          {dim?.label || lr.axis}
-                        </span>
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: typeColor + "15", color: typeColor }}>
-                          {typeIcon} {lr.source_name || (lr.source_type === "video" ? "動画" : lr.source_type === "article" ? "記事" : "プレイブック")}
-                        </span>
-                      </div>
-                      <p className="text-xs font-extrabold text-[#4b4b4b] mb-0.5">{lr.title}</p>
-                      <p className="text-[10px] font-bold text-[#777] leading-relaxed">{lr.description}</p>
+                  <div key={key} className="rounded-lg border border-[#eee] overflow-hidden">
+                    <div className="flex items-center gap-2 px-2.5 py-1.5" style={{ backgroundColor: color + "12" }}>
+                      <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "25", color }}>
+                        {label}
+                      </span>
+                      <span className="text-[11px] font-extrabold tabular-nums" style={{ color }}>{af.score} 点</span>
+                      {!hasContent && <span className="text-[9px] font-bold text-[#aaa]">この軸の観察なし（議事録に該当場面が見当たらず）</span>}
                     </div>
-                    {lr.url ? (
-                      <a
-                        href={lr.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-between px-2.5 py-1.5 bg-[#f7f7f7] border-t border-[#e5e5e5] hover:bg-duo-blue/10 transition-colors group"
-                      >
-                        <span className="text-[10px] font-extrabold text-duo-blue group-hover:underline">
-                          教材を見る →
-                        </span>
-                        <span className="text-[9px] font-bold text-[#aaa] truncate ml-2 max-w-[180px]">
-                          {lr.source_name}
-                        </span>
-                      </a>
-                    ) : lr.playbook_situation ? (
-                      <div className="px-2.5 py-1.5 bg-duo-purple/5 border-t border-duo-purple/10">
-                        <span className="text-[10px] font-bold text-duo-purple">📖 {lr.playbook_situation}</span>
+                    {hasContent && (
+                      <div className="p-2 space-y-1.5">
+                        {(af.strong ?? []).map((s, i) => (
+                          <div key={`s${i}`} className="flex items-start gap-1.5">
+                            <span className="shrink-0 text-[10px] font-extrabold text-green-700 bg-green-50 rounded px-1 mt-[1px]">◎</span>
+                            <div className="flex-1 min-w-0">
+                              <button
+                                onClick={() => jumpToTranscript(s.quote, m.transcript_text || "")}
+                                className="text-left text-[11px] font-bold text-[#4b4b4b] leading-relaxed hover:underline"
+                              >
+                                {s.timestamp && <span className="text-[9px] font-extrabold tabular-nums text-slate-500 mr-1">⏱{s.timestamp}</span>}
+                                「{s.quote}」
+                              </button>
+                              {s.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {s.why}</p>}
+                            </div>
+                          </div>
+                        ))}
+                        {(af.weak ?? []).map((w, i) => (
+                          <div key={`w${i}`} className="flex items-start gap-1.5">
+                            <span className="shrink-0 text-[10px] font-extrabold text-red-700 bg-red-50 rounded px-1 mt-[1px]">△</span>
+                            <div className="flex-1 min-w-0">
+                              <button
+                                onClick={() => jumpToTranscript(w.quote, m.transcript_text || "")}
+                                className="text-left text-[11px] font-bold text-[#4b4b4b] leading-relaxed hover:underline"
+                              >
+                                {w.timestamp && <span className="text-[9px] font-extrabold tabular-nums text-slate-500 mr-1">⏱{w.timestamp}</span>}
+                                「{w.quote}」
+                              </button>
+                              {w.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {w.why}</p>}
+                              {w.next_move && (
+                                <p className="mt-0.5 text-[10px] font-bold text-green-700 leading-relaxed bg-green-50 border border-green-200 rounded px-1.5 py-1">
+                                  ✅ 次回はこう：「{w.next_move}」
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    ) : null}
+                    )}
                   </div>
                 );
               })}
-            </details>
+              <p className="text-[9px] text-[#aaa] leading-relaxed pt-1">
+                ※ すべて議事録の実発言から抽出・照合済みの観察ベースです。一般的なプレイブックではありません。
+              </p>
+            </div>
           )}
 
           {/* Leader Feedback */}

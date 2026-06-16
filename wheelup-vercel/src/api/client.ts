@@ -1007,6 +1007,12 @@ export interface MeetingScore {
   }>;
   // 商談フェーズごとの「何が良く・何が惜しかったか」(80字×5フェーズ)
   phase_summary?: Partial<Record<"opening" | "hearing" | "proposal" | "closing" | "wrap", string>>;
+  // 軸別フィードバック: サーバが検証済み観察から機械合成 (一般論ゼロ・全て実発言ベース)
+  axis_feedback?: Partial<Record<"needs" | "proposal" | "trust" | "closing" | "intel", {
+    score: number;
+    strong: Array<{ quote: string; why?: string; timestamp?: string }>;
+    weak: Array<{ quote: string; why?: string; next_move?: string; timestamp?: string }>;
+  }>>;
   // サーバ側スコア再集計の監査ログ (観察と AI スコアが乖離した時に再計算した記録)
   _score_audit?: {
     ai_scores?: { needs: number; proposal: number; trust: number; closing: number; intel: number };
