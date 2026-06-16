@@ -10,8 +10,8 @@ import WeeklyReport from "../components/gamification/WeeklyReport";
 import TeamHighlights from "../components/gamification/TeamHighlights";
 import TodayMission from "../components/gamification/TodayMission";
 import GrowthChart from "../components/gamification/GrowthChart";
-import CVRDashboard from "../components/gamification/CVRDashboard";
 import MemberGrowthOverview from "../components/gamification/MemberGrowthOverview";
+import ScoringModelPanel from "../components/gamification/ScoringModelPanel";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -45,17 +45,13 @@ export default function Home() {
              自分の成長グラフ / 今日のミッション / リーダープレイブックは出さない。
              メンバーの成長 → 教師データ登録 (面談ライブラリ) → CVR の順。 */
           <>
+            <ScoringModelPanel />
             <div className="mb-4">
               <MemberGrowthOverview />
             </div>
             <main>
               <MeetingHub />
             </main>
-            {currentUser && (
-              <div className="mt-4">
-                <CVRDashboard currentUser={currentUser} />
-              </div>
-            )}
           </>
         ) : (
           /* ───── メンバー画面: 従来構成 ───── */
