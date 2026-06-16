@@ -960,9 +960,9 @@ function MeetingEntry({
           {m.is_leader && score?.scores && (
             <div className="rounded-xl bg-amber-50 border border-amber-300 p-2.5">
               <p className="text-[10px] font-bold text-amber-900 leading-relaxed">
-                ⓘ これはリーダー(教師データ)の面談です。AI 採点は<b>絶対基準</b>(各軸の条件達成度)で行うため、
-                リーダーでも軸ごとに伸びしろが出ます。50/50 が前提ではありません。
-                <b>「印象が良い面談」より「条件を満たした面談」</b>の方が高得点になります。
+                ⓘ これは小林さんの面談です。チームの<b>お手本データ</b>として使われます。<br />
+                採点は「各項目の条件をどれだけ満たしたか」で決まる仕組みなので、小林さんでも項目によっては満点でないことがあり、それが普通です（毎回 50 点満点が前提ではありません）。<br />
+                雰囲気の良さではなく、<b>条件を満たした行動</b>が点数になります。
               </p>
             </div>
           )}
@@ -1288,7 +1288,7 @@ function MeetingEntry({
             <div className="rounded-xl border-2 border-purple-300 bg-purple-50 p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-[10px] font-extrabold text-purple-800 uppercase tracking-wider">
-                  🎯 リーダー校正 (採点アンカー)
+                  🎯 この面談をお手本に登録（良い/悪い）
                 </div>
                 {m.calibration && (
                   <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
@@ -1301,8 +1301,8 @@ function MeetingEntry({
                 )}
               </div>
               <p className="text-[10px] font-bold text-purple-700 leading-relaxed">
-                「良い面談」「悪い面談」とマークすると、AI が新規採点時にこれを基準として参照します。
-                マークするほど現場感覚と AI 評価のズレが解消されていきます。
+                この面談を「良いお手本」「悪い例」として登録すると、次回以降の AI 採点がこれを見本にします。
+                登録を増やすほど、AI の点数が小林さんの感覚に近づきます。
               </p>
               <textarea
                 value={calComment}
@@ -1353,7 +1353,7 @@ function MeetingEntry({
                 onClick={() => { setAnnotOpen((v) => !v); setAnnotError(null); }}
                 className="flex items-center justify-between w-full text-[10px] font-extrabold text-indigo-800 uppercase tracking-wider"
               >
-                <span>📌 手動で観察をタグ付け {m.calibration?.manual_observations ? `(${m.calibration.manual_observations.length} 件)` : ""}</span>
+                <span>📌 良かった/惜しかった場面を手動で登録 {m.calibration?.manual_observations ? `(${m.calibration.manual_observations.length} 件)` : ""}</span>
                 <span>{annotOpen ? "▼" : "▶"}</span>
               </button>
               {!annotOpen && (
@@ -1501,8 +1501,8 @@ function MeetingEntry({
                       </button>
                     </div>
                     <p className="text-[9px] text-indigo-600 leading-relaxed">
-                      ※ quote は議事録に存在するかサーバ側で照合されます。改変・要約は弾かれます。<br />
-                      ※ 追加した観察は次回採点で AI 観察と merge され、ゴールド観察ライブラリにも即時反映されます。
+                      ※ 引用は議事録に実在するか自動チェックされます（言い換え・要約は登録できません。発言をそのままコピーしてください）。<br />
+                      ※ 登録した「良かった/惜しかった」は、次回以降の採点でお手本として使われ、チーム全員の採点基準に反映されます。
                     </p>
                   </div>
                 </div>

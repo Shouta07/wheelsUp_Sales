@@ -90,10 +90,15 @@ export default function ScoringModelPanel() {
           </div>
         ))}
 
-        <p className="text-[9px] text-[#aaa] leading-relaxed">
-          ※ この基準は「教師データ（リーダー面談）」と「👍/👎 の校正」「📌 手動の観察タグ」で継続的に補強されます。
-          下の面談を採点・校正するほど、各項目のお手本が増えて精度が上がります。
-        </p>
+        <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+          <p className="text-[10px] font-bold text-amber-900 leading-relaxed">
+            ⓘ <b>この評価基準（5軸の条件）は固定で定義したものです。</b>建築業界の人材紹介の定石をもとに作っています（AI が18件の面談から自動生成したものではありません）。
+          </p>
+          <p className="text-[10px] font-bold text-amber-800 leading-relaxed mt-1">
+            小林さんの面談・「👍/👎」の登録・「📌 手動の観察」は、AI が採点するときの<b>お手本（参照例）</b>として使われ、点数のブレを小林さんの感覚に近づける役割です。基準そのものを書き換えているわけではありません。
+            基準を直したい場合は、ここの文言を変更すれば AI の採点も変わります。
+          </p>
+        </div>
       </div>
     </details>
   );
