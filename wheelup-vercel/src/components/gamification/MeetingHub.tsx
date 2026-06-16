@@ -41,7 +41,9 @@ const todayInputValue = () => {
 export default function MeetingHub() {
   const { currentUser } = useGamification();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"mine" | "leader">("mine");
+  // リーダーは教師データ (リーダー面談) を主に扱うので初期タブを leader に。
+  // メンバーは自分の面談が初期タブ。
+  const [tab, setTab] = useState<"mine" | "leader">(isLeaderRole(currentUser) ? "leader" : "mine");
   const [uploading, setUploading] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
@@ -279,16 +281,18 @@ export default function MeetingHub() {
         </button>
       </div>
 
-      {/* Tabs - 西村 FB: リーダー面談はメンバーが参考にするべき。
-            リーダー本人には「自分の面談」と重複するので非表示。
-            メンバーには「自分の面談」+「リーダーの面談 (参考)」の 2 タブを表示。 */}
+      {/* Tabs
+            - リーダー (小林): 画面は教師データ登録が役割なので「自分の面談」は不要。
+              リーダー面談 = 教師データの 1 タブのみ表示。
+            - メンバー: 「自分の面談」+「リーダーの面談 (参考)」の 2 タブ。 */}
       <div className="flex gap-1 mb-4">
-        {([
-          { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-          ...(!isLeaderUser
-            ? [{ key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 }]
-            : []),
-        ]).map(({ key, label, count }) => (
+        {(isLeaderUser
+          ? [{ key: "leader" as const, label: "教師データ（リーダー面談）", count: leaderMeetings?.total || 0 }]
+          : [
+              { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
+              { key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 },
+            ]
+        ).map(({ key, label, count }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
