@@ -2398,8 +2398,12 @@ ${text.slice(0, 25000)}
 
     // 採点完了通知 (Lark / Slack)。辻内氏の「反強制的に結果を目に入れる」要件。
     //   - リーダー面談 (教師データ) は通知しない
+    //   - ★ 初回採点のときだけ通知する (meeting.score_data が無い = まだ一度も採点していない)。
+    //     再採点 (メンバーの全件再採点 / 手動再採点 / リーダーの一括再採点) は score_data が
+    //     既にあるので通知しない。運用イメージ: ドライブに面談追加 → 自動採点 → 一発目だけ Lark 通知。
     //   - LARK_WEBHOOK_URL 未設定なら no-op なので環境差で自動 ON/OFF
-    if (!(meeting as { is_leader?: boolean }).is_leader) {
+    const isFirstScoring = !(meeting as { score_data?: unknown }).score_data;
+    if (!(meeting as { is_leader?: boolean }).is_leader && isFirstScoring) {
       const p = parsed as { scores?: Record<string, number>; improvements?: Record<string, string[]> };
       const appBase = (process.env.APP_BASE_URL ?? "").trim() || undefined;
       await notifyMeetingScored({

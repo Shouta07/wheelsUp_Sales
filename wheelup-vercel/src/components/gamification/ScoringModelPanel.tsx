@@ -124,6 +124,11 @@ const AXES: AxisModel[] = [
 ];
 
 export default function ScoringModelPanel() {
+  // 抽出済みの小林の流儀を 5 軸ルーブリックの各カードにも反映する
+  const { data: styleData } = useQuery({ queryKey: ["leader-style"], queryFn: getLeaderStyle });
+  const styleByAxis: Record<string, LeaderStyleAxis> = {};
+  for (const s of styleData?.style ?? []) styleByAxis[s.axis] = s;
+
   return (
     <details className="rounded-2xl bg-white border-2 border-[#e5e5e5] p-4 mb-4">
       <summary className="cursor-pointer select-none flex items-center justify-between">
@@ -146,8 +151,10 @@ export default function ScoringModelPanel() {
         {/* 小林の流儀 (18件から抽出してルーブリックを補強) */}
         <LeaderStyleSection />
 
-        {/* 5 軸ルーブリック */}
-        {AXES.map((a) => (
+        {/* 5 軸ルーブリック（小林の流儀を抽出済みなら各軸に反映表示） */}
+        {AXES.map((a) => {
+          const st = styleByAxis[a.key];
+          return (
           <div key={a.key} className="rounded-xl border border-[#eee] overflow-hidden">
             <div className="flex items-center gap-2 px-3 py-2" style={{ backgroundColor: a.color + "12" }}>
               <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: a.color + "25", color: a.color }}>
@@ -164,9 +171,24 @@ export default function ScoringModelPanel() {
                 <span className="shrink-0 text-[10px] font-extrabold text-red-700 bg-red-50 rounded px-1 mt-[1px]">低評価</span>
                 <p className="text-[11px] font-bold text-[#777] leading-relaxed">{a.low}</p>
               </div>
+              {/* 小林の流儀 (抽出済みのみ) */}
+              {st && (st.strong_behaviors?.length > 0 || st.signature_phrases?.length > 0) && (
+                <div className="mt-1 rounded-lg bg-[#fff7ed] border border-[#f0d9b0] p-2">
+                  <p className="text-[9px] font-extrabold text-[#cc7800] mb-0.5">🥇 小林の流儀（実データから抽出）</p>
+                  {(st.strong_behaviors ?? []).map((b, i) => (
+                    <p key={i} className="text-[10px] font-bold text-[#4b4b4b] leading-relaxed">・{b}</p>
+                  ))}
+                  {st.signature_phrases?.length > 0 && (
+                    <p className="text-[10px] text-[#996600] leading-relaxed mt-0.5">
+                      決め台詞: {st.signature_phrases.map((p) => `「${p}」`).join(" / ")}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
           <p className="text-[10px] font-bold text-amber-900 leading-relaxed">

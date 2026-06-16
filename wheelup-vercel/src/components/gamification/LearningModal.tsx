@@ -15,7 +15,13 @@ export default function LearningModal({
   onClose: () => void;
 }) {
   const [active, setActive] = useState<AxisKey>(axis);
+  const [openSet, setOpenSet] = useState<Set<string>>(new Set());
   const cur = AXIS_CURRICULUM[active];
+  const toggle = (k: string) => setOpenSet((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
 
   return (
     <div
@@ -59,15 +65,27 @@ export default function LearningModal({
 
           {cur.sections.map((sec, i) => {
             const cs = CATEGORY_STYLE[sec.category];
+            const k = `${active}-${i}`;
+            const open = openSet.has(k);
+            const hasScript = !!sec.script && sec.script.length > 0;
             return (
               <div key={i} className="rounded-xl border border-[#eee] overflow-hidden">
-                <div className="flex items-center gap-2 px-3 py-2 bg-[#fafafa]">
+                {/* ヘッダー = クリックで実例トークを開閉 */}
+                <button
+                  onClick={() => hasScript && toggle(k)}
+                  className={`w-full flex items-center gap-2 px-3 py-2 bg-[#fafafa] text-left ${hasScript ? "hover:bg-[#f0f0f0]" : ""}`}
+                >
                   <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: cs.bg, color: cs.fg }}>
                     {sec.category}
                   </span>
                   <span className="text-[12px] font-extrabold text-[#4b4b4b]">{sec.title}</span>
-                </div>
-                <ul className="p-3 space-y-1.5">
+                  {hasScript && (
+                    <span className="ml-auto text-[10px] font-extrabold" style={{ color: cur.color }}>
+                      {open ? "実例を閉じる ▲" : "💬 実例トーク ▼"}
+                    </span>
+                  )}
+                </button>
+                <ul className="px-3 pt-3 pb-2 space-y-1.5">
                   {sec.points.map((p, j) => (
                     <li key={j} className="flex items-start gap-1.5 text-[11px] font-bold text-[#4b4b4b] leading-relaxed">
                       <span className="shrink-0 mt-[2px]" style={{ color: cur.color }}>●</span>
@@ -75,12 +93,26 @@ export default function LearningModal({
                     </li>
                   ))}
                 </ul>
+                {/* 実例トーク（クリックで展開） */}
+                {hasScript && open && (
+                  <div className="mx-3 mb-3 rounded-lg bg-[#f7f9ff] border border-[#dde6ff] p-2.5 space-y-1.5">
+                    <p className="text-[10px] font-extrabold text-duo-blue">💬 実例トーク</p>
+                    {sec.script!.map((ln, j) => (
+                      <div key={j} className="flex items-start gap-1.5">
+                        <span className={`shrink-0 text-[9px] font-extrabold px-1.5 py-0.5 rounded ${ln.who === "CA" ? "bg-duo-blue/15 text-duo-blue" : "bg-gray-200 text-gray-600"}`}>
+                          {ln.who}
+                        </span>
+                        <span className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">{ln.line}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
 
           <p className="text-[9px] text-[#aaa] leading-relaxed">
-            ※ この教材は採点ルーブリック（小林の流派）と連動しています。各面談の弱い軸からここに来て、型と知識を仕込んでから次の面談に臨みましょう。
+            ※ 各テーマの「💬 実例トーク」をクリックすると、その型を実際の会話でどう使うかが見られます。弱い軸から型と知識を仕込んで次の面談に臨みましょう。
           </p>
         </div>
       </div>
