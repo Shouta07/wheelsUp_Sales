@@ -360,10 +360,13 @@ export default function MeetingHub() {
         </div>
       )}
 
-      {/* 精度向上ツール (リーダーのみ・常時表示) */}
+      {/* 精度向上ツール (リーダーのみ・普段は畳んでおく) */}
       {isLeaderUser && (
-        <div className="mb-3 rounded-2xl border-2 border-purple-300 bg-purple-50 p-3 space-y-2">
-          <div className="text-xs font-extrabold text-purple-800">🎯 採点精度を一段上げる (リーダー専用)</div>
+        <details className="mb-3 rounded-2xl border-2 border-purple-300 bg-purple-50 p-3">
+          <summary className="text-xs font-extrabold text-purple-800 cursor-pointer select-none">
+            ⚙️ 採点エンジンの設定（普段は触らなくて OK・クリックで開く）
+          </summary>
+          <div className="space-y-2 mt-3 pt-3 border-t border-purple-200">
 
           {/* 自動校正 */}
           <div className="flex items-center justify-between gap-2">
@@ -418,11 +421,11 @@ export default function MeetingHub() {
             <div className="pt-2 border-t border-purple-200">
               <div className="flex items-center justify-between gap-2 mb-1.5">
                 <div className="flex-1">
-                  <p className="text-[11px] font-extrabold text-[#4b4b4b]">③ 学習データ健全性 (ゴールド観察ライブラリ)</p>
+                  <p className="text-[11px] font-extrabold text-[#4b4b4b]">③ 各項目の「お手本」の量</p>
                   <p className="text-[10px] font-bold text-[#777] mt-0.5">
-                    リーダー面談 + 「良い」マーク面談 計 {trainingHealth.summary.source_meetings} 件から、
-                    strong 観察 {trainingHealth.summary.total_strong} 件 / weak 観察 {trainingHealth.summary.total_weak} 件 を抽出して教師データに使用中。
-                    軸ごとのカバレッジを下に表示。「薄い」軸は採点精度が安定しないため、その軸が顕著な面談を 1 件校正してください。
+                    {trainingHealth.summary.total_strong + trainingHealth.summary.total_weak === 0
+                      ? "まだ新ロジックで採点した面談が無いため、お手本データが空です。上の「② 全件再採点」か、面談を開いて採点を実行すると、各項目のお手本が貯まります。"
+                      : "各項目のお手本の数を表示します。「薄い」項目はお手本が少なく採点がブレやすいので、その項目が目立つ面談を 1 件 👍/👎 でマークしてください。"}
                   </p>
                 </div>
                 <button
@@ -449,7 +452,7 @@ export default function MeetingHub() {
                   );
                 })}
               </div>
-              {trainingHealth.suggestions.length > 0 && (
+              {trainingHealth.suggestions.length > 0 && trainingHealth.summary.total_strong + trainingHealth.summary.total_weak > 0 && (
                 <ul className="mt-2 space-y-0.5">
                   {trainingHealth.suggestions.map((s, idx) => (
                     <li key={idx} className="text-[10px] font-bold text-purple-800 leading-relaxed">・ {s}</li>
@@ -458,15 +461,19 @@ export default function MeetingHub() {
               )}
             </div>
           )}
-        </div>
+          </div>
+        </details>
       )}
 
-      {/* リーダータブで小林本人がいる時、生データ再シードボタン (1 回限りの管理操作) */}
+      {/* リーダータブで小林本人がいる時、生データ再シードボタン (1 回限りの管理操作・普段は畳む) */}
       {isLeaderUser && tab === "leader" && (
-        <div className="mb-3 rounded-2xl border-2 border-dashed border-[#cc7800] bg-[#fff7ed] p-3">
-          <div className="flex items-center justify-between gap-2">
+        <details className="mb-3 rounded-2xl border-2 border-dashed border-[#cc7800] bg-[#fff7ed] p-3">
+          <summary className="text-[11px] font-extrabold text-[#cc7800] cursor-pointer select-none">
+            ⚙️ 管理操作（リーダー面談の再シード・通常は使いません）
+          </summary>
+          <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-[#f0d9b0]">
             <div>
-              <p className="text-xs font-extrabold text-[#4b4b4b]">⚙️ リーダー面談 15 件を再シード</p>
+              <p className="text-xs font-extrabold text-[#4b4b4b]">リーダー面談 15 件を再シード</p>
               <p className="text-[10px] font-bold text-[#777] mt-0.5">
                 既存のリーダー面談を全削除して、アップロード済みの 15 件で置き換えます (1 回限りの管理操作)。
               </p>
@@ -496,7 +503,7 @@ export default function MeetingHub() {
               再シード実行
             </button>
           </div>
-        </div>
+        </details>
       )}
 
       {/* リーダータブで小林本人がいる時、未採点のリーダー面談を一括採点するボタン */}
