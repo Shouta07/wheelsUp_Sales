@@ -874,8 +874,8 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* アウトカム記録 (CVR 分析の基礎データ) */}
-          <OutcomeButtons meeting={m} onSaved={onFeedbackSaved} />
+          {/* アウトカム記録 (CVR 計測ブロック) は各カードのノイズになるため非表示 (小林/西村 FB)。
+              データ収集が必要になったら別画面に集約する。 */}
 
           {/* 手動採点フォーム (小林専用) */}
           {isLeaderUser && manualOpen && (
@@ -1140,6 +1140,17 @@ function MeetingEntry({
               <div className="text-[10px] font-extrabold text-[#4b4b4b] uppercase tracking-wider mb-1">
                 🧩 軸別フィードバック（この面談の発言ベース）
               </div>
+              {/* 観察が 1 件も無い = フィードバックが出ていない状態。誤解を避けて再採点を促す。 */}
+              {(score.observations?.length ?? 0) === 0 && (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 mb-1">
+                  <p className="text-[11px] font-bold text-amber-800 leading-relaxed">
+                    ⚠️ この面談はまだ発言レベルの観察が抽出できていません（古い採点の可能性）。
+                  </p>
+                  <p className="text-[10px] font-bold text-amber-700 leading-relaxed mt-0.5">
+                    上の「再採点」を押すと、各軸の ◎/△・具体的な発言・次の一手が表示されます。
+                  </p>
+                </div>
+              )}
               {DIMS.map(({ key, label, color }) => {
                 const af = score.axis_feedback?.[key as keyof typeof score.axis_feedback];
                 if (!af) return null;
@@ -1224,9 +1235,11 @@ function MeetingEntry({
                   </div>
                 );
               })}
-              <p className="text-[9px] text-[#aaa] leading-relaxed pt-1">
-                ※ ◎/△ はすべて議事録の実発言から抽出・照合済み。発言をクリックすると議事録の該当箇所に飛びます（プレイバック）。
-              </p>
+              {(score.observations?.length ?? 0) > 0 && (
+                <p className="text-[9px] text-[#aaa] leading-relaxed pt-1">
+                  ※ ◎/△ はすべて議事録の実発言から抽出。発言をクリックすると議事録の該当箇所に飛びます（プレイバック）。
+                </p>
+              )}
             </div>
           )}
 

@@ -1305,8 +1305,16 @@ async function scoreMeetingInternal(
   let extractedSpeakers: string[] = [];
   if (targetSpeaker) {
     const extracted = extractSpeakerUtterances(text, targetSpeaker);
-    extractedSpeakers = extracted.foundSpeakers;
-    extractedSpeakers = extracted.foundSpeakers;
+    // 検出話者リストの表示用に、本人の別名 (「あなた」「You」「西村康佑」「西村さん」等) を
+    // すべて本人名 (西村) に統一して重複排除する。西村 FB「あなたと西村が両方出たら西村に統一」。
+    const normTgt = targetSpeaker.trim().replace(/\s/g, "");
+    const isSelfAlias = (name: string): boolean => {
+      const n = name.trim().replace(/\s/g, "");
+      return n === "あなた" || n.toLowerCase() === "you" || n === normTgt || n.startsWith(normTgt);
+    };
+    extractedSpeakers = Array.from(
+      new Set(extracted.foundSpeakers.map((s) => (isSelfAlias(s) ? targetSpeaker : s))),
+    );
     if (extracted.utterances.length < 50) {
       // 発話者ラベルなし or 形式不一致 → 全話者で採点する fallback。
       // 「発話者分離失敗」フラグを残して UI で警告表示する (沈黙のフォールバックを禁止)。
@@ -1770,8 +1778,9 @@ ${text.slice(0, 25000)}
         // (creativity より consistency 優先。校正アンカーと組み合わせることで効く)
         temperature: 0.3,
         topP: 0.9,
-        // coaching + observations 12件 + phase_summary + per-obs next_move を含むので更に余裕を持たせる。
-        maxOutputTokens: 6500,
+        // observations 12件 (各7フィールド・日本語) + phase_summary + coaching を含むので
+        // 途中切れで observations が欠落しないよう上限を最大近くまで引き上げる。
+        maxOutputTokens: 8192,
         responseMimeType: "application/json",
         responseSchema: {
           type: "object",
@@ -1849,7 +1858,7 @@ ${text.slice(0, 25000)}
               },
             },
           },
-          required: ["scores"],
+          required: ["scores", "observations"],
         },
       },
   });
@@ -2052,11 +2061,12 @@ ${text.slice(0, 25000)}
     }
 
     // quote が議事録にあれば normalized 位置を返す。なければ -1。
+    // ASR の乱れ + モデルの整形で完全一致しないことがあるため、8 文字スニペットで部分一致を許容。
     const positionOf = (q: string): number => {
       if (!q) return -1;
       const nq = normalize(q);
       if (nq.length < 6) return -1;
-      const win = Math.min(10, nq.length);
+      const win = Math.min(8, nq.length);
       let best = -1;
       for (let i = 0; i + win <= nq.length; i++) {
         const idx = normalizedTranscript.indexOf(nq.slice(i, i + win));
@@ -2086,6 +2096,7 @@ ${text.slice(0, 25000)}
     type ObsEntry = { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string; manual?: boolean; _pos: number };
     const built: ObsEntry[] = [];
     if (Array.isArray(obsRaw)) {
+      let idxCounter = 0;
       for (const oRaw of obsRaw.slice(0, 30)) {
         if (!oRaw || typeof oRaw !== "object") continue;
         const o = oRaw as Record<string, unknown>;
@@ -2095,14 +2106,18 @@ ${text.slice(0, 25000)}
         const phaseRaw = typeof o.phase === "string" ? o.phase : "hearing";
         const phase = (PHASES as readonly string[]).includes(phaseRaw) ? phaseRaw : "hearing";
         const quote = String(o.quote || "").slice(0, 200);
-        const pos = positionOf(quote);
-        if (pos < 0) {
+        // 実質空の引用だけ捨てる。
+        // ※ 以前は「議事録に一致しない引用は全削除」していたが、ASR が乱れた議事録では
+        //   モデルが整形した引用が一致せず "観察ゼロ → フィードバック皆無" になっていた (西村 FB)。
+        //   話者フィルタで本人の発言しかモデルに見せていないため捏造リスクは低い。
+        //   位置が取れたものだけタイムスタンプ/時系列ジャンプを付け、取れなくても観察自体は残す。
+        if (normalize(quote).length < 6) {
           droppedFakeObs++;
-          continue; // 捏造引用は集計にもカウントしない
+          continue;
         }
+        const pos = positionOf(quote);
         obsCounts[axis][assessment]++;
-        // タイムスタンプは議事録から抽出した値を優先 (AI が間違える/省くのを補正)
-        const tsExtracted = extractNearestTimestamp(pos);
+        const tsExtracted = pos >= 0 ? extractNearestTimestamp(pos) : "";
         const tsAi = String(o.timestamp || "").slice(0, 30);
         built.push({
           quote,
@@ -2112,8 +2127,10 @@ ${text.slice(0, 25000)}
           assessment,
           why: String(o.why || "").slice(0, 120),
           next_move: assessment === "weak" ? String(o.next_move || "").slice(0, 200) : "",
-          _pos: pos,
+          // 位置が取れたものは議事録順、取れないものは末尾 (モデル出力順を維持)
+          _pos: pos >= 0 ? pos : 1_000_000_000 + idxCounter,
         });
+        idxCounter++;
       }
     }
 
