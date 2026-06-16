@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
 import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
+import LearningModal from "./LearningModal";
 import {
   fetchMeetings,
   createMeeting,
@@ -686,6 +687,7 @@ function MeetingEntry({
   const [rescoreError, setRescoreError] = useState<string | null>(null);
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
   const [manualOpen, setManualOpen] = useState(false);
+  const [learnAxis, setLearnAxis] = useState<"needs" | "proposal" | "trust" | "closing" | "intel" | null>(null);
   const qc = useQueryClient();
   // 手動アノテーション (議事録に「これは strong/weak」とタグ付け・西村FB 2026-06-06 対応)
   const [annotOpen, setAnnotOpen] = useState(false);
@@ -1157,7 +1159,6 @@ function MeetingEntry({
                 const strongN = af.strong?.length ?? 0;
                 const weakN = af.weak?.length ?? 0;
                 const hasContent = strongN > 0 || weakN > 0;
-                const ref = AXIS_RESOURCES[key];
                 return (
                   <div key={key} className="rounded-lg border border-[#eee] overflow-hidden">
                     {/* 採点の根拠ヘッダー: ◎N / △M → スコア (どう評価されたかを明示) */}
@@ -1215,21 +1216,14 @@ function MeetingEntry({
                             </div>
                           </div>
                         ))}
-                        {/* 📚 この軸を伸ばすための参考 (具体 next_move の後に一般の型) */}
-                        {ref && (
-                          <div className="mt-1 rounded-md bg-[#f7f9ff] border border-[#dde6ff] px-2 py-1.5">
-                            <div className="flex items-center gap-1 flex-wrap">
-                              <span className="text-[9px] font-extrabold text-duo-blue">📚 {label}を伸ばす型</span>
-                              {ref.url && (
-                                <a href={ref.url} target="_blank" rel="noopener noreferrer" className="text-[9px] font-extrabold text-duo-blue underline">
-                                  教材を見る →
-                                </a>
-                              )}
-                            </div>
-                            <p className="text-[10px] font-bold text-[#4b4b4b] leading-relaxed mt-0.5">{ref.title}</p>
-                            <p className="text-[9px] text-[#777] leading-relaxed">{ref.note}</p>
-                          </div>
-                        )}
+                        {/* 📚 この軸を伸ばすための学習 (アプリ内教材を開く・外部URLは使わない) */}
+                        <button
+                          onClick={() => setLearnAxis(key as "needs" | "proposal" | "trust" | "closing" | "intel")}
+                          className="mt-1 w-full text-left rounded-md bg-[#f7f9ff] border border-[#dde6ff] px-2 py-1.5 hover:border-duo-blue transition-colors"
+                        >
+                          <span className="text-[9px] font-extrabold text-duo-blue">📚 {label}を伸ばす（面談技術・業界知識・顧客知識）</span>
+                          <span className="text-[9px] font-extrabold text-duo-blue ml-1">学ぶ →</span>
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1521,6 +1515,9 @@ function MeetingEntry({
           )}
         </div>
       )}
+
+      {/* アプリ内学習モーダル (軸別の「学ぶ」から開く・外部URLは使わない) */}
+      {learnAxis && <LearningModal axis={learnAxis} onClose={() => setLearnAxis(null)} />}
     </div>
   );
 }
@@ -1532,35 +1529,6 @@ const DIMS = [
   { key: "closing", label: "前進", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
-
-// 軸ごとの「伸ばすための参考」。西村 FB: 各軸に next_move (この面談の具体セリフ) と
-// 参考リンクの両方を出す。汎用プレイブックを画面全体に出すのではなく、
-// 各軸ブロックの末尾に "型を学ぶ参考" として 1 件だけ添える (具体 → 一般の順)。
-const AXIS_RESOURCES: Record<string, { title: string; note: string; url?: string }> = {
-  needs: {
-    title: "「なぜ転職か」を 3 層深掘りする質問の型",
-    note: "表層理由 → その背景 → 本音の感情、と 3 段で掘ると真のニーズが出る。「なぜ」「どんな時に」「具体的には」を多用。",
-    url: "https://www.businessinsider.jp/post-100867",
-  },
-  proposal: {
-    title: "建築業界マッピング × FAB で提案する",
-    note: "ゼネコン/ハウスメーカー/デベ/CM/設計の年収帯を押さえ、求人の特徴→候補者メリット→状況改善で橋渡し。",
-    url: "https://blog.hubspot.jp/sales/fab",
-  },
-  trust: {
-    title: "業界の実務フロー・数字で専門性を示す",
-    note: "「正直に無理は無理」と市場の現実を率直に伝える。施工管理/設計/PM/CM の役割と評価ポイントを具体数字で語る。",
-  },
-  closing: {
-    title: "「いつまでに何を」を必ず明文化する",
-    note: "面談終了時に “水曜までに求人3件送る” のように期限+アクション+次の接点を 1 文で言語化。仮クロージングで温度感を測る。",
-    url: "https://www.salesforce.com/jp/resources/articles/sales/spin-selling/",
-  },
-  intel: {
-    title: "競合状況と意思決定プロセスを必ず把握",
-    note: "他社併用 N 社・選考フェーズ・温度感、家族の意向や年収の内訳(残業代込みか)まで確認すると戦略が立つ。",
-  },
-};
 
 // 面談アウトカム (CVR 分析の基礎データ) 入力ボタン。
 function OutcomeButtons({ meeting, onSaved }: { meeting: MeetingTranscript; onSaved: () => void }) {

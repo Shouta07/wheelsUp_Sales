@@ -1,12 +1,13 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchMeetings, type MeetingTranscript, type MeetingScore } from "../../api/client";
-import { AXIS_LEARNING, type AxisKey } from "../../lib/axisLearning";
+import { AXIS_CURRICULUM, CATEGORY_STYLE, type AxisKey } from "../../lib/axisLearning";
+import LearningModal from "./LearningModal";
 
 /**
- * スキルギャップ + 学習リンク（メンバートップ）。
- * 西村 FB: 成長グラフは意味がない。リーダーと比較してどのスキルが足りないか一目で分かり、
- *   その課題を改善するための項目別の学習リンクが並んでいる状態が望ましい。
+ * スキルギャップ + 学習導線（メンバートップ）。
+ * 西村 FB: 成長グラフは不要。リーダーと比べてどのスキルが足りないか一目で分かり、
+ *   課題を改善するための項目別の学習（アプリ内教材）に飛べる状態にする。
  */
 const DIMS: { key: AxisKey; label: string; color: string }[] = [
   { key: "needs", label: "ニーズ深掘り", color: "#1CB0F6" },
@@ -30,6 +31,8 @@ function avgByAxis(transcripts: MeetingTranscript[] | undefined): Record<AxisKey
 }
 
 export default function SkillGapPanel({ currentUser }: { currentUser: string }) {
+  const [learnAxis, setLearnAxis] = useState<AxisKey | null>(null);
+
   const { data: mine } = useQuery({
     queryKey: ["meetings", "mine", currentUser, "gap"],
     queryFn: () => fetchMeetings(undefined, undefined, currentUser),
@@ -43,7 +46,6 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
   const myAvg = useMemo(() => avgByAxis(mine?.transcripts), [mine]);
   const leaderAvg = useMemo(() => avgByAxis(leader?.transcripts), [leader]);
 
-  // 軸をギャップ（自分 - リーダー）の小さい順 = 弱い順に並べる
   const ranked = useMemo(() => {
     return [...DIMS]
       .map((d) => {
@@ -53,7 +55,6 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
         return { ...d, me, ld, gap };
       })
       .sort((a, b) => {
-        // gap が小さい(=弱い)順。data が無いものは後ろ。
         if (a.gap === null) return 1;
         if (b.gap === null) return -1;
         return a.gap - b.gap;
@@ -64,12 +65,21 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
     return (
       <div className="rounded-2xl bg-white border-2 border-[#e5e5e5] p-4 mb-4">
         <h2 className="text-base font-black text-[#4b4b4b] mb-1">🎯 リーダーとのスキルギャップ</h2>
-        <p className="text-xs font-bold text-[#aaa]">面談を採点すると、リーダー（小林）と比べてどのスキルが足りないかが表示されます。</p>
+        <p className="text-xs font-bold text-[#aaa] mb-3">面談を採点すると、リーダー（小林）と比べてどのスキルが足りないかが表示されます。</p>
+        <div className="flex flex-wrap gap-1.5">
+          {DIMS.map((d) => (
+            <button key={d.key} onClick={() => setLearnAxis(d.key)}
+              className="text-[11px] font-extrabold px-2.5 py-1.5 rounded-xl"
+              style={{ backgroundColor: d.color + "18", color: d.color }}>
+              📚 {d.label}
+            </button>
+          ))}
+        </div>
+        {learnAxis && <LearningModal axis={learnAxis} onClose={() => setLearnAxis(null)} />}
       </div>
     );
   }
 
-  // 強化対象 = ギャップがマイナス（リーダー未満）の軸。無ければ絶対値が低い順 上位2軸。
   const weakAxes = ranked.filter((r) => r.gap !== null && r.gap < 0);
   const focusAxes = (weakAxes.length > 0 ? weakAxes : ranked.slice(0, 2)).slice(0, 3);
 
@@ -80,7 +90,7 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
         <span className="text-[10px] font-bold text-[#afafaf]">採点済み面談の平均で比較</span>
       </div>
       <p className="text-[11px] font-bold text-[#777] mb-3">
-        リーダー（小林）の平均と比べて、足りない順に並べています。下の「強化テーマ」の学習リンクで課題を埋めましょう。
+        リーダー（小林）の平均と比べて足りない順に並べています。下の「強化テーマ」から学習に進めます。
       </p>
 
       {/* 軸別ギャップバー（弱い順） */}
@@ -113,42 +123,48 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
         })}
       </div>
 
-      {/* 強化テーマ = 弱い軸の学習リンク */}
+      {/* 強化テーマ = 弱い軸のカリキュラム導線 */}
       <div className="mt-4 pt-3 border-t border-[#eee]">
-        <p className="text-[11px] font-extrabold text-[#4b4b4b] mb-2">📚 重点強化テーマ（弱い順）と学習リンク</p>
+        <p className="text-[11px] font-extrabold text-[#4b4b4b] mb-2">📚 重点強化テーマ（弱い順）</p>
         <div className="space-y-2">
-          {focusAxes.map((r) => (
-            <div key={r.key} className="rounded-xl border border-[#eee] overflow-hidden">
-              <div className="flex items-center gap-2 px-3 py-1.5" style={{ backgroundColor: r.color + "12" }}>
-                <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: r.color + "25", color: r.color }}>
-                  {r.label}
-                </span>
-                {r.gap !== null && r.gap < 0 && (
-                  <span className="text-[10px] font-black text-duo-red">{r.gap.toFixed(1)} 点ぶん伸びしろ</span>
-                )}
-              </div>
-              <div className="p-2 space-y-1.5">
-                {AXIS_LEARNING[r.key].map((lk, i) => (
-                  <div key={i} className="rounded-lg bg-[#f7f9ff] border border-[#dde6ff] px-2 py-1.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={`text-[9px] font-extrabold px-1 rounded ${lk.kind === "industry" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"}`}>
-                        {lk.kind === "industry" ? "業界・顧客知識" : "面談技術"}
-                      </span>
-                      <span className="text-[11px] font-extrabold text-[#4b4b4b]">{lk.title}</span>
-                      {lk.url && (
-                        <a href={lk.url} target="_blank" rel="noopener noreferrer" className="text-[9px] font-extrabold text-duo-blue underline">
-                          教材を見る →
-                        </a>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-[#777] leading-relaxed mt-0.5">{lk.note}</p>
+          {focusAxes.map((r) => {
+            const cur = AXIS_CURRICULUM[r.key];
+            return (
+              <button
+                key={r.key}
+                onClick={() => setLearnAxis(r.key)}
+                className="w-full text-left rounded-xl border border-[#eee] overflow-hidden hover:border-[#ccc] transition-colors"
+              >
+                <div className="flex items-center gap-2 px-3 py-1.5" style={{ backgroundColor: r.color + "12" }}>
+                  <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: r.color + "25", color: r.color }}>
+                    {r.label}
+                  </span>
+                  {r.gap !== null && r.gap < 0 && (
+                    <span className="text-[10px] font-black text-duo-red">{r.gap.toFixed(1)} 点ぶん伸びしろ</span>
+                  )}
+                  <span className="ml-auto text-[10px] font-extrabold" style={{ color: r.color }}>学ぶ →</span>
+                </div>
+                <div className="px-3 py-2">
+                  <p className="text-[10px] font-bold text-[#777] leading-relaxed mb-1">{cur.goal}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {cur.sections.map((s, i) => {
+                      const cs = CATEGORY_STYLE[s.category];
+                      return (
+                        <span key={i} className="text-[9px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: cs.bg, color: cs.fg }}>
+                          {s.category}：{s.title}
+                        </span>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
-            </div>
-          ))}
+                </div>
+              </button>
+            );
+          })}
         </div>
+        <p className="text-[9px] text-[#aaa] mt-2">テーマをクリックすると、面談技術・業界知識・顧客知識の教材が開きます。</p>
       </div>
+
+      {learnAxis && <LearningModal axis={learnAxis} onClose={() => setLearnAxis(null)} />}
     </div>
   );
 }
