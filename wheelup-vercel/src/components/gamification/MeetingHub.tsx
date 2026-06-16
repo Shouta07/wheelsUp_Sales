@@ -301,12 +301,15 @@ export default function MeetingHub() {
             </span>
           )}
         </div>
-        <button
-          onClick={() => setShowUpload(!showUpload)}
-          className="btn-duo btn-duo-green !px-3 !py-1.5 !text-[10px]"
-        >
-          + 面談を追加
-        </button>
+        {/* メンバーはリーダー(小林)タブでは面談を追加できない (教師データは小林のみが登録) */}
+        {!(!isLeaderUser && tab === "leader") && (
+          <button
+            onClick={() => setShowUpload(!showUpload)}
+            className="btn-duo btn-duo-green !px-3 !py-1.5 !text-[10px]"
+          >
+            + 面談を追加
+          </button>
+        )}
       </div>
 
       {/* Tabs
@@ -688,6 +691,9 @@ function MeetingEntry({
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
   const [manualOpen, setManualOpen] = useState(false);
   const [learnAxis, setLearnAxis] = useState<"needs" | "proposal" | "trust" | "closing" | "intel" | null>(null);
+  // 「なぜこの点数か」から「プレイバック」へジャンプするための参照
+  const playbackRef = useRef<HTMLDivElement | null>(null);
+  const scrollToPlayback = () => playbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   const qc = useQueryClient();
   // 手動アノテーション (議事録に「これは strong/weak」とタグ付け・西村FB 2026-06-06 対応)
   const [annotOpen, setAnnotOpen] = useState(false);
@@ -974,21 +980,29 @@ function MeetingEntry({
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
           )}
 
-          {/* Evidence = 各項目の点数理由 */}
+          {/* Evidence = 各項目の点数理由。クリックでプレイバック(該当発言)へジャンプ。 */}
           {score?.evidence && (
             <div className="rounded-xl bg-[#fafafa] border border-[#e5e5e5] p-3 space-y-1.5">
-              <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">なぜこの点数か（各項目の理由）</div>
+              <div className="text-[10px] font-extrabold text-[#777] uppercase tracking-wider mb-1">
+                なぜこの点数か（各項目の理由・クリックで該当場面へ）
+              </div>
               {DIMS.map(({ key, label, color }) => {
                 const ev = score.evidence?.[key as keyof typeof score.evidence];
                 const sc = score.scores?.[key as keyof typeof score.scores];
                 if (!ev) return null;
                 return (
-                  <div key={key} className="flex items-start gap-2">
+                  <button
+                    key={key}
+                    onClick={scrollToPlayback}
+                    className="w-full flex items-start gap-2 text-left rounded-lg px-1.5 py-1 hover:bg-white transition-colors"
+                    title="クリックで面談の該当場面（プレイバック）へ移動"
+                  >
                     <span className="text-[10px] font-bold shrink-0 w-14 mt-0.5" style={{ color }}>
                       {label} {typeof sc === "number" ? `${sc}点` : ""}
                     </span>
-                    <p className="text-[10px] font-bold text-[#555] leading-relaxed">{ev}</p>
-                  </div>
+                    <p className="flex-1 text-[10px] font-bold text-[#555] leading-relaxed">{ev}</p>
+                    <span className="shrink-0 text-[10px] mt-0.5" style={{ color }}>▶</span>
+                  </button>
                 );
               })}
             </div>
@@ -1129,9 +1143,11 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* Key Moments Timeline (ダイジェストプレイバック) */}
+          {/* Key Moments Timeline (ダイジェストプレイバック) — 「なぜこの点数か」からここへジャンプ */}
           {score?.key_moments && score.key_moments.length > 0 && (
+            <div ref={playbackRef}>
             <DigestTimeline moments={score.key_moments} onJumpToTranscript={(text) => jumpToTranscript(text, m.transcript_text || "")} />
+            </div>
           )}
 
           {/* 軸別フィードバック: 5 軸すべてを「この面談の実発言」ベースで提示

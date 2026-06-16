@@ -80,52 +80,22 @@ export default function SkillGapPanel({ currentUser }: { currentUser: string }) 
     );
   }
 
+  // ギャップ可視化は「蓄積の話なのでノイズ」(西村FB)。バーは出さず、弱い順に並べた
+  // 重点強化テーマ + 学習リンクだけを見せる。弱い軸(リーダー未満)を優先、無ければ低い順。
   const weakAxes = ranked.filter((r) => r.gap !== null && r.gap < 0);
-  const focusAxes = (weakAxes.length > 0 ? weakAxes : ranked.slice(0, 2)).slice(0, 3);
+  const focusAxes = (weakAxes.length > 0 ? weakAxes : ranked).slice(0, 3);
 
   return (
     <div className="rounded-2xl bg-white border-2 border-[#e5e5e5] p-4 mb-4">
       <div className="flex items-center justify-between mb-1">
-        <h2 className="text-base font-black text-[#4b4b4b]">🎯 リーダーとのスキルギャップ</h2>
-        <span className="text-[10px] font-bold text-[#afafaf]">採点済み面談の平均で比較</span>
+        <h2 className="text-base font-black text-[#4b4b4b]">🎯 重点強化テーマ</h2>
+        <span className="text-[10px] font-bold text-[#afafaf]">弱い項目から優先表示</span>
       </div>
       <p className="text-[11px] font-bold text-[#777] mb-3">
-        リーダー（小林）の平均と比べて足りない順に並べています。下の「強化テーマ」から学習に進めます。
+        いま伸ばすと効く項目です。テーマを開くと、面談技術・業界知識・顧客知識の教材が出ます。
       </p>
 
-      {/* 軸別ギャップバー（弱い順） */}
-      <div className="space-y-2.5">
-        {ranked.map((r) => {
-          const me = r.me ?? 0;
-          const ld = r.ld;
-          const gap = r.gap;
-          return (
-            <div key={r.key}>
-              <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[11px] font-extrabold text-[#4b4b4b]">{r.label}</span>
-                <div className="flex items-center gap-2">
-                  {gap !== null && (
-                    <span className={`text-[10px] font-black ${gap >= 0 ? "text-duo-green" : "text-duo-red"}`}>
-                      {gap >= 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)} vs リーダー
-                    </span>
-                  )}
-                  <span className="text-xs font-black tabular-nums w-8 text-right" style={{ color: r.color }}>{me.toFixed(1)}</span>
-                </div>
-              </div>
-              <div className="relative h-3 bg-[#eee] rounded-full overflow-hidden">
-                <div className="absolute h-full rounded-full" style={{ width: `${me * 10}%`, backgroundColor: r.color }} />
-                {ld !== null && (
-                  <div className="absolute top-0 h-full w-0.5 bg-[#4b4b4b] opacity-50" style={{ left: `${ld * 10}%` }} title={`リーダー平均 ${ld.toFixed(1)}`} />
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* 強化テーマ = 弱い軸のカリキュラム導線 */}
-      <div className="mt-4 pt-3 border-t border-[#eee]">
-        <p className="text-[11px] font-extrabold text-[#4b4b4b] mb-2">📚 重点強化テーマ（弱い順）</p>
+      <div className="mt-1">
         <div className="space-y-2">
           {focusAxes.map((r) => {
             const cur = AXIS_CURRICULUM[r.key];
