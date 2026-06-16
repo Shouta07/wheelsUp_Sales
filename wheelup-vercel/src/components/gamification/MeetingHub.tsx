@@ -191,6 +191,31 @@ export default function MeetingHub() {
     setBulkProgress(null);
   };
 
+  // 自分の全面談を新ロジックで強制再採点。
+  // 西村 FB「全ての面談で (話者分離/プレイバック等の) 新機能が反映されるように」対応。
+  // 各面談を force=true + 本人名 (= 議事録の「あなた」) で再採点し、古いキャッシュを一掃する。
+  const bulkRescoreMine = async () => {
+    if (scoringId || bulkProgress) return;
+    const targets = (myMeetings?.transcripts || []).filter((m) => m.transcript_text);
+    if (targets.length === 0) return;
+    if (!window.confirm(`自分の面談 ${targets.length} 件を新ロジックで再採点します。\n話者分離 (あなた=本人) と軸別フィードバックが全面談に反映されます。\n数分かかります。よろしいですか？`)) return;
+    setBulkProgress({ done: 0, total: targets.length });
+    for (let i = 0; i < targets.length; i++) {
+      const mt = targets[i];
+      setScoringId(mt.id);
+      try {
+        await scoreMeeting(mt.id, { force: true, targetSpeaker: mt.consultant_name || currentUser || null });
+      } catch (err) {
+        console.error(`bulk rescore mine ${mt.id} failed:`, err);
+      }
+      setScoringId(null);
+      setBulkProgress({ done: i + 1, total: targets.length });
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+      if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 5000));
+    }
+    setBulkProgress(null);
+  };
+
   // 全件再採点 (新ロジックで全議事録を更新): 4 件ずつ has_more=false までループ。
   // リーダーがクリックすると、画面表示中のスコアが全部新ロジックに統一される。
   const runBulkRescoreAll = async () => {
@@ -308,6 +333,29 @@ export default function MeetingHub() {
           </button>
         ))}
       </div>
+
+      {/* メンバー: 自分の全面談を新ロジックで再採点 (西村FB「全面談に新機能を反映」) */}
+      {!isLeaderUser && tab === "mine" && (myMeetings?.transcripts?.length ?? 0) > 0 && (
+        <div className="mb-4 rounded-2xl border-2 border-duo-blue bg-duo-blue/5 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-xs font-extrabold text-[#4b4b4b]">🔄 自分の全面談を再採点（新ロジック）</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                話者分離（議事録の「あなた」＝あなた本人）と、軸別フィードバック（◎/△・プレイバック・次の一手・参考）を
+                すべての面談に反映します。同席者（小林さん等）の発言は除外されます。数分かかります。
+              </p>
+            </div>
+            <button
+              onClick={bulkRescoreMine}
+              disabled={!!scoringId || !!bulkProgress}
+              className="btn-duo !px-4 !py-2 !text-[11px] shrink-0 text-white disabled:opacity-40"
+              style={{ backgroundColor: "#1CB0F6", borderBottomColor: "#1899D6" }}
+            >
+              {bulkProgress ? `${bulkProgress.done} / ${bulkProgress.total} 採点中…` : "🔄 全件再採点"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload area */}
       {showUpload && (

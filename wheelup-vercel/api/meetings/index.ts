@@ -1079,6 +1079,8 @@ function extractSpeakerUtterances(text: string, target: string): {
     if (/^\d+$/.test(label)) return true;             // 数字だけ
     if (label.length > 20) return true;               // 人名にしては長すぎ
     if (/^[a-z0-9_\-\.]+$/i.test(label) && label.length > 10) return true; // 英数記号だけの長い文字列
+    if (lower.includes("url") || lower.includes("http")) return true; // 「招待URL」等のチャット欄ラベル
+    if (/招待|リンク|line/i.test(label)) return true;  // LINE 招待等のチャットメタ
     return false;
   };
 
