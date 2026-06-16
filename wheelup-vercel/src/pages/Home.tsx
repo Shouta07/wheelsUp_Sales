@@ -8,10 +8,9 @@ import NotificationFeed from "../components/gamification/NotificationFeed";
 import WeeklyChallenge from "../components/gamification/WeeklyChallenge";
 import WeeklyReport from "../components/gamification/WeeklyReport";
 import TeamHighlights from "../components/gamification/TeamHighlights";
-import TodayMission from "../components/gamification/TodayMission";
-import GrowthChart from "../components/gamification/GrowthChart";
 import MemberGrowthOverview from "../components/gamification/MemberGrowthOverview";
 import ScoringModelPanel from "../components/gamification/ScoringModelPanel";
+import SkillGapPanel from "../components/gamification/SkillGapPanel";
 
 export default function Home() {
   const { currentUser } = useGamification();
@@ -54,15 +53,11 @@ export default function Home() {
             </main>
           </>
         ) : (
-          /* ───── メンバー画面: 従来構成 ───── */
+          /* ───── メンバー画面 ─────
+             西村 FB: 今日のミッション / 成長グラフは不要。
+             リーダーとのスキルギャップ + 課題改善の学習リンクを上部に置く。 */
           <>
-            {currentUser && <TodayMission currentUser={currentUser} />}
-
-            {currentUser && (
-              <div className="mb-4">
-                <GrowthChart currentUser={currentUser} />
-              </div>
-            )}
+            {currentUser && <SkillGapPanel currentUser={currentUser} />}
 
             <main>
               <MeetingHub />
