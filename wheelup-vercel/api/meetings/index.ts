@@ -1091,9 +1091,10 @@ function extractSpeakerUtterances(text: string, target: string): {
   // 1 行から話者ラベルを取り出すパターン。順番が重要 (より specific なものを先に試す)。
   // Google Meet の自動文字起こし形式、字幕形式、社内議事録の多様な形式に対応。
   const labelPatterns: RegExp[] = [
-    // 1. Google Meet 議事録エクスポート形式: "あなた (17:55:10)" / "小林駿佑 (17:58:48)"
-    //    最も一般的なケース。本文は次行にあるので body は "" にする。
-    /^\s*([^\(（\d][^\(（]{0,30})\s*[\(（]\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)）]\s*$/,
+    // 1. Google Meet 議事録エクスポート形式 (括弧内が時刻のみ or 日付+午前午後+時刻 の両対応):
+    //    "あなた (17:55:10)" / "小林駿佑 (17:58:48)" / "あなた （2026/06/10 午後03:47）" / "T SD （2026/06/10 午後03:47）"
+    //    括弧内のどこかに HH:MM があれば話者ラベル行とみなす。本文は次行にあるので body は "" になる。
+    /^\s*([^\(（\d][^\(（]{0,30}?)\s*[\(（][^\)）]*\d{1,2}[:：]\d{2}[^\)）]*[\)）]\s*$/,
     // 2. Google Meet 旧式: "山本翔太 12:34 PM" (時刻+AM/PM)
     /^\s*([^\d\s:：][^\d:：]{0,30})\s+\d{1,2}:\d{2}\s*(?:AM|PM|午前|午後)?\s*$/i,
     // 3. Google Meet タブ区切り: "山本翔太\t12:34"
@@ -1258,10 +1259,16 @@ async function scoreMeeting(
   }
   const force = req.method === "POST" && (req.body?.force === true || req.query?.force === "1");
   // 発話者別採点: body/query で target_speaker を渡すと、その人の発言だけ抽出して採点する。
-  const targetSpeaker =
+  let targetSpeaker =
     (typeof req.body?.target_speaker === "string" && req.body.target_speaker.trim()) ||
     (typeof req.query?.target_speaker === "string" && req.query.target_speaker.trim()) ||
     null;
+  // 未指定なら、メンバー面談はその担当者名にフォールバック。
+  // 議事録上で本人が「あなた」と表記されていても extractSpeakerUtterances が別名で拾う。
+  const ex = existing as { consultant_name?: string; is_leader?: boolean };
+  if (!targetSpeaker && !ex.is_leader && ex.consultant_name) {
+    targetSpeaker = ex.consultant_name;
+  }
   const result = await scoreMeetingInternal(db, id, { force, targetSpeaker });
   if ("error" in result) {
     const status = (result.status as number) || 500;
