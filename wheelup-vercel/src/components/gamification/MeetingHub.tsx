@@ -146,9 +146,11 @@ export default function MeetingHub() {
 
   const handleRescore = async (id: string, consultantName?: string | null) => {
     if (scoringId) return; // 他の採点中はクリック無視 (運用面のクォータ保護)
-    // 通常クリック: キャッシュ尊重 (テキスト未変更なら Gemini を呼ばない)
-    // Shift+クリック: 強制再生成 (Gemini を必ず呼ぶ)
-    const force = (window.event as MouseEvent | undefined)?.shiftKey === true;
+    // 「再採点」は明示操作なので常に強制再生成する。
+    //   - 議事録テキストが同じでも採点ロジック (話者分離・観察抽出等) が更新されている
+    //     ことがあり、キャッシュを返すと「ボタンを押しても変わらない」状態になるため。
+    //   - 連打は scoringId ガード + サーバ側レート制限 (6/分) で保護済み。
+    const force = true;
     setScoringId(id);
     try {
       // 安藤・村上からの FB「2 人体制の面談で本人だけ採点できているか不安」への対応:
