@@ -1,7 +1,6 @@
 import { useState, lazy, Suspense } from "react";
 import { GamificationProvider, getSavedUser, clearSavedUser } from "./gamification/GamificationProvider";
 import CelebrationOverlay from "./components/gamification/CelebrationOverlay";
-import StreakFlame from "./components/gamification/StreakFlame";
 import UserSelectPage from "./pages/UserSelectPage";
 
 // 面談FB / RA 開拓は片方ずつしか使わないので分割ロード
@@ -66,7 +65,6 @@ function NavBar({
         </div>
 
         <div className="flex items-center gap-2">
-          {mode === "meeting" && currentUser && <StreakFlame />}
           {currentUser ? (
             <button
               onClick={onSwitchUser}

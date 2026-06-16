@@ -5,6 +5,81 @@
  * ここに表示する内容は api/meetings/index.ts の採点プロンプト内ルーブリックのミラー。
  * ルーブリックを変えたら両方を更新する。
  */
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { getLeaderStyle, extractLeaderStyle, type LeaderStyleAxis } from "../../api/client";
+
+const AX_LABEL: Record<string, string> = { needs: "ニーズ", proposal: "提案", trust: "信頼", closing: "前進", intel: "情報" };
+
+function LeaderStyleSection() {
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const { data, refetch } = useQuery({
+    queryKey: ["leader-style"],
+    queryFn: getLeaderStyle,
+  });
+  const style: LeaderStyleAxis[] = data?.style ?? [];
+
+  const run = async () => {
+    setRunning(true); setMsg(null);
+    try {
+      const r = await extractLeaderStyle();
+      setMsg(`✅ ${r.source_meetings} 件から小林の流儀を抽出しました。次回以降の採点に反映されます。`);
+      await refetch();
+    } catch (e) {
+      setMsg(`❌ ${(e as Error).message}`);
+    } finally { setRunning(false); }
+  };
+
+  return (
+    <div className="rounded-xl border-2 border-[#FF9600] bg-[#fff7ed] p-3">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-[12px] font-extrabold text-[#cc7800]">🥇 小林の流儀（18件のデータから抽出）</span>
+        <button
+          onClick={run}
+          disabled={running}
+          className="shrink-0 text-[11px] font-extrabold px-3 py-1.5 rounded-xl text-white disabled:opacity-40"
+          style={{ backgroundColor: "#FF9600", borderBottom: "2px solid #cc7800" }}
+        >
+          {running ? "抽出中…(~30秒)" : style.length > 0 ? "🔄 再抽出" : "▶ 流儀を抽出"}
+        </button>
+      </div>
+      <p className="text-[10px] font-bold text-[#996600] leading-relaxed">
+        小林さんの面談から「繰り返し現れる強い型・決め台詞」を AI が抽出し、採点の判断軸に上乗せします。
+        （手書きの基準＝土台、これ＝小林さん実データの上書き）
+      </p>
+      {msg && <p className="text-[10px] font-bold mt-1.5 text-[#cc7800]">{msg}</p>}
+      {data?.generated_at && (
+        <p className="text-[9px] text-[#afafaf] mt-1">最終抽出: {new Date(data.generated_at).toLocaleString("ja-JP")}</p>
+      )}
+
+      {style.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {style.map((s) => (
+            <div key={s.axis} className="rounded-lg bg-white border border-[#f0d9b0] p-2">
+              <div className="text-[10px] font-extrabold text-[#cc7800] mb-0.5">【{AX_LABEL[s.axis] || s.axis}】</div>
+              {s.strong_behaviors?.length > 0 && (
+                <ul className="space-y-0.5 mb-1">
+                  {s.strong_behaviors.map((b, i) => (
+                    <li key={i} className="text-[10px] font-bold text-[#4b4b4b] leading-relaxed">・{b}</li>
+                  ))}
+                </ul>
+              )}
+              {s.signature_phrases?.length > 0 && (
+                <p className="text-[10px] text-[#777] leading-relaxed">
+                  決め台詞: {s.signature_phrases.map((p) => `「${p}」`).join(" / ")}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {style.length === 0 && (
+        <p className="text-[10px] font-bold text-[#996600] mt-1.5">まだ抽出していません。「▶ 流儀を抽出」を押すと、小林さんの面談から型を取り出します。</p>
+      )}
+    </div>
+  );
+}
 
 type AxisModel = {
   key: string;
@@ -67,6 +142,9 @@ export default function ScoringModelPanel() {
             <li>・ 採点は本人（議事録の「あなた」＝担当者）の発言のみが対象。同席者の発言は除外。</li>
           </ul>
         </div>
+
+        {/* 小林の流儀 (18件から抽出してルーブリックを補強) */}
+        <LeaderStyleSection />
 
         {/* 5 軸ルーブリック */}
         {AXES.map((a) => (

@@ -74,6 +74,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (segments[0] === "training-health" && req.method === "GET") {
       return await trainingHealth(db, res);
     }
+    // --- /api/meetings/extract-style (リーダー流儀を18件から抽出してルーブリック補強) ---
+    if (segments[0] === "extract-style" && req.method === "POST") {
+      return await extractLeaderStyle(db, req, res);
+    }
+    // --- /api/meetings/style (保存済み流儀プロファイル取得) ---
+    if (segments[0] === "style" && req.method === "GET") {
+      return await getLeaderStyle(db, res);
+    }
     // --- /api/meetings/drive-import (ミモが Drive に格納する議事録を取り込み) ---
     if (segments[0] === "drive-import" && req.method === "POST") {
       return await driveImport(db, req, res);
@@ -1422,6 +1430,27 @@ async function scoreMeetingInternal(
     }
   } catch { /* observations 未生成のソースのみのケース */ }
 
+  // 小林の流儀プロファイル (extract-style で18件から抽出済み) を注入。
+  // 手書きルーブリックを「小林が実際に繰り返している行動・決め台詞」で補強する。
+  let leaderStyle = "";
+  let leaderStyleKey = "";
+  try {
+    const { data: styleRow } = await db.from("meeting_playbook_cache")
+      .select("playbook, generated_at")
+      .eq("leader_name", "__style_profile__")
+      .single();
+    const sp = styleRow?.playbook as Array<{ axis: string; strong_behaviors?: string[]; signature_phrases?: string[]; why_it_works?: string }> | null;
+    if (Array.isArray(sp) && sp.length > 0) {
+      const AXLABEL: Record<string, string> = { needs: "ニーズ", proposal: "提案", trust: "信頼", closing: "前進", intel: "情報" };
+      leaderStyle = sp.map((s) => {
+        const beh = (s.strong_behaviors || []).map((b) => `    - ${b}`).join("\n");
+        const ph = (s.signature_phrases || []).map((p) => `「${p}」`).join(" / ");
+        return `【${AXLABEL[s.axis] || s.axis}】小林の強い型:\n${beh}${ph ? `\n    決め台詞: ${ph}` : ""}${s.why_it_works ? `\n    効く理由: ${s.why_it_works}` : ""}`;
+      }).join("\n");
+      leaderStyleKey = String(styleRow?.generated_at || "");
+    }
+  } catch { /* テーブル未作成 / 未抽出なら空 */ }
+
   // リーダーが過去に他メンバー面談に残したコメント (leader_feedback) を学習材料として注入。
   // "リーダーはこの場面でこう指導している" を AI が踏まえて採点・改善案を出せるようにする。
   let leaderCoaching = "";
@@ -1493,7 +1522,7 @@ async function scoreMeetingInternal(
   // 本文の細かい改行差異や leader meeting 追加でキャッシュが頻繁に飛ぶのを防ぐ。
   // キャッシュキーに speaker filter + calibration も含める: 校正を変えたら必ず再採点される。
   const inputHash = createHash("sha256")
-    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}`)
+    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}`)
     .digest("hex");
 
   // (旧 inputHash は上に新版で置き換え済み)
@@ -1598,7 +1627,14 @@ async function scoreMeetingInternal(
 **Step 5 (coaching):** 各軸の weak の中で改善余地が最大のものを 1 件選び、quote/issue/rewrite を出す。
 ※ 一般論の coaching は強制で却下される (サーバ側で監査)。 weak observations の引用に紐づいた具体的なセリフだけを出す。
 
-${goldObservations ? `## ⭐⭐ ゴールド観察ライブラリ (確認済み strong/weak 行動例・最優先で参照)
+${leaderStyle ? `## 🥇 小林の流儀 (本人の18件から抽出した "繰り返し現れる強い型"・最優先の判断軸)
+新しい面談を採点する時、その担当者が下記の "小林の型" に近い行動をどれだけ取れているかを見る。
+型に沿った具体行動があれば strong、欠けていれば weak の根拠になる。決め台詞は一字一句の模倣ではなく "狙い" を見る。
+<LEADER_STYLE>
+${leaderStyle}
+</LEADER_STYLE>
+
+` : ""}${goldObservations ? `## ⭐⭐ ゴールド観察ライブラリ (確認済み strong/weak 行動例・最優先で参照)
 リーダー自身の面談 + リーダーが「良い」と判定したメンバー面談から、過去の採点で
 **strong/weak タグ付け済み** の具体的観察を軸別に列挙します。
 これは "現場が実際に良い/悪いと判定した行動" のリスト。新しい面談の observation を作る際、
@@ -2581,6 +2617,148 @@ ${transcriptSummaries.slice(0, 8000)}
     cached: false,
     ...(playbook.length === 0 ? { warning: "プレイブックを抽出できませんでした。面談記録の質・量を確認してください。" } : {}),
   });
+}
+
+/**
+ * /api/meetings/extract-style (リーダー専用)
+ * 小林のリーダー面談を解析し、軸ごとに「繰り返し現れる強い行動・決め台詞」を抽出して
+ * "小林の流儀プロファイル" を生成・保存する。採点時にこのプロファイルをプロンプトへ注入し、
+ * 手書きルーブリックを 小林の実データで補強する。
+ * 西村/小林 FB「18件の議事録を解析して共通する強い行動パターンを抽出 → ルーブリックに反映」。
+ * 保存先: meeting_playbook_cache の leader_name="__style_profile__" 行 (playbook カラムに JSON)。
+ */
+async function extractLeaderStyle(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "流儀の抽出はリーダー (小林) のみ実行可能です");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+
+  const { data: meetings, error } = await db.from("meeting_transcripts")
+    .select("id, title, transcript_text, score_data")
+    .eq("is_leader", true)
+    .is("deleted_at", null)
+    .order("recorded_at", { ascending: false })
+    .limit(20);
+  if (error) return res.status(500).json({ error: `面談取得失敗: ${error.message}` });
+  if (!meetings || meetings.length === 0) {
+    return res.status(400).json({ error: "リーダー面談がありません。先にリーダー面談を登録してください。" });
+  }
+
+  // 各面談から小林(=あなた)の発言だけを抽出して送る (同席者の発言で薄まるのを防ぐ)
+  const corpus = meetings.map((m, i) => {
+    const ex = extractSpeakerUtterances((m.transcript_text as string) || "", "小林");
+    const body = (ex.utterances || (m.transcript_text as string) || "").slice(0, 1400);
+    return `[面談${i + 1}] ${m.title}\n${body}`;
+  }).join("\n\n").slice(0, 16000);
+
+  const prompt = `あなたは建築技術者専門の人材紹介のトップコーチです。
+以下は同一人物「小林」の面談記録 ${meetings.length} 件から、小林本人の発言だけを抜き出したものです。
+小林が **繰り返し使っている強い行動・決め台詞** を 5 軸ごとに抽出してください。
+
+5 軸: needs(ニーズ深掘り) / proposal(提案力) / trust(信頼構築) / closing(前進) / intel(情報網羅)
+
+## 抽出ルール:
+- 1 回だけの偶発でなく、複数面談に共通して現れるパターンを優先
+- signature_phrases は議事録に実在する小林の言い回しをできるだけそのまま (各軸 2〜4 個)
+- strong_behaviors はその軸で小林が高評価になる具体行動 (各軸 2〜3 個・各40字以内)
+- why_it_works はなぜそれが効くか (60字以内)
+
+## 出力 (JSON 配列のみ・前置き禁止):
+[
+  { "axis": "needs", "strong_behaviors": ["..."], "signature_phrases": ["..."], "why_it_works": "..." },
+  { "axis": "proposal", ... },
+  { "axis": "trust", ... },
+  { "axis": "closing", ... },
+  { "axis": "intel", ... }
+]
+
+<CORPUS>
+${corpus}
+</CORPUS>`;
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 4096, responseMimeType: "application/json" },
+  });
+
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+  let geminiRes: Response | null = null;
+  let lastErr = "";
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (r.ok) { geminiRes = r; break; }
+      lastErr = `${model}: ${r.status}`;
+    } catch (e) { lastErr = `${model}: ${(e as Error).message}`; }
+  }
+  if (!geminiRes) return res.status(502).json({ error: `流儀抽出失敗 (Gemini): ${lastErr}` });
+
+  const geminiData = await geminiRes.json();
+  const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const AXES = ["needs", "proposal", "trust", "closing", "intel"];
+  let style: Array<Record<string, unknown>> = [];
+  try {
+    const cleaned = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1");
+    const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) {
+        style = parsed
+          .filter((o) => o && typeof o === "object" && AXES.includes((o as { axis?: string }).axis || ""))
+          .map((o) => {
+            const x = o as Record<string, unknown>;
+            return {
+              axis: x.axis,
+              strong_behaviors: Array.isArray(x.strong_behaviors) ? (x.strong_behaviors as unknown[]).slice(0, 4).map((s) => String(s).slice(0, 80)) : [],
+              signature_phrases: Array.isArray(x.signature_phrases) ? (x.signature_phrases as unknown[]).slice(0, 4).map((s) => String(s).slice(0, 120)) : [],
+              why_it_works: String(x.why_it_works || "").slice(0, 120),
+            };
+          });
+      }
+    }
+  } catch { style = []; }
+
+  if (style.length === 0) {
+    return res.status(502).json({ error: "流儀を抽出できませんでした。面談の量・質を確認してください。" });
+  }
+
+  try {
+    await db.from("meeting_playbook_cache").upsert({
+      leader_name: "__style_profile__",
+      cache_key: `style:${meetings.length}:${Date.now()}`,
+      playbook: style,
+      source_meeting_count: meetings.length,
+      generated_at: new Date().toISOString(),
+    }, { onConflict: "leader_name" });
+  } catch (e) {
+    return res.status(500).json({ error: `保存失敗 (meeting_playbook_cache テーブル未作成かも): ${(e as Error).message}` });
+  }
+
+  return res.json({ ok: true, style, source_meetings: meetings.length, generated_at: new Date().toISOString() });
+}
+
+/**
+ * /api/meetings/style (GET) — 保存済みの流儀プロファイルを返す (リーダー画面の表示用)。
+ */
+async function getLeaderStyle(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  res: VercelResponse,
+) {
+  try {
+    const { data } = await db.from("meeting_playbook_cache")
+      .select("playbook, source_meeting_count, generated_at")
+      .eq("leader_name", "__style_profile__")
+      .single();
+    if (!data) return res.json({ style: [], source_meetings: 0, generated_at: null });
+    return res.json({ style: data.playbook ?? [], source_meetings: data.source_meeting_count ?? 0, generated_at: data.generated_at ?? null });
+  } catch {
+    return res.json({ style: [], source_meetings: 0, generated_at: null });
+  }
 }
 
 /* ========== Contextual Phase Coaching ========== */

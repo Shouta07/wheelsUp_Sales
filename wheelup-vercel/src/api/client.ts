@@ -1105,6 +1105,20 @@ export async function calibrateMeeting(
   return request(`/meetings/${id}/calibrate`, { method: "POST", body: JSON.stringify(data) });
 }
 
+// 小林の流儀プロファイル (18件の面談から抽出した軸別の強い型)
+export type LeaderStyleAxis = {
+  axis: "needs" | "proposal" | "trust" | "closing" | "intel";
+  strong_behaviors: string[];
+  signature_phrases: string[];
+  why_it_works?: string;
+};
+export async function getLeaderStyle(): Promise<{ style: LeaderStyleAxis[]; source_meetings: number; generated_at: string | null }> {
+  return request(`/meetings/style`);
+}
+export async function extractLeaderStyle(): Promise<{ ok: boolean; style: LeaderStyleAxis[]; source_meetings: number; generated_at: string }> {
+  return request(`/meetings/extract-style`, { method: "POST", body: JSON.stringify({}) });
+}
+
 // 手動アノテーション: リーダーが議事録に「これは strong」「これは weak」と直接タグ付け
 // (西村 FB 2026-06-06「手動介入で精度向上ならやる価値ある」直接対応)
 export async function addManualObservation(
