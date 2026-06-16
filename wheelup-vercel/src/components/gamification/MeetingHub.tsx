@@ -9,6 +9,8 @@ import {
   summarizeMeeting,
   addLeaderFeedback,
   calibrateMeeting,
+  addManualObservation,
+  removeManualObservation,
   bulkRescore,
   autoCalibrate,
   fetchTrainingHealth,
@@ -623,6 +625,17 @@ function MeetingEntry({
   const [rescoreError, setRescoreError] = useState<string | null>(null);
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
   const [manualOpen, setManualOpen] = useState(false);
+  const qc = useQueryClient();
+  // 手動アノテーション (議事録に「これは strong/weak」とタグ付け・西村FB 2026-06-06 対応)
+  const [annotOpen, setAnnotOpen] = useState(false);
+  const [annotQuote, setAnnotQuote] = useState("");
+  const [annotAxis, setAnnotAxis] = useState<"needs" | "proposal" | "trust" | "closing" | "intel">("needs");
+  const [annotAssessment, setAnnotAssessment] = useState<"strong" | "weak">("strong");
+  const [annotPhase, setAnnotPhase] = useState<"opening" | "hearing" | "proposal" | "closing" | "wrap">("hearing");
+  const [annotWhy, setAnnotWhy] = useState("");
+  const [annotNextMove, setAnnotNextMove] = useState("");
+  const [annotSaving, setAnnotSaving] = useState(false);
+  const [annotError, setAnnotError] = useState<string | null>(null);
   const transcriptDetailsRef = useRef<HTMLDetailsElement>(null);
   const transcriptPreRef = useRef<HTMLPreElement>(null);
   const rescoring = isScoringThis;
@@ -1050,6 +1063,11 @@ function MeetingEntry({
                                   {dim.label}
                                 </span>
                               )}
+                              {o.manual && (
+                                <span className="text-[9px] font-extrabold rounded px-1.5 py-0.5 bg-indigo-100 text-indigo-700" title="リーダーが手動でタグ付けした観察 (= 教師データの最優先ソース)">
+                                  📌 手動
+                                </span>
+                              )}
                             </div>
                             <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">
                               「{o.quote}」
@@ -1228,6 +1246,170 @@ function MeetingEntry({
                   </button>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ─── 手動アノテーション (西村FB 2026-06-06「手動介入で精度向上ならやる」直接対応) ─── */}
+          {isLeaderUser && m.transcript_text && (
+            <div className="rounded-xl border-2 border-indigo-300 bg-indigo-50 p-3 space-y-2">
+              <button
+                onClick={() => { setAnnotOpen((v) => !v); setAnnotError(null); }}
+                className="flex items-center justify-between w-full text-[10px] font-extrabold text-indigo-800 uppercase tracking-wider"
+              >
+                <span>📌 手動で観察をタグ付け {m.calibration?.manual_observations ? `(${m.calibration.manual_observations.length} 件)` : ""}</span>
+                <span>{annotOpen ? "▼" : "▶"}</span>
+              </button>
+              {!annotOpen && (
+                <p className="text-[10px] font-bold text-indigo-700 leading-relaxed">
+                  AI の判定ではなく、議事録の発言を直接「これは strong / weak」とタグ付けできます。
+                  手動観察は AI 採点に最優先で参入し、ゴールド観察ライブラリ (全員の教師データ) にも即時反映されます。
+                </p>
+              )}
+
+              {annotOpen && (
+                <div className="space-y-2 bg-white border border-indigo-200 rounded-lg p-2.5">
+                  {/* 既存の手動観察 */}
+                  {(m.calibration?.manual_observations?.length ?? 0) > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[10px] font-extrabold text-indigo-700">既存の手動観察</div>
+                      {m.calibration!.manual_observations!.map((mo, idx) => {
+                        const dim = DIMS.find((d) => d.key === mo.axis);
+                        return (
+                          <div key={idx} className="flex items-start gap-1.5 bg-indigo-50 border border-indigo-100 rounded p-1.5">
+                            <span className={`shrink-0 text-[10px] font-extrabold rounded px-1.5 ${
+                              mo.assessment === "strong" ? "text-green-700 bg-green-100" : "text-red-700 bg-red-100"
+                            }`}>{mo.assessment === "strong" ? "◎" : "△"}</span>
+                            {dim && <span className="shrink-0 text-[9px] font-extrabold rounded px-1.5 py-0.5" style={{ backgroundColor: dim.color + "20", color: dim.color }}>{dim.label}</span>}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed">「{mo.quote}」</p>
+                              {mo.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {mo.why}</p>}
+                              {mo.next_move && <p className="text-[10px] font-bold text-green-700 leading-relaxed">✅ {mo.next_move}</p>}
+                            </div>
+                            <button
+                              onClick={async () => {
+                                if (!window.confirm("この手動観察を削除しますか？")) return;
+                                try {
+                                  await removeManualObservation(m.id, idx);
+                                  qc.invalidateQueries({ queryKey: ["meetings"] });
+                                } catch (e) {
+                                  setAnnotError((e as Error).message);
+                                }
+                              }}
+                              className="shrink-0 text-[10px] font-bold text-red-600 hover:text-red-800"
+                              title="削除"
+                            >✕</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* 新規追加フォーム */}
+                  <div className="border-t border-indigo-100 pt-2 space-y-1.5">
+                    <div className="text-[10px] font-extrabold text-indigo-700">新しい観察を追加</div>
+                    <textarea
+                      value={annotQuote}
+                      onChange={(e) => setAnnotQuote(e.target.value)}
+                      placeholder="議事録から該当する発言を 6 文字以上コピペ (改変・要約せず原文のまま)"
+                      className="w-full rounded-lg border border-indigo-200 bg-white px-2 py-1.5 text-[11px] font-bold text-[#4b4b4b] h-16 focus:border-indigo-500 focus:outline-none resize-none"
+                    />
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <label className="text-[9px] font-extrabold text-indigo-700 block mb-0.5">軸</label>
+                        <select
+                          value={annotAxis}
+                          onChange={(e) => setAnnotAxis(e.target.value as typeof annotAxis)}
+                          className="w-full text-[10px] font-bold rounded-md border border-indigo-200 px-1.5 py-1 bg-white"
+                        >
+                          <option value="needs">ニーズ</option>
+                          <option value="proposal">提案</option>
+                          <option value="trust">信頼</option>
+                          <option value="closing">前進</option>
+                          <option value="intel">情報</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-extrabold text-indigo-700 block mb-0.5">判定</label>
+                        <select
+                          value={annotAssessment}
+                          onChange={(e) => setAnnotAssessment(e.target.value as typeof annotAssessment)}
+                          className="w-full text-[10px] font-bold rounded-md border border-indigo-200 px-1.5 py-1 bg-white"
+                        >
+                          <option value="strong">◎ 良かった (strong)</option>
+                          <option value="weak">△ 惜しかった (weak)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-extrabold text-indigo-700 block mb-0.5">フェーズ</label>
+                        <select
+                          value={annotPhase}
+                          onChange={(e) => setAnnotPhase(e.target.value as typeof annotPhase)}
+                          className="w-full text-[10px] font-bold rounded-md border border-indigo-200 px-1.5 py-1 bg-white"
+                        >
+                          <option value="opening">冒頭</option>
+                          <option value="hearing">ヒアリング</option>
+                          <option value="proposal">提案</option>
+                          <option value="closing">クロージング</option>
+                          <option value="wrap">振り返り</option>
+                        </select>
+                      </div>
+                    </div>
+                    <input
+                      value={annotWhy}
+                      onChange={(e) => setAnnotWhy(e.target.value)}
+                      placeholder="なぜ◎/△か (120字以内・任意)"
+                      maxLength={120}
+                      className="w-full rounded-lg border border-indigo-200 bg-white px-2 py-1.5 text-[10px] font-bold text-[#4b4b4b] focus:border-indigo-500 focus:outline-none"
+                    />
+                    {annotAssessment === "weak" && (
+                      <input
+                        value={annotNextMove}
+                        onChange={(e) => setAnnotNextMove(e.target.value)}
+                        placeholder="次回こう言うべき具体セリフ (200字以内・任意)"
+                        maxLength={200}
+                        className="w-full rounded-lg border border-green-200 bg-green-50 px-2 py-1.5 text-[10px] font-bold text-green-700 focus:border-green-500 focus:outline-none"
+                      />
+                    )}
+                    {annotError && (
+                      <div className="text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">⚠️ {annotError}</div>
+                    )}
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={async () => {
+                          setAnnotSaving(true);
+                          setAnnotError(null);
+                          try {
+                            await addManualObservation(m.id, {
+                              quote: annotQuote.trim(),
+                              axis: annotAxis,
+                              assessment: annotAssessment,
+                              phase: annotPhase,
+                              why: annotWhy.trim() || undefined,
+                              next_move: annotAssessment === "weak" ? (annotNextMove.trim() || undefined) : undefined,
+                            });
+                            setAnnotQuote("");
+                            setAnnotWhy("");
+                            setAnnotNextMove("");
+                            qc.invalidateQueries({ queryKey: ["meetings"] });
+                          } catch (e) {
+                            setAnnotError((e as Error).message);
+                          } finally {
+                            setAnnotSaving(false);
+                          }
+                        }}
+                        disabled={annotSaving || annotQuote.trim().length < 6}
+                        className="flex-1 text-[10px] font-extrabold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+                      >
+                        {annotSaving ? "保存中..." : "📌 観察を追加"}
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-indigo-600 leading-relaxed">
+                      ※ quote は議事録に存在するかサーバ側で照合されます。改変・要約は弾かれます。<br />
+                      ※ 追加した観察は次回採点で AI 観察と merge され、ゴールド観察ライブラリにも即時反映されます。
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -136,6 +136,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (sub === "calibrate" && req.method === "POST") {
       return await calibrateMeeting(db, id, req, res);
     }
+    // --- /api/meetings/:id/manual-observation (リーダーが議事録に手動で観察を追加・削除) ---
+    if (sub === "manual-observation") {
+      if (req.method === "POST") return await addManualObservation(db, id, req, res);
+      if (req.method === "DELETE") return await removeManualObservation(db, id, req, res);
+    }
     // --- /api/meetings/:id/diagnose-speaker (話者抽出の動作確認) ---
     if (sub === "diagnose-speaker" && req.method === "GET") {
       return await diagnoseSpeaker(db, id, req, res);
@@ -362,6 +367,107 @@ async function calibrateMeeting(
   if (error) return res.status(500).json({ error: error.message });
 
   return res.json({ ok: true, calibration });
+}
+
+/**
+ * リーダーが議事録に手動で観察を追加。
+ * 西村 FB 2026-06-06「手動での介入によって精度が向上するのであれば実施する価値がある」直接対応。
+ * AI 採点に頼らず leader が現場感覚で「ここは strong」「ここは weak」とタグできる。
+ * 追加された手動観察は:
+ *   - そのまま calibration.manual_observations に保存 (再採点でも消えない)
+ *   - 採点時に AI の observations と merge され、strong/weak 集計にも参入
+ *   - gold observation library の最優先ソースとして扱う (= 全メンバー面談の教師データに即反映)
+ */
+async function addManualObservation(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "手動アノテーションはリーダーのみ実行可能です");
+
+  const body = (req.body ?? {}) as {
+    quote?: string;
+    axis?: string;
+    assessment?: string;
+    why?: string;
+    next_move?: string;
+    phase?: string;
+  };
+
+  const quote = String(body.quote || "").trim().slice(0, 200);
+  if (quote.length < 6) return res.status(400).json({ error: "quote は 6 文字以上が必要" });
+
+  const AXES = ["needs", "proposal", "trust", "closing", "intel"];
+  const PHASES = ["opening", "hearing", "proposal", "closing", "wrap"];
+  const axis = AXES.includes(body.axis || "") ? body.axis : null;
+  if (!axis) return res.status(400).json({ error: `axis は ${AXES.join("/")} のいずれか` });
+  const assessment = body.assessment === "strong" ? "strong" : body.assessment === "weak" ? "weak" : null;
+  if (!assessment) return res.status(400).json({ error: "assessment は 'strong' | 'weak'" });
+  const phase = PHASES.includes(body.phase || "") ? body.phase : "hearing";
+
+  // 引用が議事録に存在するか server-side で照合 (タイポ防止)
+  const { data: meeting } = await db.from("meeting_transcripts").select("transcript_text, calibration, score_data, is_leader").eq("id", id).single();
+  if (!meeting) return res.status(404).json({ error: "議事録が見つかりません" });
+  const transcript = ((meeting as { transcript_text?: string }).transcript_text || "");
+  const normalize = (s: string) => s.replace(/[\s　\p{P}\p{S}]+/gu, "").toLowerCase();
+  const nq = normalize(quote);
+  const nt = normalize(transcript);
+  const win = Math.min(10, nq.length);
+  let found = false;
+  for (let i = 0; i + win <= nq.length; i++) {
+    if (nt.includes(nq.slice(i, i + win))) { found = true; break; }
+  }
+  if (!found) return res.status(400).json({ error: "quote が議事録に見つかりません。改変・要約せず議事録の発言をそのままコピーしてください" });
+
+  const newObs = {
+    quote,
+    axis,
+    assessment,
+    phase,
+    why: String(body.why || "").slice(0, 120),
+    next_move: assessment === "weak" ? String(body.next_move || "").slice(0, 200) : "",
+    manual: true,
+    by: user,
+    at: new Date().toISOString(),
+  };
+
+  const existing = ((meeting as { calibration?: { manual_observations?: unknown[] } }).calibration ?? {}) as Record<string, unknown>;
+  const prevList = Array.isArray(existing.manual_observations) ? (existing.manual_observations as unknown[]) : [];
+  const updatedCalibration = {
+    ...existing,
+    manual_observations: [...prevList, newObs].slice(-50), // 最大 50 件
+  };
+
+  const { error } = await db.from("meeting_transcripts").update({ calibration: updatedCalibration }).eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, observation: newObs, total: updatedCalibration.manual_observations.length });
+}
+
+async function removeManualObservation(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "手動アノテーションはリーダーのみ実行可能です");
+
+  const indexRaw = (req.query.index as string | undefined) ?? (req.body as { index?: number } | undefined)?.index;
+  const idx = Number(indexRaw);
+  if (!Number.isFinite(idx) || idx < 0) return res.status(400).json({ error: "index は 0 以上の整数" });
+
+  const { data: meeting } = await db.from("meeting_transcripts").select("calibration").eq("id", id).single();
+  if (!meeting) return res.status(404).json({ error: "議事録が見つかりません" });
+  const existing = ((meeting as { calibration?: { manual_observations?: unknown[] } }).calibration ?? {}) as Record<string, unknown>;
+  const list = Array.isArray(existing.manual_observations) ? (existing.manual_observations as unknown[]) : [];
+  if (idx >= list.length) return res.status(400).json({ error: "index が範囲外" });
+  const next = [...list.slice(0, idx), ...list.slice(idx + 1)];
+  const updated = { ...existing, manual_observations: next };
+  const { error } = await db.from("meeting_transcripts").update({ calibration: updated }).eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, total: next.length });
 }
 
 /**
@@ -1246,36 +1352,51 @@ async function scoreMeetingInternal(
       .limit(20);
     if (goldSrc && goldSrc.length > 0) {
       type Obs = { quote: string; axis: string; assessment: string; why?: string };
-      const collected: Array<{ source: string; isLeader: boolean; o: Obs }> = [];
+      // manual=true は「leader が議事録を見て直接タグ付けした観察」なので最優先扱いとする
+      const collected: Array<{ source: string; isLeader: boolean; manual: boolean; o: Obs }> = [];
       for (const m of goldSrc) {
-        const obs = (m.score_data as { observations?: Obs[] } | null)?.observations;
-        if (!Array.isArray(obs)) continue;
         const title = ((m as { title?: string }).title || "面談").slice(0, 30);
-        for (const o of obs) {
-          if (!o?.quote || !o?.axis || !o?.assessment) continue;
-          collected.push({ source: title, isLeader: !!m.is_leader, o });
+        const obs = (m.score_data as { observations?: Obs[] } | null)?.observations;
+        if (Array.isArray(obs)) {
+          for (const o of obs) {
+            if (!o?.quote || !o?.axis || !o?.assessment) continue;
+            collected.push({ source: title, isLeader: !!m.is_leader, manual: false, o });
+          }
+        }
+        // calibration.manual_observations はリーダーが直接ラベル付けした観察。
+        // AI 出力より信頼度が高いので、ライブラリでは最上位にソートする。
+        const manual = (m.calibration as { manual_observations?: Obs[] } | null)?.manual_observations;
+        if (Array.isArray(manual)) {
+          for (const o of manual) {
+            if (!o?.quote || !o?.axis || !o?.assessment) continue;
+            collected.push({ source: title, isLeader: !!m.is_leader, manual: true, o });
+          }
         }
       }
       if (collected.length > 0) {
         const AXES_GO = ["needs", "proposal", "trust", "closing", "intel"];
         const lines: string[] = [];
+        const priority = (c: { isLeader: boolean; manual: boolean }) =>
+          (c.manual ? 2 : 0) + (c.isLeader ? 1 : 0);
         for (const axis of AXES_GO) {
-          // strong はリーダー面談を優先・最大 3 件
+          // manual=最優先 → リーダー → メンバー の順でソート (strong 最大 3 件)
           const strongs = collected
             .filter((c) => c.o.axis === axis && c.o.assessment === "strong")
-            .sort((a, b) => Number(b.isLeader) - Number(a.isLeader))
+            .sort((a, b) => priority(b) - priority(a))
             .slice(0, 3);
-          // weak は学びになる典型例を 1 件
           const weaks = collected
             .filter((c) => c.o.axis === axis && c.o.assessment === "weak")
+            .sort((a, b) => priority(b) - priority(a))
             .slice(0, 1);
           if (strongs.length === 0 && weaks.length === 0) continue;
           lines.push(`【${axis}】`);
           for (const c of strongs) {
-            lines.push(`  ◎ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source}${c.isLeader ? "/リーダー" : ""})`);
+            const tag = c.manual ? "★手動" : c.isLeader ? "/リーダー" : "";
+            lines.push(`  ◎ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source}${tag})`);
           }
           for (const c of weaks) {
-            lines.push(`  △ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source})`);
+            const tag = c.manual ? "★手動" : "";
+            lines.push(`  △ 「${c.o.quote.slice(0, 120)}」 — ${(c.o.why || "").slice(0, 80)} (出典: ${c.source}${tag})`);
           }
         }
         goldObservations = lines.join("\n");
@@ -1953,9 +2074,9 @@ ${text.slice(0, 25000)}
 
     const PHASES = ["opening", "hearing", "proposal", "closing", "wrap"] as const;
     let droppedFakeObs = 0;
+    type ObsEntry = { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string; manual?: boolean; _pos: number };
+    const built: ObsEntry[] = [];
     if (Array.isArray(obsRaw)) {
-      type ObsEntry = { quote: string; timestamp: string; phase: string; axis: string; assessment: string; why: string; next_move: string; _pos: number };
-      const built: ObsEntry[] = [];
       for (const oRaw of obsRaw.slice(0, 30)) {
         if (!oRaw || typeof oRaw !== "object") continue;
         const o = oRaw as Record<string, unknown>;
@@ -1985,12 +2106,57 @@ ${text.slice(0, 25000)}
           _pos: pos,
         });
       }
-      // 議事録上の位置でソート → 完全な時系列順を保証 (AI が並び順を崩しても無効化される)
-      built.sort((a, b) => a._pos - b._pos);
-      parsed.observations = built.map(({ _pos: _unused, ...rest }) => { void _unused; return rest; });
-    } else {
-      parsed.observations = [];
     }
+
+    // リーダーが手動で追加した観察を merge する (西村 FB 2026-06-06「手動介入で精度向上ならやる」直接対応)。
+    // - 同じ quote が AI からも出ていた場合は manual を優先して入れ替え (重複排除)
+    // - 手動観察は strong/weak 集計にも参入 (= スコア再計算にも反映)
+    // - UI では manual: true バッジで識別
+    const manualObs = (meeting.calibration as { manual_observations?: Array<Record<string, unknown>> } | null)?.manual_observations;
+    if (Array.isArray(manualObs)) {
+      const norm = (s: string) => normalize(s);
+      const existingKeys = new Set(built.map((b) => norm(b.quote)));
+      for (const mRaw of manualObs) {
+        if (!mRaw || typeof mRaw !== "object") continue;
+        const axisRaw = typeof mRaw.axis === "string" ? mRaw.axis : "needs";
+        const axis = (AXES as readonly string[]).includes(axisRaw) ? axisRaw : "needs";
+        const assessment = mRaw.assessment === "strong" ? "strong" : "weak";
+        const phaseRaw = typeof mRaw.phase === "string" ? mRaw.phase : "hearing";
+        const phase = (PHASES as readonly string[]).includes(phaseRaw) ? phaseRaw : "hearing";
+        const quote = String(mRaw.quote || "").slice(0, 200);
+        const pos = positionOf(quote);
+        if (pos < 0) continue; // 議事録に無い手動観察は無視
+        const key = norm(quote);
+        if (existingKeys.has(key)) {
+          // 既に AI が出していたら、その index を入れ替えて manual を優先
+          const idx = built.findIndex((b) => norm(b.quote) === key);
+          if (idx >= 0) {
+            const prev = built[idx];
+            const prevAssess = prev.assessment === "strong" ? "strong" : "weak";
+            obsCounts[prev.axis][prevAssess]--;
+            built.splice(idx, 1);
+          }
+        }
+        existingKeys.add(key);
+        obsCounts[axis][assessment]++;
+        const tsExtracted = extractNearestTimestamp(pos);
+        built.push({
+          quote,
+          timestamp: tsExtracted || "",
+          phase,
+          axis,
+          assessment,
+          why: String(mRaw.why || "").slice(0, 120),
+          next_move: assessment === "weak" ? String(mRaw.next_move || "").slice(0, 200) : "",
+          manual: true,
+          _pos: pos,
+        });
+      }
+    }
+
+    // 議事録上の位置でソート → 完全な時系列順を保証 (AI が並び順を崩しても無効化される)
+    built.sort((a, b) => a._pos - b._pos);
+    parsed.observations = built.map(({ _pos: _unused, ...rest }) => { void _unused; return rest; });
 
     // phase_summary のサニタイズ
     const psRaw = (parsed as { phase_summary?: unknown }).phase_summary;

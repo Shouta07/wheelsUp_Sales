@@ -1003,6 +1003,7 @@ export interface MeetingScore {
     assessment: "strong" | "weak";
     why?: string;
     next_move?: string;
+    manual?: boolean;
   }>;
   // 商談フェーズごとの「何が良く・何が惜しかったか」(80字×5フェーズ)
   phase_summary?: Partial<Record<"opening" | "hearing" | "proposal" | "closing" | "wrap", string>>;
@@ -1072,18 +1073,49 @@ export async function scoreMeeting(
 }
 
 // リーダー校正: 「良い面談 / 悪い面談」マーキング (採点アンカーとして AI に学習させる)
+export interface ManualObservation {
+  quote: string;
+  axis: "needs" | "proposal" | "trust" | "closing" | "intel";
+  assessment: "strong" | "weak";
+  phase?: "opening" | "hearing" | "proposal" | "closing" | "wrap";
+  why?: string;
+  next_move?: string;
+  manual?: boolean;
+  by?: string;
+  at?: string;
+}
 export interface MeetingCalibration {
-  quality: "good" | "bad";
-  comment: string;
-  target_scores: Record<string, number> | null;
-  marked_by: string;
-  marked_at: string;
+  quality?: "good" | "bad";
+  comment?: string;
+  target_scores?: Record<string, number> | null;
+  marked_by?: string;
+  marked_at?: string;
+  manual_observations?: ManualObservation[];
 }
 export async function calibrateMeeting(
   id: string,
   data: { quality: "good" | "bad" | null; comment?: string; target_scores?: Record<string, number> },
 ): Promise<{ ok: true; calibration: MeetingCalibration | null }> {
   return request(`/meetings/${id}/calibrate`, { method: "POST", body: JSON.stringify(data) });
+}
+
+// 手動アノテーション: リーダーが議事録に「これは strong」「これは weak」と直接タグ付け
+// (西村 FB 2026-06-06「手動介入で精度向上ならやる価値ある」直接対応)
+export async function addManualObservation(
+  id: string,
+  data: {
+    quote: string;
+    axis: "needs" | "proposal" | "trust" | "closing" | "intel";
+    assessment: "strong" | "weak";
+    phase?: "opening" | "hearing" | "proposal" | "closing" | "wrap";
+    why?: string;
+    next_move?: string;
+  },
+): Promise<{ ok: true; observation: ManualObservation; total: number }> {
+  return request(`/meetings/${id}/manual-observation`, { method: "POST", body: JSON.stringify(data) });
+}
+export async function removeManualObservation(id: string, index: number): Promise<{ ok: true; total: number }> {
+  return request(`/meetings/${id}/manual-observation?index=${index}`, { method: "DELETE" });
 }
 
 // 一括再採点 (リーダー専用)。1 リクエスト最大 4 件。
