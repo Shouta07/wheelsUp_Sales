@@ -1014,6 +1014,11 @@ export interface MeetingScore {
     adjusted_axes?: number;
     dropped_fake_observations?: number;
     dropped_fake_coaching?: number;
+    leader_floor_applied?: boolean;
+    leader_floor_value?: number;
+    leader_floor_axes_raised?: number;
+    leader_floor_before?: Record<string, number>;
+    leader_floor_note?: string;
     note?: string;
   };
   target_speaker?: string;            // 採点対象に絞り込んだ発話者名

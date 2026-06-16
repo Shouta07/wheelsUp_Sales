@@ -976,6 +976,11 @@ function MeetingEntry({
                     捏造引用 {(score._score_audit.dropped_fake_observations || 0) + (score._score_audit.dropped_fake_coaching || 0)} 件を除外
                   </span>
                 )}
+                {score._score_audit?.leader_floor_applied && (
+                  <span className="text-[9px] font-bold text-purple-700 bg-purple-100 rounded px-1.5 py-0.5" title={score._score_audit.leader_floor_note}>
+                    リーダー基準点底上げ ({score._score_audit.leader_floor_axes_raised} 軸)
+                  </span>
+                )}
               </div>
               <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
                 議事録の出現順に並ぶ商談フィードバックです。タイムスタンプをクリックで議事録の該当箇所にジャンプ。

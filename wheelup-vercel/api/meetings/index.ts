@@ -2082,6 +2082,39 @@ ${text.slice(0, 25000)}
       };
     }
 
+    // ─── リーダー基準点アンカー (西村 FB 2026-06-06「小林が34点はおかしい・基準は50点」直接対応)
+    // リーダー面談は教師データであり「基準そのもの」なので、AI が表層判定で低く付けたら
+    // 全 5 軸を最低 8 点 (= grade A) に底上げする。これにより:
+    //   - リーダー面談を採点しても 40+ 点になり、メンバー面談との序列が逆転しない
+    //   - 軸ごとの観察 strong/weak は残るので、リーダー面談内の相対的な強弱は依然見える
+    //   - gold observation library に対しても矛盾しない (リーダーの行動 = strong として扱う)
+    const LEADER_FLOOR = 8;
+    if (meeting.is_leader === true && parsed.scores && typeof parsed.scores === "object") {
+      const sc = parsed.scores as Record<string, number>;
+      const before = { ...sc };
+      let floored = 0;
+      for (const axis of AXES) {
+        if (typeof sc[axis] !== "number" || sc[axis] < LEADER_FLOOR) {
+          sc[axis] = LEADER_FLOOR;
+          floored++;
+        }
+      }
+      if (floored > 0) {
+        parsed.total = AXES.reduce((acc, k) => acc + sc[k], 0);
+        const t = parsed.total as number;
+        parsed.grade = t >= 40 ? "S" : t >= 35 ? "A" : t >= 25 ? "B" : t >= 15 ? "C" : "D";
+        const prev = (parsed._score_audit ?? {}) as Record<string, unknown>;
+        parsed._score_audit = {
+          ...prev,
+          leader_floor_applied: true,
+          leader_floor_value: LEADER_FLOOR,
+          leader_floor_axes_raised: floored,
+          leader_floor_before: before,
+          leader_floor_note: "リーダー面談は基準点 = 教師データなので各軸を最低 8 点に底上げ (西村FB 2026-06-06)",
+        };
+      }
+    }
+
     // 旧スコアを score_history に退避してから更新 (成長推移を残す・面談メタも snapshot)
     if (meeting.score_data) {
       try {
