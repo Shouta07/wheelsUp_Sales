@@ -1093,18 +1093,28 @@ function MeetingEntry({
               {DIMS.map(({ key, label, color }) => {
                 const af = score.axis_feedback?.[key as keyof typeof score.axis_feedback];
                 if (!af) return null;
-                const hasContent = (af.strong?.length ?? 0) > 0 || (af.weak?.length ?? 0) > 0;
+                const strongN = af.strong?.length ?? 0;
+                const weakN = af.weak?.length ?? 0;
+                const hasContent = strongN > 0 || weakN > 0;
+                const ref = AXIS_RESOURCES[key];
                 return (
                   <div key={key} className="rounded-lg border border-[#eee] overflow-hidden">
-                    <div className="flex items-center gap-2 px-2.5 py-1.5" style={{ backgroundColor: color + "12" }}>
+                    {/* 採点の根拠ヘッダー: ◎N / △M → スコア (どう評価されたかを明示) */}
+                    <div className="flex items-center gap-2 px-2.5 py-1.5 flex-wrap" style={{ backgroundColor: color + "12" }}>
                       <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "25", color }}>
                         {label}
                       </span>
                       <span className="text-[11px] font-extrabold tabular-nums" style={{ color }}>{af.score} 点</span>
+                      {hasContent && (
+                        <span className="text-[9px] font-bold text-[#777]">
+                          （良い場面 <span className="text-green-700">◎{strongN}</span> / 惜しい場面 <span className="text-red-700">△{weakN}</span> から算出）
+                        </span>
+                      )}
                       {!hasContent && <span className="text-[9px] font-bold text-[#aaa]">この軸の観察なし（議事録に該当場面が見当たらず）</span>}
                     </div>
                     {hasContent && (
                       <div className="p-2 space-y-1.5">
+                        {/* ▶ プレイバック: 各発言をクリックすると議事録の該当箇所にジャンプ */}
                         {(af.strong ?? []).map((s, i) => (
                           <div key={`s${i}`} className="flex items-start gap-1.5">
                             <span className="shrink-0 text-[10px] font-extrabold text-green-700 bg-green-50 rounded px-1 mt-[1px]">◎</span>
@@ -1112,11 +1122,13 @@ function MeetingEntry({
                               <button
                                 onClick={() => jumpToTranscript(s.quote, m.transcript_text || "")}
                                 className="text-left text-[11px] font-bold text-[#4b4b4b] leading-relaxed hover:underline"
+                                title="クリックで議事録の該当箇所を再生 (ジャンプ)"
                               >
+                                <span className="text-[9px] text-slate-400 mr-1">▶</span>
                                 {s.timestamp && <span className="text-[9px] font-extrabold tabular-nums text-slate-500 mr-1">⏱{s.timestamp}</span>}
                                 「{s.quote}」
                               </button>
-                              {s.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {s.why}</p>}
+                              {s.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {s.why}（ここが加点）</p>}
                             </div>
                           </div>
                         ))}
@@ -1127,11 +1139,13 @@ function MeetingEntry({
                               <button
                                 onClick={() => jumpToTranscript(w.quote, m.transcript_text || "")}
                                 className="text-left text-[11px] font-bold text-[#4b4b4b] leading-relaxed hover:underline"
+                                title="クリックで議事録の該当箇所を再生 (ジャンプ)"
                               >
+                                <span className="text-[9px] text-slate-400 mr-1">▶</span>
                                 {w.timestamp && <span className="text-[9px] font-extrabold tabular-nums text-slate-500 mr-1">⏱{w.timestamp}</span>}
                                 「{w.quote}」
                               </button>
-                              {w.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {w.why}</p>}
+                              {w.why && <p className="text-[10px] text-slate-500 leading-relaxed">— {w.why}（ここが伸びしろ）</p>}
                               {w.next_move && (
                                 <p className="mt-0.5 text-[10px] font-bold text-green-700 leading-relaxed bg-green-50 border border-green-200 rounded px-1.5 py-1">
                                   ✅ 次回はこう：「{w.next_move}」
@@ -1140,13 +1154,28 @@ function MeetingEntry({
                             </div>
                           </div>
                         ))}
+                        {/* 📚 この軸を伸ばすための参考 (具体 next_move の後に一般の型) */}
+                        {ref && (
+                          <div className="mt-1 rounded-md bg-[#f7f9ff] border border-[#dde6ff] px-2 py-1.5">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span className="text-[9px] font-extrabold text-duo-blue">📚 {label}を伸ばす型</span>
+                              {ref.url && (
+                                <a href={ref.url} target="_blank" rel="noopener noreferrer" className="text-[9px] font-extrabold text-duo-blue underline">
+                                  教材を見る →
+                                </a>
+                              )}
+                            </div>
+                            <p className="text-[10px] font-bold text-[#4b4b4b] leading-relaxed mt-0.5">{ref.title}</p>
+                            <p className="text-[9px] text-[#777] leading-relaxed">{ref.note}</p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 );
               })}
               <p className="text-[9px] text-[#aaa] leading-relaxed pt-1">
-                ※ すべて議事録の実発言から抽出・照合済みの観察ベースです。一般的なプレイブックではありません。
+                ※ ◎/△ はすべて議事録の実発言から抽出・照合済み。発言をクリックすると議事録の該当箇所に飛びます（プレイバック）。
               </p>
             </div>
           )}
@@ -1440,6 +1469,35 @@ const DIMS = [
   { key: "closing", label: "前進", color: "#FF9600" },
   { key: "intel", label: "情報", color: "#FF4B4B" },
 ] as const;
+
+// 軸ごとの「伸ばすための参考」。西村 FB: 各軸に next_move (この面談の具体セリフ) と
+// 参考リンクの両方を出す。汎用プレイブックを画面全体に出すのではなく、
+// 各軸ブロックの末尾に "型を学ぶ参考" として 1 件だけ添える (具体 → 一般の順)。
+const AXIS_RESOURCES: Record<string, { title: string; note: string; url?: string }> = {
+  needs: {
+    title: "「なぜ転職か」を 3 層深掘りする質問の型",
+    note: "表層理由 → その背景 → 本音の感情、と 3 段で掘ると真のニーズが出る。「なぜ」「どんな時に」「具体的には」を多用。",
+    url: "https://www.businessinsider.jp/post-100867",
+  },
+  proposal: {
+    title: "建築業界マッピング × FAB で提案する",
+    note: "ゼネコン/ハウスメーカー/デベ/CM/設計の年収帯を押さえ、求人の特徴→候補者メリット→状況改善で橋渡し。",
+    url: "https://blog.hubspot.jp/sales/fab",
+  },
+  trust: {
+    title: "業界の実務フロー・数字で専門性を示す",
+    note: "「正直に無理は無理」と市場の現実を率直に伝える。施工管理/設計/PM/CM の役割と評価ポイントを具体数字で語る。",
+  },
+  closing: {
+    title: "「いつまでに何を」を必ず明文化する",
+    note: "面談終了時に “水曜までに求人3件送る” のように期限+アクション+次の接点を 1 文で言語化。仮クロージングで温度感を測る。",
+    url: "https://www.salesforce.com/jp/resources/articles/sales/spin-selling/",
+  },
+  intel: {
+    title: "競合状況と意思決定プロセスを必ず把握",
+    note: "他社併用 N 社・選考フェーズ・温度感、家族の意向や年収の内訳(残業代込みか)まで確認すると戦略が立つ。",
+  },
+};
 
 // 面談アウトカム (CVR 分析の基礎データ) 入力ボタン。
 function OutcomeButtons({ meeting, onSaved }: { meeting: MeetingTranscript; onSaved: () => void }) {
@@ -1784,8 +1842,9 @@ function ScoreComparison({
               <span className="text-[10px] font-bold text-[#777] w-10">{label}</span>
               <div className="flex items-center gap-2">
                 {!isLeader && gap !== null && (
-                  <span className={`text-[10px] font-black ${gap >= 0 ? "text-duo-green" : "text-duo-red"}`}>
-                    {gap >= 0 ? `+${gap}` : gap} vs リーダー
+                  <span className={`text-[10px] font-black ${gap >= 0 ? "text-duo-green" : "text-duo-red"}`}
+                    title="リーダー(小林)の全面談の平均点との差。平均なので、1件の好面談では平均を上回ることもあります。">
+                    {gap >= 0 ? `+${gap}` : gap} vs リーダー平均
                   </span>
                 )}
                 <span className="text-xs font-black w-5 text-right" style={{ color }}>{val}</span>
