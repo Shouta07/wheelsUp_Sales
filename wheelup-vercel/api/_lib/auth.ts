@@ -40,8 +40,8 @@ export function canWriteMeeting(
   return currentUser === target.consultant_name;
 }
 
-// 読み込み権限。西村 FB「リーダー面談はメンバーが参考にすべき」を反映:
-//   - リーダー面談 (is_leader=true): 全ユーザーが閲覧可 (読み取りのみ、書き込みは canWriteMeeting で制限)
+// 読み込み権限。小林 FB「メンバーから小林の面談は見れないようにし、自身の面談のみを投入する」反映:
+//   - リーダー面談 (is_leader=true): リーダー本人のみ (メンバーからは見えない)
 //   - メンバー面談 (is_leader=false): 本人 + リーダー (フィードバック用)
 export function canReadMeeting(
   currentUser: string | null,
@@ -49,8 +49,7 @@ export function canReadMeeting(
 ): boolean {
   if (!currentUser) return false;
   if (target.is_leader) {
-    // リーダー面談は教師データ。全メンバーが閲覧可 (参考にしてもらう)。
-    return true;
+    return isLeader(currentUser);
   }
   return currentUser === target.consultant_name || isLeader(currentUser);
 }

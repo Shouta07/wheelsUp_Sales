@@ -62,12 +62,17 @@ export default function MeetingHub() {
     enabled: !!currentUser,
   });
 
+  // リーダー面談はリーダー本人だけ取得 (メンバー画面からは小林面談を見せない・小林FB)
   const { data: leaderMeetings } = useQuery({
     queryKey: ["meetings", "leader"],
     queryFn: () => fetchMeetings(undefined, undefined, undefined, true),
+    enabled: isLeaderRole(currentUser),
   });
 
-  const meetings = tab === "mine" ? myMeetings?.transcripts : leaderMeetings?.transcripts;
+  // メンバーが万一 "leader" タブ状態になっても、必ず自分の面談だけ表示する。
+  const meetings = !isLeaderRole(currentUser)
+    ? myMeetings?.transcripts
+    : (tab === "mine" ? myMeetings?.transcripts : leaderMeetings?.transcripts);
 
   // Track scored meetings to trigger celebrations
   const prevScoredRef = useRef<Set<string>>(new Set());
@@ -313,17 +318,13 @@ export default function MeetingHub() {
       </div>
 
       {/* Tabs
-            - リーダー (小林): 画面は教師データ登録が役割なので「自分の面談」は不要。
-              リーダー面談 = 教師データの 1 タブのみ表示。
-            - メンバー: 「自分の面談」+「リーダーの面談 (参考)」の 2 タブ。 */}
+            - リーダー (小林): 教師データ (リーダー面談) の 1 タブのみ。
+            - メンバー: 自分の面談だけ。小林の面談は見えない (小林FB:
+              「メンバーから小林の面談は見れないようにし、自身の面談のみを投入していく」)。
+            - メンバーは項目が 1 つしか無いのでタブバー自体を非表示。 */}
+      {isLeaderUser && (
       <div className="flex gap-1 mb-4">
-        {(isLeaderUser
-          ? [{ key: "leader" as const, label: "教師データ（リーダー面談）", count: leaderMeetings?.total || 0 }]
-          : [
-              { key: "mine" as const, label: "自分の面談", count: myMeetings?.total || 0 },
-              { key: "leader" as const, label: `${getLeaderNames().join("・")}（リーダー）の面談`, count: leaderMeetings?.total || 0 },
-            ]
-        ).map(({ key, label, count }) => (
+        {[{ key: "leader" as const, label: "教師データ（リーダー面談）", count: leaderMeetings?.total || 0 }].map(({ key, label, count }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -337,6 +338,7 @@ export default function MeetingHub() {
           </button>
         ))}
       </div>
+      )}
 
       {/* メンバー: 自分の全面談を新ロジックで再採点 (西村FB「全面談に新機能を反映」) */}
       {!isLeaderUser && tab === "mine" && (myMeetings?.transcripts?.length ?? 0) > 0 && (
