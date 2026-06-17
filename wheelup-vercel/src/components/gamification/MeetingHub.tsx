@@ -937,18 +937,12 @@ function MeetingEntry({
                 </div>
               )}
               {score.speaker_filter_failed && (
-                <div className="rounded-xl bg-red-50 border-2 border-red-300 p-2.5">
-                  <div className="text-[10px] font-extrabold text-red-800 leading-relaxed">
-                    ⚠️ 注意: 議事録から {score.target_speaker}さんの発言を分離できませんでした。
-                    <span className="block text-[10px] font-bold text-red-700 mt-1">
-                      この採点には<span className="font-black">同席者 (小林さん等) の発言も含まれている可能性</span>があります。
-                      議事録に「{score.target_speaker}: ...」のような話者ラベルを追加するか、Google Meet の自動文字起こし形式 (名前 HH:MM AM/PM) でご投入ください。
+                <div className="rounded-xl bg-amber-50 border border-amber-300 p-2.5">
+                  <div className="text-[10px] font-extrabold text-amber-900 leading-relaxed">
+                    ⓘ この議事録は{score.target_speaker}さんの発言量が少なく、同席者の発言も含めて採点しています。
+                    <span className="block text-[10px] font-bold text-amber-800 mt-0.5">
+                      Google Meet の自動文字起こし形式（名前 HH:MM AM/PM）でご投入いただくと、{score.target_speaker}さん本人の発言だけで採点できます。
                     </span>
-                    {score.detected_speakers && score.detected_speakers.length > 0 && (
-                      <span className="block text-[9px] font-bold text-red-600 mt-1">
-                        実際に検出された話者: {score.detected_speakers.join(" / ")}
-                      </span>
-                    )}
                   </div>
                 </div>
               )}

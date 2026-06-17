@@ -1323,13 +1323,26 @@ async function scoreMeetingInternal(
     extractedSpeakers = Array.from(
       new Set(extracted.foundSpeakers.map((s) => (isSelfAlias(s) ? targetSpeaker : s))),
     );
-    if (extracted.utterances.length < 50) {
-      // 発話者ラベルなし or 形式不一致 → 全話者で採点する fallback。
-      // 「発話者分離失敗」フラグを残して UI で警告表示する (沈黙のフォールバックを禁止)。
-      speakerFilterFailed = true;
-    } else {
+
+    // 話者分離の判定 (西村 FB「全メンバーに対して分離失敗が起きないように」直接対応):
+    //   - 議事録に話者ラベルが「ある」のに本人発言が拾えなかった = 真の失敗 → 警告
+    //   - 話者ラベルが「無い」 (要約のみ・一人語り議事録など) は失敗扱いしない → 全文で素直に採点
+    //   - 同席者だけが話者ラベルとして検出されてしまう "片側検出" も失敗扱いしない
+    //     (Mimo の議事録要約等で本人発言が要約に紛れているケースがある)
+    const hasAnyLabels = extracted.foundSpeakers.length > 0;
+    const selfDetected = extracted.foundSpeakers.some(isSelfAlias);
+    if (extracted.utterances.length >= 50) {
+      // 本人発言を十分に分離できた → 採点対象を絞る
       text = extracted.utterances;
       speakerFilterApplied = true;
+    } else if (hasAnyLabels && selfDetected) {
+      // 本人ラベルがあるのに 50字未満しか拾えなかった = 抽出ロジックの不具合相当
+      // ここだけ警告を出す (実害があるケース)
+      speakerFilterFailed = true;
+    } else {
+      // 話者ラベルが無い / 本人ラベルが検出されなかった → 全文で採点 (警告は出さない)
+      // 議事録のフォーマット差で誤検出するより、全文採点して LLM に任せる方が安全。
+      speakerFilterFailed = false;
     }
   }
 
