@@ -1288,6 +1288,49 @@ async function scoreMeeting(
   return res.json(result);
 }
 
+// ガウディキャリアの戦略フレームワーク（MOAT / タイプ分類 / 小林のノウハウ）。
+// 採点と leader_comparison の参照知識として注入し、「何を引き出し・何を前進させたか」を
+// この共通言語で評価できるようにする。西村/小林 FB「比較採点の質を高める」直接対応。
+const GAUDI_FRAMEWORK = `## ガウディキャリアの戦略フレームワーク (採点と "小林ならどうしたか" の判断軸。これを共通言語にする)
+
+### Service Principles (この面談で体現できているかも観察対象):
+1. 真実に寄せてから動く (候補者・企業理解を先に整える。安易に求人を送らない)
+2. 一次情報を取りに行く (当事者に直接確認する)
+3. 複眼で捉える (別視点・仮説・懸念を提示する)
+4. 思考に投資する (1件ごとに構造化・戦略設計する)
+5. 定義で語る (感覚でなく MOAT/タイプの状態定義で扱う)
+6. 挑戦と納得 ("何となく" でなく "ここだ" の意思決定に導く)
+
+### 候補者タイプ分類 (面談中にこの判定材料を引き出せたか / 言語化できたか):
+- 第1層 面接通過力 (経験・スキルが求人要件に載っているか・喋りの上手さではない)
+- 第2層 求人選定難易度 (即時推薦できる求人があるか)
+- 第3層 課題領域: 直進型 / 曲者C(条件複雑) / 曲者V(志向未整理) / 曲者S(喋り・印象の弱さ) / 挑戦型(経験差分大)
+※ 良い面談ほど「この候補者は○型」と判定できる材料 (通過力・選定難易度・課題) を引き出している。
+
+### MOAT パイプライン (この面談で候補者をどのステージまで前進させたか・closing/intel 評価の軸):
+- MOAT1: 退職理由明確 + 入社希望半年以内 + 他社選考状況把握
+- MOAT2: 書類完成 + 転職条件整理 (Must/Want/不要が明確)
+- MOAT3: 内定可能性高い4社以上へ応募承諾 + スケジュール共有
+- MOAT4: 4社書類通過 + 志望度1・2位を自社経由で独占 + 面接3社回収
+- MOAT5以降: 面接 → 内定 → 承諾
+※ 初回面談のゴールは MOAT1〜2 相当 (退職理由の言語化・条件整理・他社状況把握・次回設計)。
+  そこに必要な情報 (転職理由の感情+論理、Must/Want、他社・家族の状況、希望時期) を引き出せたかを intel/closing で重く見る。
+
+### 小林が絶対にやらないこと (これをやっていたら weak・信頼毀損):
+- 情報が少ない段階で「相当な経験」「素晴らしい経歴」と手放しに褒める
+- 「○○は書類通過しやすい」と断言する (通過率は経験×求人要件で決まる)
+- 転職後の働き方 (残業・年収・リモート) を断言する
+- 年収レンジを現職年収・経験・求人要件と照合せず断言する
+
+### 小林のスタンス (これが出来ていたら strong):
+- 共感 → 深掘り質問をセットで返す (共感だけで終わらない)
+- 「転職しない/現職残留」も立派なキャリア判断として尊重する
+- わからないことは正直に「私には分かりません」と伝える
+- 市場価値・年収を正直に見立て、選択肢のメリデメをフラットに提示する
+
+採点・leader_comparison では、上記フレームに照らして
+「本人がタイプ判定材料・MOAT前進に必要な情報をどこまで引き出せたか」「小林ならさらに何を引き出し・どう定義しただろうか」を具体的に書くこと。`
+
 async function scoreMeetingInternal(
   db: ReturnType<typeof getSupabaseAdmin>,
   id: string,
@@ -1535,7 +1578,7 @@ async function scoreMeetingInternal(
   // 本文の細かい改行差異や leader meeting 追加でキャッシュが頻繁に飛ぶのを防ぐ。
   // キャッシュキーに speaker filter + calibration も含める: 校正を変えたら必ず再採点される。
   const inputHash = createHash("sha256")
-    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}`)
+    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}\n---\npromptver:gaudi-moat-v1`)
     .digest("hex");
 
   // (旧 inputHash は上に新版で置き換え済み)
@@ -1685,6 +1728,8 @@ ${calibrationAnchors}
 <MEETING_TRANSCRIPT>
 ${text.slice(0, 25000)}
 </MEETING_TRANSCRIPT>
+
+${GAUDI_FRAMEWORK}
 
 ## 採点ルーブリック (キャリアコンサルタントとしての能力・スタンスを 5 軸で 0〜10 点評価)
 
