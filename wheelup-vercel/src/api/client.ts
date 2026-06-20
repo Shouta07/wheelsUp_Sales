@@ -1013,6 +1013,12 @@ export interface MeetingScore {
     strong: Array<{ quote: string; why?: string; timestamp?: string }>;
     weak: Array<{ quote: string; why?: string; next_move?: string; timestamp?: string }>;
   }>>;
+  // 引き出せた情報 vs 小林ならどこまで引き出していたか (本人の引き出し量を学習データと比較)
+  leader_comparison?: Partial<Record<"needs" | "proposal" | "trust" | "closing" | "intel", {
+    extracted?: string;
+    leader_would?: string;
+    gap?: string;
+  }>>;
   // サーバ側スコア再集計の監査ログ (観察と AI スコアが乖離した時に再計算した記録)
   _score_audit?: {
     ai_scores?: { needs: number; proposal: number; trust: number; closing: number; intel: number };

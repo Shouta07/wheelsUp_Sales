@@ -1780,7 +1780,12 @@ ${text.slice(0, 25000)}
      rewrite「『この3社は〇〇さんの△△経験が活きる順に選びました。特にA社は〜』と選定理由を言語化」
    点数が低い軸ほど rewrite を具体的に。**全5軸について必ず書く**。
 5. key_moments は 2-3 件、面談記録から実際の発言をそのまま 60 字以内で抜き出す (改変禁止)。
-6. JSON 1 オブジェクトのみ。前置きも結語も禁止。
+6. **leader_comparison は各軸ごとに「本人が引き出した情報」と「小林ならどこまで引き出していたか」を対比**。
+   - extracted: この面談で本人が**実際に引き出せた情報**を 1 文 (80 字以内) で要約 (推測ではなく議事録の事実)
+   - leader_would: 上の <LEADER_STYLE> と <GOLD_OBSERVATIONS> を踏まえ、小林ならさらに引き出していた情報を 1 文 (80 字以内)
+   - gap: 差分の核心 (50 字以内・例: 「家族の意向まで踏み込めず」「3 層目の真因に届かず」)
+   ※ 小林面談データが無い軸では leader_would を「(教師データなし)」とし、gap を「データ不足」にする。
+7. JSON 1 オブジェクトのみ。前置きも結語も禁止。
 
 ## JSON 形式 (observations が無いと採点が却下される):
 {
@@ -1812,6 +1817,13 @@ ${text.slice(0, 25000)}
     "trust":   { "quote": "...", "issue": "...", "rewrite": "..." },
     "closing": { "quote": "...", "issue": "...", "rewrite": "..." },
     "intel":   { "quote": "...", "issue": "...", "rewrite": "..." }
+  },
+  "leader_comparison": {
+    "needs":    { "extracted": "本人が引き出せた情報を 1 文で要約 (例: 転職動機=年収UP、現職への不満=休日)", "leader_would": "小林の流儀/過去面談ならさらに引き出していた情報 (例: 真因の家庭事情・5年後の理想像・現職異動の検討)", "gap": "差分の核心 (例: 真因 3 層目に到達していない)" },
+    "proposal": { "extracted": "...", "leader_would": "...", "gap": "..." },
+    "trust":    { "extracted": "...", "leader_would": "...", "gap": "..." },
+    "closing":  { "extracted": "...", "leader_would": "...", "gap": "..." },
+    "intel":    { "extracted": "...", "leader_would": "...", "gap": "..." }
   },
   "key_moments": [
     { "text": "面談記録からの実際の発言", "axis": "needs", "speaker": "コンサル", "timestamp": "午後06:23" }
@@ -1891,6 +1903,16 @@ ${text.slice(0, 25000)}
                 trust:    { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
                 closing:  { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
                 intel:    { type: "object", properties: { quote: { type: "string" }, issue: { type: "string" }, rewrite: { type: "string" } } },
+              },
+            },
+            leader_comparison: {
+              type: "object",
+              properties: {
+                needs:    { type: "object", properties: { extracted: { type: "string" }, leader_would: { type: "string" }, gap: { type: "string" } } },
+                proposal: { type: "object", properties: { extracted: { type: "string" }, leader_would: { type: "string" }, gap: { type: "string" } } },
+                trust:    { type: "object", properties: { extracted: { type: "string" }, leader_would: { type: "string" }, gap: { type: "string" } } },
+                closing:  { type: "object", properties: { extracted: { type: "string" }, leader_would: { type: "string" }, gap: { type: "string" } } },
+                intel:    { type: "object", properties: { extracted: { type: "string" }, leader_would: { type: "string" }, gap: { type: "string" } } },
               },
             },
             key_moments: {
@@ -2075,6 +2097,25 @@ ${text.slice(0, 25000)}
       parsed.coaching = {};
     }
 
+    // leader_comparison のサニタイズ (本人が引き出せた情報 vs 小林ならどう引き出していたか)
+    const cmpRaw = (parsed as { leader_comparison?: unknown }).leader_comparison;
+    if (cmpRaw && typeof cmpRaw === "object") {
+      const cleanCmp: Record<string, { extracted: string; leader_would: string; gap: string }> = {};
+      for (const axis of ["needs", "proposal", "trust", "closing", "intel"]) {
+        const c = (cmpRaw as Record<string, unknown>)[axis];
+        if (c && typeof c === "object") {
+          const cc = c as Record<string, unknown>;
+          const extracted = String(cc.extracted || "").slice(0, 200);
+          const leader_would = String(cc.leader_would || "").slice(0, 200);
+          const gap = String(cc.gap || "").slice(0, 120);
+          if (extracted || leader_would || gap) cleanCmp[axis] = { extracted, leader_would, gap };
+        }
+      }
+      parsed.leader_comparison = cleanCmp;
+    } else {
+      parsed.leader_comparison = {};
+    }
+
     // observations のサニタイズ + サーバ側 score 再集計 (西村 FB「精度に届いてない」根本対応)
     // AI が観察を出した後にスコアを甘く付け直すのを防ぐため、
     // observations の strong/weak 件数から機械的に再計算し、AI スコアと 2 点以上乖離したら上書き。
@@ -2180,6 +2221,34 @@ ${text.slice(0, 25000)}
           _pos: pos >= 0 ? pos : 1_000_000_000 + idxCounter,
         });
         idxCounter++;
+      }
+    }
+
+    // observations 救済: モデルが observations を出し忘れたが coaching に quote がある場合、
+    // coaching.{axis}.quote から観察を 1 件ずつ作って built に追加する。
+    // 西村 FB「観察なしでフィードバックがゼロ」という現象の最後の砦。
+    if (built.length === 0) {
+      const coach = (parsed.coaching as Record<string, { quote?: string; issue?: string; rewrite?: string }> | undefined) ?? {};
+      const scoresRec = (parsed.scores as Record<string, number> | undefined) ?? {};
+      for (const axis of AXES) {
+        const c = coach[axis];
+        if (!c) continue;
+        const quote = String(c.quote || "").slice(0, 200);
+        if (normalize(quote).length < 6) continue;
+        const sc = typeof scoresRec[axis] === "number" ? scoresRec[axis] : 7;
+        const assessment: "strong" | "weak" = sc >= 8 ? "strong" : "weak";
+        obsCounts[axis][assessment]++;
+        const pos = positionOf(quote);
+        built.push({
+          quote,
+          timestamp: pos >= 0 ? extractNearestTimestamp(pos) : "",
+          phase: "hearing",
+          axis,
+          assessment,
+          why: String(c.issue || "").slice(0, 120),
+          next_move: assessment === "weak" ? String(c.rewrite || "").slice(0, 200) : "",
+          _pos: pos >= 0 ? pos : 1_000_000_000 + built.length,
+        });
       }
     }
 

@@ -1249,6 +1249,49 @@ function MeetingEntry({
             </div>
           )}
 
+          {/* 引き出し力の比較: 本人が引き出せた情報 vs 小林ならどう引き出していたか
+              (西村 FB「面談で引き出せた情報を学習データの小林と比べる」直接対応) */}
+          {score?.leader_comparison && Object.keys(score.leader_comparison).length > 0 && !m.is_leader && (
+            <div className="rounded-xl bg-[#fff7ed] border-2 border-[#FF9600] p-3 space-y-2">
+              <div className="text-[10px] font-extrabold text-[#cc7800] uppercase tracking-wider mb-1">
+                🔍 引き出し力の比較（小林ならどこまで引き出していたか）
+              </div>
+              {DIMS.map(({ key, label, color }) => {
+                const c = score.leader_comparison?.[key as keyof typeof score.leader_comparison];
+                if (!c || (!c.extracted && !c.leader_would && !c.gap)) return null;
+                return (
+                  <div key={key} className="rounded-lg bg-white border border-[#f0d9b0] p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded" style={{ backgroundColor: color + "20", color }}>
+                        {label}
+                      </span>
+                      {c.gap && (
+                        <span className="text-[9px] font-bold text-[#cc7800] bg-amber-50 rounded px-1.5 py-0.5">
+                          差分: {c.gap}
+                        </span>
+                      )}
+                    </div>
+                    {c.extracted && (
+                      <p className="text-[11px] font-bold text-[#4b4b4b] leading-relaxed mb-1">
+                        <span className="text-[9px] font-extrabold text-blue-700 mr-1">あなたが引き出した:</span>
+                        {c.extracted}
+                      </p>
+                    )}
+                    {c.leader_would && (
+                      <p className="text-[11px] font-bold text-[#996600] leading-relaxed bg-[#fff7ed] border border-[#f0d9b0] rounded px-2 py-1">
+                        <span className="text-[9px] font-extrabold text-[#cc7800] mr-1">🥇 小林ならさらに:</span>
+                        {c.leader_would}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+              <p className="text-[9px] text-[#996600] leading-relaxed pt-1">
+                ※ 教師データ（小林の18件と抽出された流儀）と本人の発言を比較し、引き出せた情報の差分を表示しています。
+              </p>
+            </div>
+          )}
+
           {/* Leader Feedback */}
           {m.leader_feedback && (
             <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
