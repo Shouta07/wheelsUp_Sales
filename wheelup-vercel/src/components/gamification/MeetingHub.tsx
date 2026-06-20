@@ -17,6 +17,7 @@ import {
   fetchTrainingHealth,
   type TrainingHealth,
   scoreMeeting,
+  diagnoseMeeting,
   manualScoreMeeting,
   saveMeetingOutcome,
   deleteMeeting,
@@ -693,6 +694,8 @@ function MeetingEntry({
   const [highlightedTranscript, setHighlightedTranscript] = useState<string>("");
   const [manualOpen, setManualOpen] = useState(false);
   const [learnAxis, setLearnAxis] = useState<"needs" | "proposal" | "trust" | "closing" | "intel" | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   // 「なぜこの点数か」から「プレイバック」へジャンプするための参照
   const playbackRef = useRef<HTMLDivElement | null>(null);
   const scrollToPlayback = () => playbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -868,6 +871,26 @@ function MeetingEntry({
                 ✏️ {score?._source === "manual_leader" ? "手動編集" : "手動採点"}
               </button>
             )}
+            {/* 議事録を 01 LARK 形式に整形 (本人が引き出せた情報の構造化 → 採点の比較材料) */}
+            {m.transcript_text && (
+              <button
+                onClick={async () => {
+                  setDiagnosing(true);
+                  try {
+                    await diagnoseMeeting(m.id);
+                    qc.invalidateQueries({ queryKey: ["meetings"] });
+                    setDiagOpen(true);
+                  } catch (e) {
+                    setRescoreError((e as Error).message);
+                  } finally { setDiagnosing(false); }
+                }}
+                disabled={diagnosing}
+                className="text-[10px] font-extrabold text-emerald-700 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 transition-colors disabled:opacity-40"
+                title="議事録を初回診断フォーマット(LARK提出形式)に整形"
+              >
+                {diagnosing ? "整形中…" : score?.structured_diagnosis ? "📋 整形を更新" : "📋 候補者情報を整形"}
+              </button>
+            )}
             {canDelete && (
               <button
                 onClick={() => onDelete(m.id, m.title)}
@@ -974,6 +997,21 @@ function MeetingEntry({
           {/* Score details */}
           {score?.scores && (
             <ScoreComparison score={score} leaderAvg={leaderAvg} isLeader={m.is_leader} />
+          )}
+
+          {/* 整形済み候補者情報 (01 LARK 形式)。これを基に小林と比較・採点する。 */}
+          {score?.structured_diagnosis && (
+            <details className="rounded-xl bg-emerald-50 border border-emerald-200 p-3" open={diagOpen}>
+              <summary className="cursor-pointer select-none text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider">
+                📋 候補者情報まとめ（LARK提出形式・この面談で引き出せた情報）
+              </summary>
+              <div className="mt-2 text-[11px] font-bold text-[#4b4b4b] leading-relaxed whitespace-pre-wrap">
+                {score.structured_diagnosis}
+              </div>
+              {score.structured_diagnosis_at && (
+                <p className="text-[9px] text-emerald-600 mt-2">整形日時: {new Date(score.structured_diagnosis_at).toLocaleString("ja-JP")}</p>
+              )}
+            </details>
           )}
 
           {/* Evidence = 各項目の点数理由。クリックでプレイバック(該当発言)へジャンプ。 */}

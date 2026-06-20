@@ -1019,6 +1019,9 @@ export interface MeetingScore {
     leader_would?: string;
     gap?: string;
   }>>;
+  // 議事録を 01 LARK 形式に整形した候補者情報 (markdown)
+  structured_diagnosis?: string;
+  structured_diagnosis_at?: string;
   // サーバ側スコア再集計の監査ログ (観察と AI スコアが乖離した時に再計算した記録)
   _score_audit?: {
     ai_scores?: { needs: number; proposal: number; trust: number; closing: number; intel: number };
@@ -1082,6 +1085,11 @@ export async function scoreMeeting(
       ...(opts.targetSpeaker ? { target_speaker: opts.targetSpeaker } : {}),
     }),
   });
+}
+
+// 議事録を「初回診断 候補者情報まとめ(LARK提出形式)」5項目に整形
+export async function diagnoseMeeting(id: string): Promise<{ ok: boolean; structured_diagnosis: string }> {
+  return request(`/meetings/${id}/diagnose`, { method: "POST", body: JSON.stringify({}) });
 }
 
 // リーダー校正: 「良い面談 / 悪い面談」マーキング (採点アンカーとして AI に学習させる)

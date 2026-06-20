@@ -120,6 +120,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (sub === "summarize" && req.method === "POST") {
       return await summarize(db, id, res);
     }
+    // --- /api/meetings/:id/diagnose (議事録を候補者情報の5項目に整形・LARK提出形式) ---
+    if (sub === "diagnose" && req.method === "POST") {
+      return await generateDiagnosis(db, id, req, res);
+    }
     // --- /api/meetings/:id/score ---
     if (sub === "score" && req.method === "POST") {
       return await scoreMeeting(db, id, req, res);
@@ -949,6 +953,98 @@ async function transcribeWithGemini(db: ReturnType<typeof getSupabaseAdmin>, req
 
 /* ========== AI Summarize (既存テキスト → 要約) ========== */
 
+// 議事録を「初回診断後 候補者情報まとめ（LARK 提出形式）」の 5 項目に整形する。
+// 西村 FB「議事録をこのプロンプトで整形し、その上で小林と比較するシステムに」。
+// 整形結果は score_data.structured_diagnosis に保存し、再採点でも保持される。
+const DIAGNOSIS_PROMPT = `あなたは構造化力と人間理解に優れたプロフェッショナルAIです。
+以下の初回面談の文字起こし（候補者との対話記録）を読み込み、転職活動の進行状況・キャリア軸＆キャリアパスの明確度・当社のグリップ状況などを「事実＋示唆＋改善余地」の視点で整理してください。
+
+ルール:
+- 文字起こしの情報に基づいて事実をベースに作成（推測は「示唆」と明示）
+- 表は使わない
+- マークダウン見出し(##)と箇条書き(・)で出力
+- 自己理解進捗(③)とキャリア納得度感(④)は最重要。薄くせず詳細に書く
+- 不明な項目は「文字起こしから確認できず」と明記し、捏造しない
+
+出力は以下5項目:
+
+## ①【選考状況】
+・転職スケジュール / 現在の活動ステータス(開始時期・温度感)
+・他社エージェントや媒体経由での応募状況、通過フェーズ、企業名
+・当社(Wheels Up/ガウディキャリア)への反応・興味を示した求人・提案理解度
+＜理想状態とのギャップ＞ を必ず指摘
+
+## ②【NA（Next Action）】
+・面談中に決まった今後の行動を時系列(日付)で
+・温度感UP施策・トークポイント
+＜理想状態とのギャップ＞ を必ず指摘
+
+## ③【自己進捗度（キャリアの経緯／転職の軸）】★最重要・詳細に
+▷ STEP1 転職の軸: ①必須条件 ②希望条件(優先度と重み) ③どうでもいい条件 ④未確認の条件 ⑤提案したキャリアパス
+▷ STEP2 キャリアの経緯(1000字以内): 過去の選択の背景・現職での経験と変化・転職に至る思考の流れをストーリーで
+
+## ④【キャリア納得度感（方向性との一貫性）】★最重要・詳細に
+▷ ポジティブ要素 / ▷ 補強ポイント / ▶ 総評(逃避型か構築型か・戦略的か)
+・納得度を高めるために当社が介入すべき観点
+
+## ⑤【ガウディキャリアの進め方に同意（＝グリップ角度評価）】
+YES／NO／保留 を明記し、4観点(専属意思・支援スタイル共感・障壁・必要アクション)で評価 + 総評`;
+
+async function generateDiagnosis(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  id: string,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+  const user = getRequestUser(req);
+
+  const { data: meeting } = await db.from("meeting_transcripts").select("*").eq("id", id).single();
+  if (!meeting) return res.status(404).json({ error: "議事録が見つかりません" });
+  if (!canReadMeeting(user, meeting as { consultant_name?: string; is_leader?: boolean })) {
+    return send403(res, "この面談を整形する権限がありません");
+  }
+  let text = (meeting.transcript_text as string) || "";
+  if (!text) return res.status(400).json({ error: "文字起こしテキストがありません" });
+
+  // 本人の発言だけに絞れる場合は絞る（同席者の発言で薄まるのを防ぐ。ただし全文も文脈として残す）
+  const target = (meeting.consultant_name as string) || "";
+  if (target && !meeting.is_leader) {
+    const ex = extractSpeakerUtterances(text, target);
+    if (ex.utterances.length > 200) {
+      text = `【${target}(本人)の発言抜粋】\n${ex.utterances.slice(0, 12000)}\n\n【面談全体(文脈)】\n${(meeting.transcript_text as string).slice(0, 12000)}`;
+    }
+  }
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: `${DIAGNOSIS_PROMPT}\n\n<文字起こし>\n${text.slice(0, 24000)}\n</文字起こし>` }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
+  });
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+  let geminiRes: Response | null = null;
+  let lastErr = "";
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (r.ok) { geminiRes = r; break; }
+      lastErr = `${model}: ${r.status}`;
+    } catch (e) { lastErr = `${model}: ${(e as Error).message}`; }
+  }
+  if (!geminiRes) return res.status(502).json({ error: `整形失敗 (Gemini): ${lastErr}` });
+  const geminiData = await geminiRes.json();
+  const diagnosis = (geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+  if (!diagnosis) return res.status(502).json({ error: "整形結果が空でした。再試行してください。" });
+
+  // score_data.structured_diagnosis に保存 (score_data が無ければ作る)
+  const existing = (meeting.score_data as Record<string, unknown> | null) ?? {};
+  const merged = { ...existing, structured_diagnosis: diagnosis, structured_diagnosis_at: new Date().toISOString() };
+  await db.from("meeting_transcripts").update({ score_data: merged }).eq("id", id);
+
+  return res.json({ ok: true, structured_diagnosis: diagnosis });
+}
+
 async function summarize(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
@@ -1288,49 +1384,6 @@ async function scoreMeeting(
   return res.json(result);
 }
 
-// ガウディキャリアの戦略フレームワーク（MOAT / タイプ分類 / 小林のノウハウ）。
-// 採点と leader_comparison の参照知識として注入し、「何を引き出し・何を前進させたか」を
-// この共通言語で評価できるようにする。西村/小林 FB「比較採点の質を高める」直接対応。
-const GAUDI_FRAMEWORK = `## ガウディキャリアの戦略フレームワーク (採点と "小林ならどうしたか" の判断軸。これを共通言語にする)
-
-### Service Principles (この面談で体現できているかも観察対象):
-1. 真実に寄せてから動く (候補者・企業理解を先に整える。安易に求人を送らない)
-2. 一次情報を取りに行く (当事者に直接確認する)
-3. 複眼で捉える (別視点・仮説・懸念を提示する)
-4. 思考に投資する (1件ごとに構造化・戦略設計する)
-5. 定義で語る (感覚でなく MOAT/タイプの状態定義で扱う)
-6. 挑戦と納得 ("何となく" でなく "ここだ" の意思決定に導く)
-
-### 候補者タイプ分類 (面談中にこの判定材料を引き出せたか / 言語化できたか):
-- 第1層 面接通過力 (経験・スキルが求人要件に載っているか・喋りの上手さではない)
-- 第2層 求人選定難易度 (即時推薦できる求人があるか)
-- 第3層 課題領域: 直進型 / 曲者C(条件複雑) / 曲者V(志向未整理) / 曲者S(喋り・印象の弱さ) / 挑戦型(経験差分大)
-※ 良い面談ほど「この候補者は○型」と判定できる材料 (通過力・選定難易度・課題) を引き出している。
-
-### MOAT パイプライン (この面談で候補者をどのステージまで前進させたか・closing/intel 評価の軸):
-- MOAT1: 退職理由明確 + 入社希望半年以内 + 他社選考状況把握
-- MOAT2: 書類完成 + 転職条件整理 (Must/Want/不要が明確)
-- MOAT3: 内定可能性高い4社以上へ応募承諾 + スケジュール共有
-- MOAT4: 4社書類通過 + 志望度1・2位を自社経由で独占 + 面接3社回収
-- MOAT5以降: 面接 → 内定 → 承諾
-※ 初回面談のゴールは MOAT1〜2 相当 (退職理由の言語化・条件整理・他社状況把握・次回設計)。
-  そこに必要な情報 (転職理由の感情+論理、Must/Want、他社・家族の状況、希望時期) を引き出せたかを intel/closing で重く見る。
-
-### 小林が絶対にやらないこと (これをやっていたら weak・信頼毀損):
-- 情報が少ない段階で「相当な経験」「素晴らしい経歴」と手放しに褒める
-- 「○○は書類通過しやすい」と断言する (通過率は経験×求人要件で決まる)
-- 転職後の働き方 (残業・年収・リモート) を断言する
-- 年収レンジを現職年収・経験・求人要件と照合せず断言する
-
-### 小林のスタンス (これが出来ていたら strong):
-- 共感 → 深掘り質問をセットで返す (共感だけで終わらない)
-- 「転職しない/現職残留」も立派なキャリア判断として尊重する
-- わからないことは正直に「私には分かりません」と伝える
-- 市場価値・年収を正直に見立て、選択肢のメリデメをフラットに提示する
-
-採点・leader_comparison では、上記フレームに照らして
-「本人がタイプ判定材料・MOAT前進に必要な情報をどこまで引き出せたか」「小林ならさらに何を引き出し・どう定義しただろうか」を具体的に書くこと。`
-
 async function scoreMeetingInternal(
   db: ReturnType<typeof getSupabaseAdmin>,
   id: string,
@@ -1507,6 +1560,23 @@ async function scoreMeetingInternal(
     }
   } catch { /* テーブル未作成 / 未抽出なら空 */ }
 
+  // 整形済みの候補者情報 (01 LARK 形式の structured_diagnosis) があれば採点の参照に注入。
+  // 「議事録を 01 プロンプトで整形 → その内容を踏まえて 小林と比較・採点」フローを実現する。
+  let structuredDiagnosisBlock = "";
+  const sd = (meeting.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis;
+  if (sd && typeof sd === "string" && sd.length > 50) {
+    structuredDiagnosisBlock = `## この面談の整形済み候補者情報 (01 初回診断フォーマット・本人が引き出せた情報の構造化)
+以下は本人の面談から「選考状況/NA/自己進捗度(キャリア軸)/キャリア納得度感/グリップ角度」に整形したもの。
+**これが "本人がこの面談で引き出せた情報の全体像" です。** 採点と leader_comparison では、
+この整形内容の充実度・空欄(「確認できず」)の多さを根拠に「何を引き出せ、何が抜けたか」を評価し、
+「小林ならこの5項目をどこまで埋められたか」を leader_comparison.leader_would に書くこと。
+<STRUCTURED_DIAGNOSIS>
+${sd.slice(0, 6000)}
+</STRUCTURED_DIAGNOSIS>
+
+`;
+  }
+
   // リーダーが過去に他メンバー面談に残したコメント (leader_feedback) を学習材料として注入。
   // "リーダーはこの場面でこう指導している" を AI が踏まえて採点・改善案を出せるようにする。
   let leaderCoaching = "";
@@ -1578,7 +1648,7 @@ async function scoreMeetingInternal(
   // 本文の細かい改行差異や leader meeting 追加でキャッシュが頻繁に飛ぶのを防ぐ。
   // キャッシュキーに speaker filter + calibration も含める: 校正を変えたら必ず再採点される。
   const inputHash = createHash("sha256")
-    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}\n---\npromptver:gaudi-moat-v1`)
+    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}\n---\npromptver:diag-v1\n---\ndiag:${(sd && sd.length > 50) ? "1" : "0"}`)
     .digest("hex");
 
   // (旧 inputHash は上に新版で置き換え済み)
@@ -1729,9 +1799,7 @@ ${calibrationAnchors}
 ${text.slice(0, 25000)}
 </MEETING_TRANSCRIPT>
 
-${GAUDI_FRAMEWORK}
-
-## 採点ルーブリック (キャリアコンサルタントとしての能力・スタンスを 5 軸で 0〜10 点評価)
+${structuredDiagnosisBlock}## 採点ルーブリック (キャリアコンサルタントとしての能力・スタンスを 5 軸で 0〜10 点評価)
 
 ### needs (ニーズ深掘り)
 キャリアコンサルとして、候補者の発言の奥にある真因や **本人未認識の盲点** まで引き出せたか
@@ -2520,6 +2588,12 @@ ${GAUDI_FRAMEWORK}
       (parsed as Record<string, unknown>).detected_speakers = extractedSpeakers;
       (parsed as Record<string, unknown>).speaker_filter_applied = speakerFilterApplied;
       (parsed as Record<string, unknown>).speaker_filter_failed = speakerFilterFailed;
+    }
+    // 整形済みの候補者情報(structured_diagnosis)は再採点でも保持する
+    const prevDiag = (meeting.score_data as Record<string, unknown> | null)?.structured_diagnosis;
+    if (prevDiag) {
+      (parsed as Record<string, unknown>).structured_diagnosis = prevDiag;
+      (parsed as Record<string, unknown>).structured_diagnosis_at = (meeting.score_data as Record<string, unknown>).structured_diagnosis_at;
     }
     await db.from("meeting_transcripts").update({ score_data: parsed, score_input_hash: inputHash }).eq("id", id);
 
