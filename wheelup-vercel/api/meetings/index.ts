@@ -517,19 +517,23 @@ async function bulkRescore(
   const includeLeader = body.include_leader === true;
 
   // 採点済みかつ削除されていない議事録を対象に。リーダー面談は除外がデフォルト。
+  // transcript_text が空でも summary などで採点したケースを取りこぼさないよう、
+  // score_data がある or transcript_text がある のいずれかを対象にする。
   let query = db.from("meeting_transcripts")
-    .select("id, consultant_name, is_leader, title")
-    .is("deleted_at", null)
-    .not("transcript_text", "is", null);
+    .select("id, consultant_name, is_leader, title, transcript_text, score_data")
+    .is("deleted_at", null);
   if (!includeLeader) query = query.eq("is_leader", false);
-  const { data: targets, error } = await query.order("recorded_at", { ascending: false }).range(offset, offset + limit - 1);
+  const { data: rawTargets, error } = await query.order("recorded_at", { ascending: false }).range(offset, offset + limit - 1);
   if (error) return res.status(500).json({ error: error.message });
+  // 実際に再採点可能なもの (本文テキスト or 既存スコア あり) だけに絞る
+  const targets = (rawTargets || []).filter((t) =>
+    (typeof t.transcript_text === "string" && (t.transcript_text as string).length > 0) || !!t.score_data,
+  );
 
-  // 残件数も返してフロントが次の offset を決められるように
+  // 残件数も "厳密 1 対 1" ではないが概算として返す (削除や本文0件で減ることはある)
   const { count: totalCount } = await db.from("meeting_transcripts")
     .select("id", { count: "exact", head: true })
     .is("deleted_at", null)
-    .not("transcript_text", "is", null)
     .eq("is_leader", includeLeader ? true : false);
 
   const results: Array<{ id: string; title: string; ok: boolean; error?: string }> = [];
@@ -1090,6 +1094,10 @@ async function diagnoseOne(db: ReturnType<typeof getSupabaseAdmin>, id: string, 
 }
 
 // 小林の面談を一括で01整形(=お手本5項目を整備)。リーダー専用。
+// 1 回の Vercel 関数呼び出しで処理する最大件数 (60s タイムアウト内に収める)。
+// 1 件 ~12-15s + 待機 → 3 件で 50s 前後。フロントがバッチでループする想定。
+const BULK_DIAG_BATCH = 3;
+
 async function bulkDiagnoseLeader(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
   const user = getRequestUser(req);
   if (!isLeader(user)) return send403(res, "リーダー専用");
@@ -1100,14 +1108,22 @@ async function bulkDiagnoseLeader(db: ReturnType<typeof getSupabaseAdmin>, req: 
     .eq("is_leader", true)
     .is("deleted_at", null)
     .order("recorded_at", { ascending: false })
-    .limit(20);
+    .limit(50);
   const todo = (rows || []).filter((r) => !(r.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis);
+  const batch = todo.slice(0, BULK_DIAG_BATCH);
   let ok = 0;
-  for (let i = 0; i < todo.length; i++) {
+  for (let i = 0; i < batch.length; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, 4000));
-    if (await diagnoseOne(db, todo[i].id as string, apiKey)) ok++;
+    if (await diagnoseOne(db, batch[i].id as string, apiKey)) ok++;
   }
-  return res.json({ ok: true, total: todo.length, succeeded: ok, skipped_already_done: (rows?.length || 0) - todo.length });
+  return res.json({
+    ok: true,
+    processed: batch.length,
+    succeeded: ok,
+    total_remaining: todo.length - batch.length,
+    has_more: todo.length > batch.length,
+    skipped_already_done: (rows?.length || 0) - todo.length,
+  });
 }
 
 // 自分の面談を一括で01整形 (メンバー本人 or リーダーが自分自身の分を整形)
@@ -1122,14 +1138,22 @@ async function bulkDiagnoseMine(db: ReturnType<typeof getSupabaseAdmin>, req: Ve
     .eq("is_leader", false)
     .is("deleted_at", null)
     .order("recorded_at", { ascending: false })
-    .limit(30);
+    .limit(50);
   const todo = (rows || []).filter((r) => !(r.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis);
+  const batch = todo.slice(0, BULK_DIAG_BATCH);
   let ok = 0;
-  for (let i = 0; i < todo.length; i++) {
+  for (let i = 0; i < batch.length; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, 4000));
-    if (await diagnoseOne(db, todo[i].id as string, apiKey)) ok++;
+    if (await diagnoseOne(db, batch[i].id as string, apiKey)) ok++;
   }
-  return res.json({ ok: true, total: todo.length, succeeded: ok, skipped_already_done: (rows?.length || 0) - todo.length });
+  return res.json({
+    ok: true,
+    processed: batch.length,
+    succeeded: ok,
+    total_remaining: todo.length - batch.length,
+    has_more: todo.length > batch.length,
+    skipped_already_done: (rows?.length || 0) - todo.length,
+  });
 }
 
 async function summarize(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {

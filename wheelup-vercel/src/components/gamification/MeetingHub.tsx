@@ -356,12 +356,19 @@ export default function MeetingHub() {
             </div>
             <button
               onClick={async () => {
-                if (!window.confirm("自分の未整形の面談を一括で整形します。よろしいですか？")) return;
+                if (!window.confirm("自分の未整形の面談を一括で整形します（1バッチ3件ずつループ）。よろしいですか？")) return;
+                let totalOk = 0, totalProcessed = 0;
                 try {
-                  const r = await bulkDiagnoseMine();
-                  window.alert(`✅ 整形完了: 成功 ${r.succeeded} / 対象 ${r.total} 件（既存スキップ ${r.skipped_already_done} 件）`);
-                  qc.invalidateQueries({ queryKey: ["meetings"] });
-                } catch (e) { window.alert(`❌ ${(e as Error).message}`); }
+                  while (true) {
+                    const r = await bulkDiagnoseMine();
+                    totalOk += r.succeeded;
+                    totalProcessed += r.processed;
+                    qc.invalidateQueries({ queryKey: ["meetings"] });
+                    if (!r.has_more) break;
+                    await new Promise((res) => setTimeout(res, 2000));
+                  }
+                  window.alert(`✅ 整形完了: 成功 ${totalOk} / 処理 ${totalProcessed} 件`);
+                } catch (e) { window.alert(`❌ ${(e as Error).message}（処理済 ${totalOk} 件）`); }
               }}
               className="btn-duo !px-4 !py-2 !text-[11px] shrink-0 text-white"
               style={{ backgroundColor: "#10B981", borderBottomColor: "#059669" }}
@@ -488,12 +495,19 @@ export default function MeetingHub() {
             </div>
             <button
               onClick={async () => {
-                if (!window.confirm("小林面談を一括で整形します（未整形分のみ）。よろしいですか？")) return;
+                if (!window.confirm("小林面談を一括で整形します（1バッチ3件ずつループ・未整形分のみ）。よろしいですか？")) return;
+                let totalOk = 0, totalProcessed = 0;
                 try {
-                  const r = await bulkDiagnoseLeader();
-                  window.alert(`✅ 整形完了: 成功 ${r.succeeded} / 対象 ${r.total} 件（既存スキップ ${r.skipped_already_done} 件）`);
-                  qc.invalidateQueries({ queryKey: ["meetings"] });
-                } catch (e) { window.alert(`❌ ${(e as Error).message}`); }
+                  while (true) {
+                    const r = await bulkDiagnoseLeader();
+                    totalOk += r.succeeded;
+                    totalProcessed += r.processed;
+                    qc.invalidateQueries({ queryKey: ["meetings"] });
+                    if (!r.has_more) break;
+                    await new Promise((res) => setTimeout(res, 2000));
+                  }
+                  window.alert(`✅ 整形完了: 成功 ${totalOk} / 処理 ${totalProcessed} 件`);
+                } catch (e) { window.alert(`❌ ${(e as Error).message}（処理済 ${totalOk} 件）`); }
               }}
               className="shrink-0 text-[11px] font-extrabold px-3 py-2 rounded-xl text-white"
               style={{ backgroundColor: "#10B981", borderBottom: "2px solid #059669" }}

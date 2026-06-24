@@ -1091,12 +1091,19 @@ export async function scoreMeeting(
 export async function diagnoseMeeting(id: string): Promise<{ ok: boolean; structured_diagnosis: string }> {
   return request(`/meetings/${id}/diagnose`, { method: "POST", body: JSON.stringify({}) });
 }
-// 自分の面談を一括で01整形
-export async function bulkDiagnoseMine(): Promise<{ ok: boolean; total: number; succeeded: number; skipped_already_done: number }> {
+export type BulkDiagBatchResult = {
+  ok: boolean;
+  processed: number;
+  succeeded: number;
+  total_remaining: number;
+  has_more: boolean;
+  skipped_already_done: number;
+};
+// 1 バッチ(最大3件)を整形。frontend が has_more=false までループする想定。
+export async function bulkDiagnoseMine(): Promise<BulkDiagBatchResult> {
   return request(`/meetings/bulk-diagnose-mine`, { method: "POST", body: JSON.stringify({}) });
 }
-// 小林の面談を一括で01整形 (お手本データ整備・リーダー専用)
-export async function bulkDiagnoseLeader(): Promise<{ ok: boolean; total: number; succeeded: number; skipped_already_done: number }> {
+export async function bulkDiagnoseLeader(): Promise<BulkDiagBatchResult> {
   return request(`/meetings/bulk-diagnose-leader`, { method: "POST", body: JSON.stringify({}) });
 }
 
