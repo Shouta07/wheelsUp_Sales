@@ -1067,21 +1067,27 @@ async function diagnoseOne(db: ReturnType<typeof getSupabaseAdmin>, id: string, 
   if (target) {
     const ex = extractSpeakerUtterances(text, target);
     if (ex.utterances.length > 200) {
-      text = `【${target}(本人)の発言抜粋】\n${ex.utterances.slice(0, 12000)}\n\n【面談全体(文脈)】\n${(meeting.transcript_text as string).slice(0, 12000)}`;
+      // 本人発言を最大 8000 字、全文文脈は最大 6000 字に縮小 (Gemini 応答時間を抑える)
+      text = `【${target}(本人)の発言抜粋】\n${ex.utterances.slice(0, 8000)}\n\n【面談全体(文脈)】\n${(meeting.transcript_text as string).slice(0, 6000)}`;
     }
   }
+  // AI への入力上限を 16000 → 14000 字に縮小 (60s タイムアウト保護)
   const body = JSON.stringify({
-    contents: [{ parts: [{ text: `${DIAGNOSIS_PROMPT}\n\n<文字起こし>\n${text.slice(0, 24000)}\n</文字起こし>` }] }],
-    generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
+    contents: [{ parts: [{ text: `${DIAGNOSIS_PROMPT}\n\n<文字起こし>\n${text.slice(0, 14000)}\n</文字起こし>` }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 3072 },
   });
-  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+  const models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]; // 軽量モデル優先
   let geminiRes: Response | null = null;
   for (const model of models) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    // 1 モデルあたり 35 秒で切る (60s 上限内に必ず収まるよう・フォールバックも 1 回まで)
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 35_000);
     try {
-      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: ctl.signal });
+      clearTimeout(to);
       if (r.ok) { geminiRes = r; break; }
-    } catch { /* try next */ }
+    } catch { clearTimeout(to); /* try next */ }
   }
   if (!geminiRes) return false;
   const data = await geminiRes.json();
@@ -1094,9 +1100,10 @@ async function diagnoseOne(db: ReturnType<typeof getSupabaseAdmin>, id: string, 
 }
 
 // 小林の面談を一括で01整形(=お手本5項目を整備)。リーダー専用。
-// 1 回の Vercel 関数呼び出しで処理する最大件数 (60s タイムアウト内に収める)。
-// 1 件 ~12-15s + 待機 → 3 件で 50s 前後。フロントがバッチでループする想定。
-const BULK_DIAG_BATCH = 3;
+// 1 回の Vercel 関数呼び出しで処理する最大件数。
+// Hobby プラン 60 秒上限。大きい議事録 + Gemini フォールバックで 50s 超えることがあるので 1 件ずつに絞る。
+// フロントが has_more=false までループするので進捗は途切れない。
+const BULK_DIAG_BATCH = 1;
 
 async function bulkDiagnoseLeader(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
   const user = getRequestUser(req);
