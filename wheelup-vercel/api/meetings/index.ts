@@ -78,6 +78,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (segments[0] === "extract-style" && req.method === "POST") {
       return await extractLeaderStyle(db, req, res);
     }
+    // --- /api/meetings/bulk-diagnose-leader (小林面談を一括で01整形・お手本5項目を整備) ---
+    if (segments[0] === "bulk-diagnose-leader" && req.method === "POST") {
+      return await bulkDiagnoseLeader(db, req, res);
+    }
+    // --- /api/meetings/bulk-diagnose-mine (自分の面談を一括で01整形) ---
+    if (segments[0] === "bulk-diagnose-mine" && req.method === "POST") {
+      return await bulkDiagnoseMine(db, req, res);
+    }
     // --- /api/meetings/style (保存済み流儀プロファイル取得) ---
     if (segments[0] === "style" && req.method === "GET") {
       return await getLeaderStyle(db, res);
@@ -1045,6 +1053,85 @@ async function generateDiagnosis(
   return res.json({ ok: true, structured_diagnosis: diagnosis });
 }
 
+// 整形だけを内部で1件実行する小ヘルパー (bulk から呼ぶ)
+async function diagnoseOne(db: ReturnType<typeof getSupabaseAdmin>, id: string, apiKey: string): Promise<boolean> {
+  const { data: meeting } = await db.from("meeting_transcripts").select("*").eq("id", id).single();
+  if (!meeting) return false;
+  let text = (meeting.transcript_text as string) || "";
+  if (!text) return false;
+  const target = (meeting.consultant_name as string) || "";
+  if (target) {
+    const ex = extractSpeakerUtterances(text, target);
+    if (ex.utterances.length > 200) {
+      text = `【${target}(本人)の発言抜粋】\n${ex.utterances.slice(0, 12000)}\n\n【面談全体(文脈)】\n${(meeting.transcript_text as string).slice(0, 12000)}`;
+    }
+  }
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: `${DIAGNOSIS_PROMPT}\n\n<文字起こし>\n${text.slice(0, 24000)}\n</文字起こし>` }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
+  });
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+  let geminiRes: Response | null = null;
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (r.ok) { geminiRes = r; break; }
+    } catch { /* try next */ }
+  }
+  if (!geminiRes) return false;
+  const data = await geminiRes.json();
+  const diagnosis = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+  if (!diagnosis) return false;
+  const existing = (meeting.score_data as Record<string, unknown> | null) ?? {};
+  const merged = { ...existing, structured_diagnosis: diagnosis, structured_diagnosis_at: new Date().toISOString() };
+  await db.from("meeting_transcripts").update({ score_data: merged }).eq("id", id);
+  return true;
+}
+
+// 小林の面談を一括で01整形(=お手本5項目を整備)。リーダー専用。
+async function bulkDiagnoseLeader(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const user = getRequestUser(req);
+  if (!isLeader(user)) return send403(res, "リーダー専用");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+  const { data: rows } = await db.from("meeting_transcripts")
+    .select("id, score_data")
+    .eq("is_leader", true)
+    .is("deleted_at", null)
+    .order("recorded_at", { ascending: false })
+    .limit(20);
+  const todo = (rows || []).filter((r) => !(r.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis);
+  let ok = 0;
+  for (let i = 0; i < todo.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 4000));
+    if (await diagnoseOne(db, todo[i].id as string, apiKey)) ok++;
+  }
+  return res.json({ ok: true, total: todo.length, succeeded: ok, skipped_already_done: (rows?.length || 0) - todo.length });
+}
+
+// 自分の面談を一括で01整形 (メンバー本人 or リーダーが自分自身の分を整形)
+async function bulkDiagnoseMine(db: ReturnType<typeof getSupabaseAdmin>, req: VercelRequest, res: VercelResponse) {
+  const user = getRequestUser(req);
+  if (!user) return send403(res, "ログインが必要です");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+  const { data: rows } = await db.from("meeting_transcripts")
+    .select("id, score_data")
+    .eq("consultant_name", user)
+    .eq("is_leader", false)
+    .is("deleted_at", null)
+    .order("recorded_at", { ascending: false })
+    .limit(30);
+  const todo = (rows || []).filter((r) => !(r.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis);
+  let ok = 0;
+  for (let i = 0; i < todo.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 4000));
+    if (await diagnoseOne(db, todo[i].id as string, apiKey)) ok++;
+  }
+  return res.json({ ok: true, total: todo.length, succeeded: ok, skipped_already_done: (rows?.length || 0) - todo.length });
+}
+
 async function summarize(db: ReturnType<typeof getSupabaseAdmin>, id: string, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not set" });
@@ -1560,19 +1647,64 @@ async function scoreMeetingInternal(
     }
   } catch { /* テーブル未作成 / 未抽出なら空 */ }
 
-  // 整形済みの候補者情報 (01 LARK 形式の structured_diagnosis) があれば採点の参照に注入。
-  // 「議事録を 01 プロンプトで整形 → その内容を踏まえて 小林と比較・採点」フローを実現する。
+  // 整形済みの候補者情報 (01 LARK 形式の structured_diagnosis) を採点の参照に注入。
+  // 設計: 小林・各メンバー両方で同じ 01 プロンプトで整形した「5項目構造化」を比較する。
+  //   ① 小林の整形済み診断 = 学習データ (5項目をどこまで埋められているか=お手本)
+  //   ② 本人の整形済み診断 = 実データ (この面談で本人がどこまで埋められたか)
+  //   → 同じ出力フォーマット同士を直接比較することで採点精度を高める。
   let structuredDiagnosisBlock = "";
   const sd = (meeting.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis;
+
+  // 小林面談のうち整形済み診断があるものを最大3件取得し、お手本5項目として注入
+  let leaderDiagnoses = "";
+  let leaderDiagKey = "";
+  try {
+    const { data: leaderRows } = await db.from("meeting_transcripts")
+      .select("id, title, score_data, updated_at")
+      .eq("is_leader", true)
+      .is("deleted_at", null)
+      .order("recorded_at", { ascending: false })
+      .limit(15);
+    const withDiag = (leaderRows || [])
+      .map((r) => ({ ...r, _diag: (r.score_data as { structured_diagnosis?: string } | null)?.structured_diagnosis }))
+      .filter((r) => typeof r._diag === "string" && r._diag.length > 100)
+      .slice(0, 3);
+    if (withDiag.length > 0) {
+      leaderDiagnoses = withDiag.map((r, i) =>
+        `--- 小林の整形済み診断 例${i + 1}: 「${r.title}」 ---\n${r._diag!.slice(0, 3500)}`
+      ).join("\n\n");
+      leaderDiagKey = withDiag.map((r) => `${r.id}:${r.updated_at}`).sort().join("|");
+    }
+  } catch { /* テーブル未取得時は空 */ }
+
   if (sd && typeof sd === "string" && sd.length > 50) {
-    structuredDiagnosisBlock = `## この面談の整形済み候補者情報 (01 初回診断フォーマット・本人が引き出せた情報の構造化)
-以下は本人の面談から「選考状況/NA/自己進捗度(キャリア軸)/キャリア納得度感/グリップ角度」に整形したもの。
-**これが "本人がこの面談で引き出せた情報の全体像" です。** 採点と leader_comparison では、
-この整形内容の充実度・空欄(「確認できず」)の多さを根拠に「何を引き出せ、何が抜けたか」を評価し、
-「小林ならこの5項目をどこまで埋められたか」を leader_comparison.leader_would に書くこと。
-<STRUCTURED_DIAGNOSIS>
+    structuredDiagnosisBlock = `## 🎯 比較採点の中核データ (同フォーマット同士の直接比較)
+
+### A. 本人がこの面談で整形できた内容 (01プロンプト適用結果・実データ)
+<MEMBER_DIAGNOSIS>
 ${sd.slice(0, 6000)}
-</STRUCTURED_DIAGNOSIS>
+</MEMBER_DIAGNOSIS>
+
+${leaderDiagnoses ? `### B. 小林の整形済み診断 (同じ01プロンプトで整形・お手本)
+<LEADER_DIAGNOSIS_EXAMPLES>
+${leaderDiagnoses}
+</LEADER_DIAGNOSIS_EXAMPLES>
+
+` : ""}### 採点の中核ルール (同フォーマット比較)
+- 上記 A と B は同じ「01 初回診断フォーマット」で整形されたもの。**5項目を1対1で直接比較**して採点する。
+  ①選考状況 ②NA ③自己進捗度(キャリア軸/経緯) ④キャリア納得度感 ⑤グリップ角度評価
+- 各軸の評価方法:
+  - needs/intel: ③自己進捗度・④キャリア納得度感・①選考状況の充実度で評価
+    (本人が「Must/Want/不要/未確認」をどこまで分けられたか・キャリア経緯の深さ)
+  - proposal: ③⑤の「提案したキャリアパス」「グリップ角度」で評価
+    (具体企業・二軸提案・小林の例にあるレベルの提案ができているか)
+  - trust: ④の総評・補強ポイントで評価 (率直な見立て・共感の言語化)
+  - closing: ②NA の日付/具体性で評価 (期限+アクション+次接点の合意)
+- leader_comparison では各軸ごとに、
+  - extracted: 本人の MEMBER_DIAGNOSIS で実際に埋まっている内容を1文で
+  - leader_would: 同フォーマットの LEADER_DIAGNOSIS_EXAMPLES では、その項目がどの粒度で埋まっているかを参照し、「小林ならここまで埋めただろう」を1文で
+  - gap: 5項目のどこに穴があるか (例: 「STEP1の④未確認条件が空欄」「⑤グリップ角度の障壁が言語化されていない」)
+- ★ 「整形できた=情報を引き出せた」を意味する。整形で「文字起こしから確認できず」と書かれている項目は、本人が引き出せなかった=weak の根拠。
 
 `;
   }
@@ -1648,7 +1780,7 @@ ${sd.slice(0, 6000)}
   // 本文の細かい改行差異や leader meeting 追加でキャッシュが頻繁に飛ぶのを防ぐ。
   // キャッシュキーに speaker filter + calibration も含める: 校正を変えたら必ず再採点される。
   const inputHash = createHash("sha256")
-    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}\n---\npromptver:diag-v1\n---\ndiag:${(sd && sd.length > 50) ? "1" : "0"}`)
+    .update(`${text}\n---\n${leaderRefsKey}\n---\nfb:${leaderCoaching.length}\n---\nspk:${targetSpeaker || ""}\n---\ncal:${calibrationHash}\n---\ngold:${goldObsKey}\n---\nstyle:${leaderStyleKey}\n---\npromptver:diag-cmp-v1\n---\ndiag:${(sd && sd.length > 50) ? "1" : "0"}\n---\nldrdiag:${leaderDiagKey}`)
     .digest("hex");
 
   // (旧 inputHash は上に新版で置き換え済み)
@@ -3284,6 +3416,8 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
         if (scored < maxAutoScore) {
           try {
             if (scored > 0) await sleep(scoreSleepMs); // 1 件目はスリープ不要
+            // 採点前に 01 フォーマットで整形 (= お手本と直接比較できる状態にする)
+            try { await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || ""); } catch { /* 整形失敗でも採点は続行 */ }
             await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
             scoredOk = true;
             scored += 1;
@@ -3400,6 +3534,8 @@ async function pushTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Verc
       if (autoScore && consultant && scored < maxAutoScore) {
         try {
           if (scored > 0) await sleep(scoreSleepMs);
+          // 採点前に 01 フォーマットで整形 (= お手本と直接比較できる状態にする)
+          try { await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || ""); } catch { /* 整形失敗でも採点は続行 */ }
           await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
           scoredOk = true;
           scored += 1;

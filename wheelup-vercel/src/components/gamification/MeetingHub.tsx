@@ -18,6 +18,8 @@ import {
   type TrainingHealth,
   scoreMeeting,
   diagnoseMeeting,
+  bulkDiagnoseMine,
+  bulkDiagnoseLeader,
   manualScoreMeeting,
   saveMeetingOutcome,
   deleteMeeting,
@@ -341,15 +343,41 @@ export default function MeetingHub() {
       </div>
       )}
 
+      {/* メンバー: 自分の全面談を一括整形 (01プロンプトでお手本と同じフォーマットに揃える) */}
+      {!isLeaderUser && (myMeetings?.transcripts?.length ?? 0) > 0 && (
+        <div className="mb-3 rounded-2xl border-2 border-emerald-300 bg-emerald-50 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-xs font-extrabold text-[#4b4b4b]">📋 自分の全面談を整形（01候補者情報フォーマット）</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                各議事録を「選考状況 / NA / 自己進捗度 / キャリア納得度感 / グリップ角度」の5項目に整形します。
+                小林面談と同じフォーマットに揃えるので、再採点時に項目ごとに直接比較されます。1件 ~15 秒。
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!window.confirm("自分の未整形の面談を一括で整形します。よろしいですか？")) return;
+                try {
+                  const r = await bulkDiagnoseMine();
+                  window.alert(`✅ 整形完了: 成功 ${r.succeeded} / 対象 ${r.total} 件（既存スキップ ${r.skipped_already_done} 件）`);
+                  qc.invalidateQueries({ queryKey: ["meetings"] });
+                } catch (e) { window.alert(`❌ ${(e as Error).message}`); }
+              }}
+              className="btn-duo !px-4 !py-2 !text-[11px] shrink-0 text-white"
+              style={{ backgroundColor: "#10B981", borderBottomColor: "#059669" }}
+            >📋 全件整形</button>
+          </div>
+        </div>
+      )}
+
       {/* メンバー: 自分の全面談を新ロジックで再採点 (西村FB「全面談に新機能を反映」) */}
-      {!isLeaderUser && tab === "mine" && (myMeetings?.transcripts?.length ?? 0) > 0 && (
+      {!isLeaderUser && (myMeetings?.transcripts?.length ?? 0) > 0 && (
         <div className="mb-4 rounded-2xl border-2 border-duo-blue bg-duo-blue/5 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex-1">
               <p className="text-xs font-extrabold text-[#4b4b4b]">🔄 自分の全面談を再採点（新ロジック）</p>
               <p className="text-[10px] font-bold text-[#777] mt-0.5">
-                話者分離（議事録の「あなた」＝あなた本人）と、軸別フィードバック（◎/△・プレイバック・次の一手・参考）を
-                すべての面談に反映します。同席者（小林さん等）の発言は除外されます。数分かかります。
+                話者分離と軸別フィードバックを全面談に反映。整形済みの面談は「小林の5項目」と直接比較されます。
               </p>
             </div>
             <button
@@ -448,6 +476,29 @@ export default function MeetingHub() {
               {autoCalState.message}
             </div>
           )}
+
+          {/* 小林面談を一括整形 (お手本データを揃える) */}
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-purple-200">
+            <div className="flex-1">
+              <p className="text-[11px] font-extrabold text-[#4b4b4b]">📋 小林面談を一括整形（お手本5項目を整備）</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                小林さんの面談を 01 候補者情報フォーマット(5項目)に整形します。
+                メンバー面談との「同フォーマット比較」のお手本になります。最初に1回実行してください。
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!window.confirm("小林面談を一括で整形します（未整形分のみ）。よろしいですか？")) return;
+                try {
+                  const r = await bulkDiagnoseLeader();
+                  window.alert(`✅ 整形完了: 成功 ${r.succeeded} / 対象 ${r.total} 件（既存スキップ ${r.skipped_already_done} 件）`);
+                  qc.invalidateQueries({ queryKey: ["meetings"] });
+                } catch (e) { window.alert(`❌ ${(e as Error).message}`); }
+              }}
+              className="shrink-0 text-[11px] font-extrabold px-3 py-2 rounded-xl text-white"
+              style={{ backgroundColor: "#10B981", borderBottom: "2px solid #059669" }}
+            >📋 整形実行</button>
+          </div>
 
           {/* 全件再採点 */}
           <div className="flex items-center justify-between gap-2 pt-2 border-t border-purple-200">
