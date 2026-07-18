@@ -4,6 +4,8 @@ import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
 import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
 import LearningModal from "./LearningModal";
+import TalkTendencyPanel from "./TalkTendencyPanel";
+import { analyzeTalk, talkStatsToCsvRow, rowsToCsv } from "../../lib/talkAnalysis";
 import {
   fetchMeetings,
   createMeeting,
@@ -341,6 +343,47 @@ export default function MeetingHub() {
           </button>
         ))}
       </div>
+      )}
+
+      {/* 📊 トーク傾向を CSV エクスポート (西村FB: 振り返り・特性分析用) */}
+      {(meetings?.length ?? 0) > 0 && (
+        <div className="mb-3 rounded-2xl border-2 border-slate-300 bg-slate-50 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-xs font-extrabold text-[#4b4b4b]">📊 トーク傾向を CSV 出力</p>
+              <p className="text-[10px] font-bold text-[#777] mt-0.5">
+                表示中の面談を機械分析（発話比率・質問数・口癖・発話速度など）し、CSV でダウンロードします。振り返り・特性分析に。
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                const rows = (meetings || [])
+                  .filter((mt) => mt.transcript_text)
+                  .map((mt) => {
+                    const s = analyzeTalk(mt.transcript_text || "", mt.consultant_name || currentUser || "あなた");
+                    if (!s) return null;
+                    return talkStatsToCsvRow({
+                      date: (mt.recorded_at || "").slice(0, 10),
+                      title: mt.title || "",
+                      consultant: mt.consultant_name || currentUser || "",
+                    }, s);
+                  })
+                  .filter((r): r is Record<string, string | number> => !!r);
+                if (rows.length === 0) { window.alert("分析できる議事録がありません（話者ラベル付きが必要）"); return; }
+                const csv = rowsToCsv(rows);
+                const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `talk_tendency_${new Date().toISOString().slice(0,10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="btn-duo !px-4 !py-2 !text-[11px] shrink-0 text-white"
+              style={{ backgroundColor: "#64748B", borderBottomColor: "#475569" }}
+            >⬇ CSV 出力</button>
+          </div>
+        </div>
       )}
 
       {/* メンバー: 自分の全面談を一括整形 (01プロンプトでお手本と同じフォーマットに揃える) */}
@@ -1049,6 +1092,15 @@ function MeetingEntry({
                 雰囲気の良さではなく、<b>条件を満たした行動</b>が点数になります。
               </p>
             </div>
+          )}
+
+          {/* 📊 トーク傾向（機械分析・ピボットの中核）。議事録があれば採点前でも即表示。 */}
+          {m.transcript_text && (
+            <TalkTendencyPanel
+              transcript={m.transcript_text}
+              consultant={m.consultant_name || currentUser || "あなた"}
+              onJump={(t) => jumpToTranscript(t, m.transcript_text || "")}
+            />
           )}
 
           {/* 総合所感 (なぜこの評価かを一言で) */}
