@@ -5,7 +5,7 @@ import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, canAnnotateM
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
 import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, diagnoseDrive, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
-import { notifyMeetingScored } from "../_lib/notify.js";
+import { notifyMeetingScored, notifyMeetingImported } from "../_lib/notify.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -3446,24 +3446,33 @@ async function driveImport(db: ReturnType<typeof getSupabaseAdmin>, req: VercelR
       //   - 採点件数を maxAutoScore 件で打切る (default 10)
       //   - 採点間 scoreSleepMs ミリ秒スリープ (default 8s, 15 RPM 余裕)
       //   - 失敗してもインポート自体は成功扱い (採点だけ後でリトライ可能)
+      // ピボット (2026-07-18) 以降、自動 AI 採点は廃止。
+      // 取り込み時は「候補者情報の整形 (01フォーマット)」だけ実行する。
+      // トーク傾向は議事録があればフロントで即時計算されるため AI 処理は不要。
       let scoredOk = false;
       if (autoScore && consultant) {
         if (scored < maxAutoScore) {
           try {
             if (scored > 0) await sleep(scoreSleepMs); // 1 件目はスリープ不要
-            // 採点前に 01 フォーマットで整形 (= お手本と直接比較できる状態にする)
-            try { await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || ""); } catch { /* 整形失敗でも採点は続行 */ }
-            await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
+            await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || "");
             scoredOk = true;
             scored += 1;
+            // 新しい面談が入ったことを 1 回だけ通知
+            try {
+              await notifyMeetingImported({
+                consultantName: consultant,
+                meetingTitle: String(f.name).replace(/\.[a-z0-9]+$/i, "").replace(/\s*\[mimo:[^\]]+\]/, ""),
+                appBaseUrl: (process.env.APP_BASE_URL ?? "").trim() || undefined,
+              });
+            } catch { /* 通知失敗は無視 */ }
           } catch (e) {
-            // 自動採点失敗は警告レベル (importは成功)
-            results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+            // 整形失敗は警告レベル (import は成功)
+            results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, error: `auto_diagnose failed: ${(e as Error).message.slice(0, 100)}` });
             continue;
           }
         } else {
-          // 上限に達した: import だけ完了させ、採点は後続バッチで
-          results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, skipped: `auto_score 上限 ${maxAutoScore} 件超過、後で手動再採点してください` });
+          // 上限に達した: import だけ完了させ、整形は後続バッチで
+          results.push({ file: f.name, ok: true, meeting_id: created.id as string, consultant, skipped: `auto_diagnose 上限 ${maxAutoScore} 件超過、後で手動整形してください` });
           imported += 1;
           if (f.modifiedTime > maxModifiedTime) maxModifiedTime = f.modifiedTime;
           continue;
@@ -3565,17 +3574,23 @@ async function pushTranscript(db: ReturnType<typeof getSupabaseAdmin>, req: Verc
         continue;
       }
 
+      // ピボット (2026-07-18) 以降、自動 AI 採点は廃止し整形のみ実行する。
       let scoredOk = false;
       if (autoScore && consultant && scored < maxAutoScore) {
         try {
           if (scored > 0) await sleep(scoreSleepMs);
-          // 採点前に 01 フォーマットで整形 (= お手本と直接比較できる状態にする)
-          try { await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || ""); } catch { /* 整形失敗でも採点は続行 */ }
-          await scoreMeetingInternal(db, created.id as string, { targetSpeaker: consultant });
+          await diagnoseOne(db, created.id as string, process.env.GEMINI_API_KEY || "");
           scoredOk = true;
           scored += 1;
+          try {
+            await notifyMeetingImported({
+              consultantName: consultant,
+              meetingTitle: String(fileName).replace(/\.[a-z0-9]+$/i, "").replace(/\s*\[mimo:[^\]]+\]/, ""),
+              appBaseUrl: (process.env.APP_BASE_URL ?? "").trim() || undefined,
+            });
+          } catch { /* 通知失敗は無視 */ }
         } catch (e) {
-          results.push({ file: fileName, ok: true, meeting_id: created.id as string, consultant, error: `auto_score failed: ${(e as Error).message.slice(0, 100)}` });
+          results.push({ file: fileName, ok: true, meeting_id: created.id as string, consultant, error: `auto_diagnose failed: ${(e as Error).message.slice(0, 100)}` });
           imported += 1;
           continue;
         }

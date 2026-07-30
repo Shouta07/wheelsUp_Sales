@@ -114,3 +114,20 @@ export async function notifyMeetingScored(s: ScoreSummary): Promise<void> {
 
   await sendChatNotification(text);
 }
+
+/**
+ * 面談が取り込まれた時の通知（ピボット 2026-07-18 以降）。
+ * AI 採点を廃止したため「採点結果」ではなく「新しい面談が入った」ことを知らせる。
+ */
+export async function notifyMeetingImported(m: {
+  consultantName: string | null;
+  meetingTitle: string;
+  appBaseUrl?: string;
+}): Promise<void> {
+  if (!WEBHOOK) return;
+  const who = m.consultantName ? `${m.consultantName}さん` : "メンバー";
+  const link = m.appBaseUrl ? `\n\n${m.appBaseUrl}` : "";
+  const mention = larkMentionPrefix(m.consultantName);
+  const text = `${mention}📝 ${who}の面談が取り込まれました\n「${m.meetingTitle}」\n\nトーク傾向を確認できます。${link}`;
+  await sendChatNotification(text);
+}
