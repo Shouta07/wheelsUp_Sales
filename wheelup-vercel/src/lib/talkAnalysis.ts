@@ -26,6 +26,26 @@ export interface TalkStats {
   topWords: { word: string; count: number }[];
   speechPerMin: number | null; // 字/分 (時刻が取れた時のみ)
   durationMin: number | null;
+
+  // ── トークの傾向（振る舞いパターン）──────────────────
+  /** 質問の内訳: オープン(何/なぜ/どう…) と クローズド(はい/いいえで終わる) */
+  questionMix: { open: number; closed: number; openRate: number };
+  /** 相槌率: 15字未満の短い相槌ターンが self ターンに占める割合 % */
+  backchannelRate: number;
+  /** 会話のキャッチボール度: 話者交代の回数 / 総ターン。高いほど往復が多い */
+  turnTakingRate: number;
+  /** self が連続で話した最大回数（相手を挟まず続けたターン数） */
+  maxConsecutiveSelfTurns: number;
+  /** 前半/中盤/後半の発話比率（self %）。会話の主導権の推移 */
+  phaseRatios: { label: string; selfPct: number }[];
+  /** 語尾の傾向: 断定 と 曖昧(かな/かもしれない/と思います) の出現数 */
+  toneMix: { assertive: number; hedged: number; hedgeRate: number };
+  /** 共感・受容表現の回数（なるほど/確かに/おっしゃる通り 等） */
+  empathyCount: number;
+  /** 説明・提案表現の回数（例えば/というのは/おすすめ 等） */
+  explainCount: number;
+  /** 総合的な会話スタイルの判定（ラベル + 根拠） */
+  styleLabel: { label: string; reason: string; tone: "listen" | "balance" | "talk" };
 }
 
 const SELF_ALIASES = ["あなた", "you"];
@@ -101,6 +121,27 @@ function countQuestions(text: string): number {
   return n;
 }
 
+// オープンクエスチョン（5W1H系＝相手に自由に語らせる問い）の目印
+const OPEN_Q = /(なぜ|どうして|どんな|どのよう|どういう|何が|何を|何か|いかが|どこが|どちら|どの(辺|くらい|ように)|具体的に|理由|背景|きっかけ|どう(思|考|感じ))/;
+// 共感・受容の表現
+const EMPATHY = ["なるほど", "確かに", "おっしゃる通り", "わかります", "そうですよね", "いいですね",
+  "素晴らし", "ありがとうござ", "大変でした", "気持ちわか"];
+// 説明・提案の表現
+const EXPLAIN = ["例えば", "というのは", "具体的には", "おすすめ", "ご提案", "だと思います",
+  "ポイントは", "理由は", "つまり", "逆に言うと", "一般的には"];
+// 曖昧・ヘッジ表現（断定を避ける言い方）
+const HEDGED = /(かもしれ|かなと|と思います|気がし|ような感じ|多分|たぶん|恐らく|おそらく|かな。|でしょうかね)/g;
+// 断定表現
+const ASSERTIVE = /(です。|ます。|です！|ます！|できます|あります|になります|しましょう|ください)/g;
+
+function countAny(text: string, words: string[]): number {
+  let n = 0;
+  for (const w of words) {
+    n += (text.match(new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+  }
+  return n;
+}
+
 export function analyzeTalk(text: string, selfName: string): TalkStats | null {
   const turns = parseTranscript(text, selfName);
   if (turns.length < 3) return null;
@@ -135,13 +176,98 @@ export function analyzeTalk(text: string, selfName: string): TalkStats | null {
   const topWords = [...wordMap.entries()].map(([word, count]) => ({ word, count }))
     .filter((w) => w.count >= 2).sort((a, b) => b.count - a.count).slice(0, 12);
 
-  // 発話速度（時刻が取れた場合）
+  // 面談の長さ（最初と最後の時刻差）
   const timed = turns.filter((t) => t.seconds != null).map((t) => t.seconds as number);
-  let speechPerMin: number | null = null;
   let durationMin: number | null = null;
   if (timed.length >= 2) {
     const dur = (Math.max(...timed) - Math.min(...timed)) / 60;
-    if (dur > 0.5) { durationMin = Math.round(dur); speechPerMin = Math.round(selfChars / dur); }
+    if (dur > 0.5) durationMin = Math.round(dur);
+  }
+
+  // 発話速度（字/分）: 面談全体で割ると相手の発話時間も含まれてしまうため、
+  // self の各ターンについて「次のターン開始までの時間」を発話時間とみなして合計する。
+  // 5分以上空いた区間は中断・記録の飛びとみなして除外。
+  let speechPerMin: number | null = null;
+  {
+    let selfSpeakSec = 0, selfSpeakChars = 0;
+    for (let i = 0; i < turns.length; i++) {
+      const t = turns[i];
+      if (t.speaker !== "self" || t.seconds == null) continue;
+      const next = turns.slice(i + 1).find((n) => n.seconds != null);
+      if (!next || next.seconds == null) continue;
+      const gap = next.seconds - t.seconds;
+      if (gap <= 0 || gap > 300) continue;
+      selfSpeakSec += gap;
+      selfSpeakChars += t.text.length;
+    }
+    if (selfSpeakSec > 30) speechPerMin = Math.round(selfSpeakChars / (selfSpeakSec / 60));
+  }
+
+  // ── トークの傾向（振る舞いパターン）──────────────────
+  // 質問の内訳: オープン(自由に語らせる) / クローズド(はい・いいえ)
+  let openQ = 0, closedQ = 0;
+  for (const t of selfTurns) {
+    const q = countQuestions(t.text);
+    if (q === 0) continue;
+    if (OPEN_Q.test(t.text)) openQ += q; else closedQ += q;
+  }
+  const questionMix = {
+    open: openQ, closed: closedQ,
+    openRate: (openQ + closedQ) ? Math.round((openQ / (openQ + closedQ)) * 100) : 0,
+  };
+
+  // 相槌率: 15字未満の短い返しが self ターンに占める割合
+  const backchannels = selfTurns.filter((t) => t.text.trim().length < 15).length;
+  const backchannelRate = selfTurns.length ? Math.round((backchannels / selfTurns.length) * 100) : 0;
+
+  // キャッチボール度 + self の連続発話最大回数
+  let switches = 0, maxRun = 0, run = 0;
+  for (let i = 0; i < turns.length; i++) {
+    if (i > 0 && turns[i].speaker !== turns[i - 1].speaker) switches++;
+    if (turns[i].speaker === "self") { run++; maxRun = Math.max(maxRun, run); } else run = 0;
+  }
+  const turnTakingRate = turns.length > 1 ? Math.round((switches / (turns.length - 1)) * 100) : 0;
+
+  // 前半/中盤/後半の発話比率（会話の主導権の推移）
+  const third = Math.max(1, Math.ceil(turns.length / 3));
+  const phaseRatios = ["前半", "中盤", "後半"].map((label, i) => {
+    const seg = turns.slice(i * third, (i + 1) * third);
+    const sc = seg.filter((t) => t.speaker === "self").reduce((a, t) => a + t.text.length, 0);
+    const oc = seg.filter((t) => t.speaker !== "self").reduce((a, t) => a + t.text.length, 0);
+    return { label, selfPct: (sc + oc) ? Math.round((sc / (sc + oc)) * 100) : 0 };
+  });
+
+  // 語尾の傾向（断定 vs 曖昧）
+  const assertive = (selfAll.match(ASSERTIVE) || []).length;
+  const hedged = (selfAll.match(HEDGED) || []).length;
+  const toneMix = {
+    assertive, hedged,
+    hedgeRate: (assertive + hedged) ? Math.round((hedged / (assertive + hedged)) * 100) : 0,
+  };
+
+  // 共感・説明表現
+  const empathyCount = countAny(selfAll, EMPATHY);
+  const explainCount = countAny(selfAll, EXPLAIN);
+
+  // 会話スタイルの総合判定（発話比率 × 質問量で分類）
+  const ratio = Math.round((selfChars / total) * 100);
+  const qPerTurn = selfTurns.length ? qCount / selfTurns.length : 0;
+  let styleLabel: TalkStats["styleLabel"];
+  if (ratio >= 65) {
+    styleLabel = { label: "説明・提案リード型", tone: "talk",
+      reason: `担当者の発話が${ratio}%。伝える量が多く、相手の発話は${100 - ratio}%。` };
+  } else if (ratio <= 40 && qPerTurn >= 0.3) {
+    styleLabel = { label: "傾聴・ヒアリング型", tone: "listen",
+      reason: `発話${ratio}%に抑えつつ質問${qCount}回。相手に語らせる進め方。` };
+  } else if (ratio <= 45) {
+    styleLabel = { label: "聞き役中心型", tone: "listen",
+      reason: `発話${ratio}%。相手の話す時間が長く、質問は${qCount}回。` };
+  } else if (qPerTurn >= 0.35) {
+    styleLabel = { label: "対話・深掘り型", tone: "balance",
+      reason: `発話${ratio}%でバランスを取りつつ質問${qCount}回で掘り下げ。` };
+  } else {
+    styleLabel = { label: "バランス型", tone: "balance",
+      reason: `発話${ratio}%・質問${qCount}回。話す/聞くが中間的。` };
   }
 
   return {
@@ -150,7 +276,7 @@ export function analyzeTalk(text: string, selfName: string): TalkStats | null {
     selfTurns: selfTurns.length,
     otherTurns: otherTurns.length,
     selfChars, otherChars,
-    talkRatioSelf: Math.round((selfChars / total) * 100),
+    talkRatioSelf: ratio,
     questionCount: qCount,
     questionRate: selfTurns.length ? Math.round((qTurns / selfTurns.length) * 100) : 0,
     avgSelfTurnChars: selfTurns.length ? Math.round(selfChars / selfTurns.length) : 0,
@@ -159,6 +285,15 @@ export function analyzeTalk(text: string, selfName: string): TalkStats | null {
     topWords,
     speechPerMin,
     durationMin,
+    questionMix,
+    backchannelRate,
+    turnTakingRate,
+    maxConsecutiveSelfTurns: maxRun,
+    phaseRatios,
+    toneMix,
+    empathyCount,
+    explainCount,
+    styleLabel,
   };
 }
 
@@ -178,6 +313,19 @@ export function talkStatsToCsvRow(meta: { date: string; title: string; consultan
     最長独話文字数: s.longestMonologue.chars,
     発話速度_字每分: s.speechPerMin ?? "",
     面談時間_分: s.durationMin ?? "",
+    会話スタイル: s.styleLabel.label,
+    オープン質問数: s.questionMix.open,
+    クローズド質問数: s.questionMix.closed,
+    オープン質問率: s.questionMix.openRate,
+    相槌率: s.backchannelRate,
+    キャッチボール度: s.turnTakingRate,
+    最大連続発話回数: s.maxConsecutiveSelfTurns,
+    発話比率_前半: s.phaseRatios[0]?.selfPct ?? "",
+    発話比率_中盤: s.phaseRatios[1]?.selfPct ?? "",
+    発話比率_後半: s.phaseRatios[2]?.selfPct ?? "",
+    曖昧表現率: s.toneMix.hedgeRate,
+    共感表現数: s.empathyCount,
+    説明提案表現数: s.explainCount,
     口癖トップ3: s.fillers.slice(0, 3).map((f) => `${f.word}:${f.count}`).join(" "),
     頻出ワードトップ3: s.topWords.slice(0, 3).map((w) => `${w.word}:${w.count}`).join(" "),
   };
