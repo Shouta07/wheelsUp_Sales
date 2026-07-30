@@ -342,3 +342,96 @@ export function rowsToCsv(rows: Record<string, string | number>[]): string {
   for (const r of rows) lines.push(headers.map((h) => esc(r[h] ?? "")).join(","));
   return "﻿" + lines.join("\n"); // BOM付きでExcel文字化け防止
 }
+
+// ── メンバー単位のサマリー集計 ──────────────────────────
+// 各面談の TalkStats を平均・合計して「この人の傾向」を1枚にまとめる。
+
+export interface MemberSummary {
+  analyzed: number;              // 分析できた面談数
+  avgTalkRatio: number;          // 平均発話比率 %
+  avgQuestions: number;          // 1面談あたりの平均質問数
+  openRate: number;              // オープン質問率 %
+  avgSpeechPerMin: number | null;// 平均発話速度 字/分
+  avgBackchannel: number;        // 平均相槌率 %
+  avgTurnTaking: number;         // 平均キャッチボール度 %
+  hedgeRate: number;             // 曖昧表現率 %
+  topStyle: { label: string; count: number } | null;
+  styleCounts: { label: string; count: number }[];
+  fillers: { word: string; count: number }[];
+  topWords: { word: string; count: number }[];
+  /** 直近の面談から古い順に並べた発話比率（推移スパークライン用・最大10件） */
+  ratioTrend: number[];
+  avgPhaseRatios: { label: string; selfPct: number }[];
+}
+
+export function summarizeMember(
+  meetings: { transcript_text?: string | null; recorded_at?: string; consultant_name?: string | null }[],
+  memberName: string,
+): MemberSummary | null {
+  const withStats = meetings
+    .map((m) => ({
+      at: m.recorded_at || "",
+      stats: m.transcript_text ? analyzeTalk(m.transcript_text, m.consultant_name || memberName) : null,
+    }))
+    .filter((x): x is { at: string; stats: TalkStats } => !!x.stats);
+
+  if (withStats.length === 0) return null;
+  const n = withStats.length;
+  const sum = (f: (s: TalkStats) => number) => withStats.reduce((a, x) => a + f(x.stats), 0);
+  const avg = (f: (s: TalkStats) => number) => Math.round(sum(f) / n);
+
+  // 会話スタイルの分布
+  const styleMap = new Map<string, number>();
+  for (const { stats } of withStats) {
+    styleMap.set(stats.styleLabel.label, (styleMap.get(stats.styleLabel.label) || 0) + 1);
+  }
+  const styleCounts = [...styleMap.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // 口癖・頻出ワードは全面談で合算
+  const mergeCounts = (pick: (s: TalkStats) => { word: string; count: number }[]) => {
+    const map = new Map<string, number>();
+    for (const { stats } of withStats) {
+      for (const w of pick(stats)) map.set(w.word, (map.get(w.word) || 0) + w.count);
+    }
+    return [...map.entries()].map(([word, count]) => ({ word, count }))
+      .sort((a, b) => b.count - a.count).slice(0, 8);
+  };
+
+  // オープン質問率は合計ベース（面談ごとの率を平均すると質問0件の回に引っ張られるため）
+  const openTotal = sum((s) => s.questionMix.open);
+  const closedTotal = sum((s) => s.questionMix.closed);
+  const assertTotal = sum((s) => s.toneMix.assertive);
+  const hedgeTotal = sum((s) => s.toneMix.hedged);
+
+  const speedVals = withStats.map((x) => x.stats.speechPerMin).filter((v): v is number => v != null);
+
+  // 発話比率の推移（古い→新しい、最大10件）
+  const ratioTrend = [...withStats]
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+    .slice(-10)
+    .map((x) => x.stats.talkRatioSelf);
+
+  const avgPhaseRatios = ["前半", "中盤", "後半"].map((label, i) => ({
+    label,
+    selfPct: Math.round(withStats.reduce((a, x) => a + (x.stats.phaseRatios[i]?.selfPct ?? 0), 0) / n),
+  }));
+
+  return {
+    analyzed: n,
+    avgTalkRatio: avg((s) => s.talkRatioSelf),
+    avgQuestions: Math.round((sum((s) => s.questionCount) / n) * 10) / 10,
+    openRate: (openTotal + closedTotal) ? Math.round((openTotal / (openTotal + closedTotal)) * 100) : 0,
+    avgSpeechPerMin: speedVals.length ? Math.round(speedVals.reduce((a, b) => a + b, 0) / speedVals.length) : null,
+    avgBackchannel: avg((s) => s.backchannelRate),
+    avgTurnTaking: avg((s) => s.turnTakingRate),
+    hedgeRate: (assertTotal + hedgeTotal) ? Math.round((hedgeTotal / (assertTotal + hedgeTotal)) * 100) : 0,
+    topStyle: styleCounts[0] || null,
+    styleCounts,
+    fillers: mergeCounts((s) => s.fillers),
+    topWords: mergeCounts((s) => s.topWords),
+    ratioTrend,
+    avgPhaseRatios,
+  };
+}

@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
 import { TEAM_MEMBERS } from "../../lib/team";
 import TalkTendencyPanel from "./TalkTendencyPanel";
+import MemberSummaryPanel from "./MemberSummaryPanel";
 import { analyzeTalk, talkStatsToCsvRow, rowsToCsv } from "../../lib/talkAnalysis";
 import {
   fetchMeetings,
@@ -277,6 +278,15 @@ export default function MeetingHub() {
         <div className="mb-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2">
           <p className="text-[11px] font-bold text-red-700">{errorMsg}</p>
         </div>
+      )}
+
+      {/* タブのメンバーのサマリーダッシュボード */}
+      {meetings.length > 0 && (
+        <MemberSummaryPanel
+          meetings={meetings}
+          memberName={tab}
+          color={TEAM_MEMBERS.find((mm) => mm.name === tab)?.color || "#64748b"}
+        />
       )}
 
       {/* 面談リスト */}
