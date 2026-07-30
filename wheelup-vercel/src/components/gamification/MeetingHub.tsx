@@ -75,17 +75,28 @@ export default function MeetingHub() {
     enabled: !!currentUser,
   });
 
-  const byMember = useMemo(() => {
+  // 担当者名でグルーピング。DB の consultant_name は表記ゆれ（「西村」/「西村康佑」など）が
+  // あり得るため、完全一致だけでなく前方一致・部分一致でもチームメンバーに寄せる。
+  // どのメンバーにも該当しないものは「その他」タブに入れて取りこぼさない。
+  const OTHER = "その他";
+  const { byMember, unassignedCount } = useMemo(() => {
     const map = new Map<string, MeetingTranscript[]>();
+    for (const mem of TEAM_MEMBERS) map.set(mem.name, []);
+    map.set(OTHER, []);
+    const norm = (s: string) => s.replace(/\s|　/g, "");
     for (const m of allMeetings?.transcripts || []) {
-      const key = m.consultant_name || "未設定";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(m);
+      const raw = norm(m.consultant_name || "");
+      const hit = TEAM_MEMBERS.find((mem) => {
+        const n = norm(mem.name);
+        return raw === n || raw.startsWith(n) || raw.includes(n);
+      });
+      map.get(hit ? hit.name : OTHER)!.push(m);
     }
-    return map;
+    return { byMember: map, unassignedCount: map.get(OTHER)!.length };
   }, [allMeetings]);
 
   const meetings = byMember.get(tab) || [];
+  const totalLoaded = allMeetings?.transcripts?.length ?? 0;
 
   const handleTextSave = async () => {
     if (!textInput.trim()) return;
@@ -172,7 +183,7 @@ export default function MeetingHub() {
       </div>
 
       {/* メンバータブ（誰でも誰の面談も閲覧・FB入力できる） */}
-      <div className="flex gap-1 mb-4 overflow-x-auto pb-1">
+      <div className="flex gap-1 mb-2 overflow-x-auto pb-1">
         {TEAM_MEMBERS.map((mem) => {
           const list = byMember.get(mem.name) || [];
           const active = tab === mem.name;
@@ -199,12 +210,29 @@ export default function MeetingHub() {
             </button>
           );
         })}
+        {/* 担当者名がチーム定義と一致しない面談の受け皿（取りこぼし防止） */}
+        {unassignedCount > 0 && (
+          <button
+            onClick={() => setTab(OTHER)}
+            className={`shrink-0 px-3 py-2 rounded-xl text-xs font-extrabold transition-colors ${
+              tab === OTHER ? "bg-[#64748b] text-white" : "text-[#8a8a8a] hover:bg-[#f2f4f7]"
+            }`}
+          >
+            その他 <span className="text-[10px] tabular-nums opacity-80">{unassignedCount}</span>
+          </button>
+        )}
       </div>
+
+      <p className="text-[10px] font-bold text-[#afafaf] mb-3">
+        チーム全体 {totalLoaded} 件を読み込み済み・タブで担当者を切り替えられます
+      </p>
 
       {tab !== currentUser && (
         <div className="mb-3 rounded-xl bg-[#F3F5F8] border border-[#E2E6EC] px-3 py-2">
           <p className="text-[11px] font-bold text-[#555]">
-            👀 <b>{tab}</b>さんの面談を閲覧中です。トーク傾向の確認と、フィードバック（注釈）の入力ができます。
+            {tab === OTHER
+              ? "👀 担当者名がチーム設定と一致しない面談です。トーク傾向の確認とフィードバックの入力ができます。"
+              : <>👀 <b>{tab}</b>さんの面談を閲覧中です。トーク傾向の確認と、フィードバック（注釈）の入力ができます。</>}
           </p>
         </div>
       )}
@@ -259,7 +287,9 @@ export default function MeetingHub() {
             <p className="text-sm font-bold text-[#777]">
               {tab === currentUser
                 ? "面談を追加すると、トーク傾向が自動で分析されます"
-                : `${tab}さんの面談はまだ登録されていません`}
+                : tab === OTHER
+                  ? "該当する面談はありません"
+                  : `${tab}さんの面談はまだ登録されていません`}
             </p>
           </div>
         )}
