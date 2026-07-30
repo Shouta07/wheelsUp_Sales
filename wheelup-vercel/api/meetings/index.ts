@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createHash } from "node:crypto";
 import { getSupabaseAdmin } from "../_lib/supabase-admin.js";
-import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, send403 } from "../_lib/auth.js";
+import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, canAnnotateMeeting, send403 } from "../_lib/auth.js";
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
 import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, diagnoseDrive, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
@@ -2809,17 +2809,21 @@ async function addLeaderFeedback(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  // リーダーフィードバックを書けるのはリーダー本人のみ
-  if (!isLeader(getRequestUser(req))) {
-    return send403(res, "リーダーフィードバックはリーダーのみ追加できます");
+  // 西村 FB 2026-07-18: 階級性をなくし、チームの誰でも他メンバーの面談に注釈を書ける。
+  const author = getRequestUser(req);
+  if (!canAnnotateMeeting(author)) {
+    return send403(res, "フィードバックの入力にはログインが必要です");
   }
   const { feedback } = req.body || {};
-  if (!feedback || typeof feedback !== "string") {
+  if (typeof feedback !== "string") {
     return res.status(400).json({ error: "feedback (string) is required" });
   }
+  const body = feedback.trim();
+  // 空文字なら削除扱い（注釈の取り消し）
+  const value = body ? `${body}\n— ${author}` : null;
   const { data, error } = await db
     .from("meeting_transcripts")
-    .update({ leader_feedback: feedback.trim() })
+    .update({ leader_feedback: value })
     .eq("id", id)
     .select()
     .single();

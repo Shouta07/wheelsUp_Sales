@@ -40,18 +40,20 @@ export function canWriteMeeting(
   return currentUser === target.consultant_name;
 }
 
-// 読み込み権限。小林 FB「メンバーから小林の面談は見れないようにし、自身の面談のみを投入する」反映:
-//   - リーダー面談 (is_leader=true): リーダー本人のみ (メンバーからは見えない)
-//   - メンバー面談 (is_leader=false): 本人 + リーダー (フィードバック用)
+// 読み込み権限。西村 FB 2026-07-18「階級性ではなく、誰の面談でも閲覧・フィードバック入力
+// ができるページ設計にする」を反映し、ログイン済みなら全員の面談を閲覧可能にした。
+// (書き込み=議事録の編集/削除 は引き続き canWriteMeeting で本人のみに制限)
 export function canReadMeeting(
   currentUser: string | null,
-  target: { consultant_name?: string | null; is_leader?: boolean | null },
+  _target: { consultant_name?: string | null; is_leader?: boolean | null },
 ): boolean {
-  if (!currentUser) return false;
-  if (target.is_leader) {
-    return isLeader(currentUser);
-  }
-  return currentUser === target.consultant_name || isLeader(currentUser);
+  return !!currentUser;
+}
+
+// フィードバック(注釈)の入力権限。西村 FB「自分や小林が手動で注釈を入れられる仕組み」
+// → リーダーに限定せず、チームの誰でも他メンバーの面談にコメントできる。
+export function canAnnotateMeeting(currentUser: string | null): boolean {
+  return !!currentUser;
 }
 
 export function send403(res: VercelResponse, message: string) {

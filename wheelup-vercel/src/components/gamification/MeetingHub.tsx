@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
-import { isLeader as isLeaderRole, getLeaderNames } from "../../lib/team";
+import { isLeader as isLeaderRole, TEAM_MEMBERS } from "../../lib/team";
 import LearningModal from "./LearningModal";
 import TalkTendencyPanel from "./TalkTendencyPanel";
 import { analyzeTalk, talkStatsToCsvRow, rowsToCsv } from "../../lib/talkAnalysis";
@@ -47,9 +47,9 @@ const todayInputValue = () => {
 export default function MeetingHub() {
   const { currentUser } = useGamification();
   const qc = useQueryClient();
-  // リーダーは教師データ (リーダー面談) を主に扱うので初期タブを leader に。
-  // メンバーは自分の面談が初期タブ。
-  const [tab, setTab] = useState<"mine" | "leader">(isLeaderRole(currentUser) ? "leader" : "mine");
+  // 西村 FB 2026-07-18: 階級性をやめ、全メンバーの面談に共通アクセスできるタブ構造に。
+  // タブ = メンバー名（誰でも誰のタブも開ける）。初期タブは自分。
+  const [tab, setTab] = useState<string>(currentUser || TEAM_MEMBERS[0].name);
   const [uploading, setUploading] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
@@ -61,23 +61,34 @@ export default function MeetingHub() {
 
   // 採点は手動 (ユーザー操作) になったので自動 refetch は廃止。
   // 採点完了時に handleRescore 内で invalidateQueries しているのでそれで十分。
-  const { data: myMeetings } = useQuery({
-    queryKey: ["meetings", "mine", currentUser],
-    queryFn: () => fetchMeetings(undefined, undefined, currentUser),
+  // 全メンバーの面談を一括取得し、タブ（担当者）でクライアント側に絞り込む。
+  const { data: allMeetings } = useQuery({
+    queryKey: ["meetings", "all"],
+    queryFn: () => fetchMeetings(),
     enabled: !!currentUser,
   });
 
-  // リーダー面談はリーダー本人だけ取得 (メンバー画面からは小林面談を見せない・小林FB)
-  const { data: leaderMeetings } = useQuery({
-    queryKey: ["meetings", "leader"],
-    queryFn: () => fetchMeetings(undefined, undefined, undefined, true),
-    enabled: isLeaderRole(currentUser),
-  });
+  // 担当者ごとにグルーピング（タブの件数バッジ用）
+  const byMember = useMemo(() => {
+    const map = new Map<string, MeetingTranscript[]>();
+    for (const m of allMeetings?.transcripts || []) {
+      const key = m.consultant_name || "未設定";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(m);
+    }
+    return map;
+  }, [allMeetings]);
 
-  // メンバーが万一 "leader" タブ状態になっても、必ず自分の面談だけ表示する。
-  const meetings = !isLeaderRole(currentUser)
-    ? myMeetings?.transcripts
-    : (tab === "mine" ? myMeetings?.transcripts : leaderMeetings?.transcripts);
+  const meetings = byMember.get(tab) || [];
+  // 自分の面談（一括整形/再採点などの自分向け操作に使う）
+  const myMeetings = useMemo(
+    () => ({ transcripts: byMember.get(currentUser || "") || [] }),
+    [byMember, currentUser],
+  );
+  const leaderMeetings = useMemo(
+    () => ({ transcripts: (allMeetings?.transcripts || []).filter((m) => m.is_leader) }),
+    [allMeetings],
+  );
 
   // Track scored meetings to trigger celebrations
   const prevScoredRef = useRef<Set<string>>(new Set());
@@ -311,8 +322,8 @@ export default function MeetingHub() {
             </span>
           )}
         </div>
-        {/* メンバーはリーダー(小林)タブでは面談を追加できない (教師データは小林のみが登録) */}
-        {!(!isLeaderUser && tab === "leader") && (
+        {/* 面談の追加は「自分のタブ」でのみ（他人の面談は本人が投入する） */}
+        {tab === currentUser && (
           <button
             onClick={() => setShowUpload(!showUpload)}
             className="btn-duo btn-duo-green !px-3 !py-1.5 !text-[10px]"
@@ -322,27 +333,43 @@ export default function MeetingHub() {
         )}
       </div>
 
-      {/* Tabs
-            - リーダー (小林): 教師データ (リーダー面談) の 1 タブのみ。
-            - メンバー: 自分の面談だけ。小林の面談は見えない (小林FB:
-              「メンバーから小林の面談は見れないようにし、自身の面談のみを投入していく」)。
-            - メンバーは項目が 1 つしか無いのでタブバー自体を非表示。 */}
-      {isLeaderUser && (
-      <div className="flex gap-1 mb-4">
-        {[{ key: "leader" as const, label: "教師データ（リーダー面談）", count: leaderMeetings?.total || 0 }].map(({ key, label, count }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex-1 py-2 rounded-xl text-xs font-extrabold transition-colors ${
-              tab === key
-                ? key === "leader" ? "bg-duo-orange/10 text-duo-orange" : "bg-duo-blue/10 text-duo-blue"
-                : "text-[#afafaf] hover:bg-[#f7f7f7]"
-            }`}
-          >
-            {label}（{count}）
-          </button>
-        ))}
+      {/* メンバータブ（西村FB 2026-07-18: 階級性をやめ、誰でも誰の面談も閲覧・FB入力できる） */}
+      <div className="flex gap-1 mb-4 overflow-x-auto pb-1">
+        {TEAM_MEMBERS.map((mem) => {
+          const list = byMember.get(mem.name) || [];
+          const active = tab === mem.name;
+          return (
+            <button
+              key={mem.name}
+              onClick={() => setTab(mem.name)}
+              className={`shrink-0 px-3 py-2 rounded-xl text-xs font-extrabold transition-colors flex items-center gap-1.5 ${
+                active ? "text-white" : "text-[#8a8a8a] hover:bg-[#f2f4f7]"
+              }`}
+              style={active ? { backgroundColor: mem.color } : undefined}
+            >
+              <span
+                className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-black"
+                style={active
+                  ? { backgroundColor: "rgba(255,255,255,.25)", color: "#fff" }
+                  : { backgroundColor: mem.color + "22", color: mem.color }}
+              >
+                {mem.name.slice(0, 1)}
+              </span>
+              {mem.name}
+              {mem.name === currentUser && <span className="text-[9px] opacity-80">(自分)</span>}
+              <span className={`text-[10px] tabular-nums ${active ? "opacity-90" : "opacity-60"}`}>{list.length}</span>
+            </button>
+          );
+        })}
       </div>
+
+      {/* 他メンバーのタブを見ている時の案内 */}
+      {tab !== currentUser && (
+        <div className="mb-3 rounded-xl bg-[#F3F5F8] border border-[#E2E6EC] px-3 py-2">
+          <p className="text-[11px] font-bold text-[#555]">
+            👀 <b>{tab}</b>さんの面談を閲覧中です。トーク傾向の確認と、フィードバック（注釈）の入力ができます。
+          </p>
+        </div>
       )}
 
       {/* 📊 トーク傾向を CSV エクスポート (西村FB: 振り返り・特性分析用) */}
@@ -631,7 +658,7 @@ export default function MeetingHub() {
       )}
 
       {/* リーダータブで小林本人がいる時、生データ再シードボタン (1 回限りの管理操作・普段は畳む) */}
-      {isLeaderUser && tab === "leader" && (
+      {isLeaderUser && tab === currentUser && (
         <details className="mb-3 rounded-2xl border-2 border-dashed border-[#cc7800] bg-[#fff7ed] p-3">
           <summary className="text-[11px] font-extrabold text-[#cc7800] cursor-pointer select-none">
             ⚙️ 管理操作（リーダー面談の再シード・通常は使いません）
@@ -672,7 +699,7 @@ export default function MeetingHub() {
       )}
 
       {/* リーダータブで小林本人がいる時、未採点のリーダー面談を一括採点するボタン */}
-      {isLeaderUser && tab === "leader" && (() => {
+      {isLeaderUser && tab === currentUser && (() => {
         const unscored = (leaderMeetings?.transcripts || []).filter(
           (m) => m.transcript_text && !m.score_data,
         );
@@ -707,12 +734,11 @@ export default function MeetingHub() {
       <div className="space-y-3">
         {(!meetings || meetings.length === 0) && (
           <div className="rounded-2xl bg-[#f7f7f7] p-6 text-center">
-            <span className="text-3xl block mb-2">{tab === "leader" ? "👑" : "📝"}</span>
+            <span className="text-3xl block mb-2">📝</span>
             <p className="text-sm font-bold text-[#777]">
-              {tab === "leader"
-                ? "リーダーの面談を追加して、対比の基準を作りましょう"
-                : "面談を記録してAIに採点してもらいましょう"
-              }
+              {tab === currentUser
+                ? "面談を追加すると、トーク傾向が自動で分析されます"
+                : `${tab}さんの面談はまだ登録されていません`}
             </p>
           </div>
         )}
@@ -1447,35 +1473,46 @@ function MeetingEntry({
             </div>
           )}
 
-          {/* Leader Feedback */}
-          {m.leader_feedback && (
-            <div className="rounded-xl bg-[#fef3c7] border border-[#fbbf24] p-3">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider mb-1">リーダーコメント</div>
-              <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed">{m.leader_feedback}</p>
+          {/* フィードバック（注釈）— 西村FB 2026-07-18: 誰でも入力できる & 入力を簡単に。
+              採点の有無に関係なく、議事録さえあれば常に書ける。 */}
+          <div className="rounded-xl bg-[#fffbeb] border border-[#fbbf24] p-3 space-y-2">
+            <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
+              💬 フィードバック（誰でも入力できます）
             </div>
-          )}
-
-          {isLeaderUser && !m.is_leader && score && (
-            <div className="rounded-xl border-2 border-dashed border-[#fbbf24] p-3 space-y-2">
-              <div className="text-[10px] font-extrabold text-[#92400e] uppercase tracking-wider">
-                {m.leader_feedback ? "コメントを更新" : "リーダーコメントを追加"}
+            {m.leader_feedback && (
+              <div className="rounded-lg bg-white border border-[#fde68a] p-2.5">
+                <p className="text-xs font-bold text-[#4b4b4b] leading-relaxed whitespace-pre-wrap">{m.leader_feedback}</p>
               </div>
-              <textarea
-                value={fbText}
-                onChange={(e) => setFbText(e.target.value)}
-                placeholder="この面談へのアドバイスやフィードバックを入力..."
-                className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-16 focus:border-[#fbbf24] focus:outline-none resize-none"
-              />
+            )}
+            <textarea
+              value={fbText}
+              onChange={(e) => setFbText(e.target.value)}
+              placeholder={m.leader_feedback
+                ? "コメントを書き換える（保存すると上書きされます）"
+                : "気づいたことを一言でOK。例: 冒頭の要約が丁寧で入りやすい／年収の掘り下げが浅い"}
+              className="w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2 text-xs font-bold text-[#4b4b4b] h-16 focus:border-[#fbbf24] focus:outline-none resize-none"
+            />
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={handleFeedbackSave}
                 disabled={!fbText.trim() || fbSaving}
                 className="btn-duo !px-4 !py-1.5 !text-[10px] text-white disabled:opacity-40"
                 style={{ backgroundColor: "#f59e0b", borderBottomColor: "#d97706" }}
               >
-                {fbSaving ? "保存中..." : "コメント保存"}
+                {fbSaving ? "保存中..." : m.leader_feedback ? "上書き保存" : "コメントを保存"}
               </button>
+              {/* よく使う注釈をワンタップ入力（西村FB: 注釈入力をより容易に） */}
+              {["深掘りが浅い", "説明が長い", "質問が良い", "次アクションが曖昧", "共感が丁寧"].map((tpl) => (
+                <button
+                  key={tpl}
+                  onClick={() => setFbText((prev) => (prev ? `${prev} / ${tpl}` : tpl))}
+                  className="text-[10px] font-bold px-2 py-1 rounded-lg bg-white border border-[#fde68a] text-[#92400e] hover:bg-[#fef3c7]"
+                >
+                  + {tpl}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
           {/* ─── リーダー校正パネル: 採点アンカー (リーダーのみ) ─── */}
           {isLeaderUser && (
