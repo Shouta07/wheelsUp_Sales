@@ -1,20 +1,50 @@
 {
   "rewrites": [
-    { "source": "/api/candidates/:path*", "destination": "/api/candidates" },
-    { "source": "/api/companies/:path*", "destination": "/api/companies" },
-    { "source": "/api/knowledge/:path*", "destination": "/api/knowledge" },
-    { "source": "/api/jobs/:path*", "destination": "/api/jobs" },
-    { "source": "/api/pipedrive/:path*", "destination": "/api/pipedrive" },
-    { "source": "/api/lark/:path*", "destination": "/api/lark" },
-    { "source": "/api/meetings/:path+", "destination": "/api/meetings?path=:path+" },
-    { "source": "/api/ra/:path+", "destination": "/api/ra?path=:path+" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/api/candidates/:path*",
+      "destination": "/api/candidates"
+    },
+    {
+      "source": "/api/companies/:path*",
+      "destination": "/api/companies"
+    },
+    {
+      "source": "/api/knowledge/:path*",
+      "destination": "/api/knowledge"
+    },
+    {
+      "source": "/api/jobs/:path*",
+      "destination": "/api/jobs"
+    },
+    {
+      "source": "/api/pipedrive/:path*",
+      "destination": "/api/pipedrive"
+    },
+    {
+      "source": "/api/lark/:path*",
+      "destination": "/api/lark"
+    },
+    {
+      "source": "/api/meetings/:path+",
+      "destination": "/api/meetings?path=:path+"
+    },
+    {
+      "source": "/api/ra/:path+",
+      "destination": "/api/ra?path=:path+"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
       "source": "/api/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
       ]
     }
   ],
@@ -22,5 +52,11 @@
     "api/meetings/index.ts": {
       "includeFiles": "api/_data/**"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/meetings/weekly-report",
+      "schedule": "0 0 * * 1"
+    }
+  ]
 }

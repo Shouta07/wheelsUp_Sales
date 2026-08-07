@@ -131,3 +131,59 @@ export async function notifyMeetingImported(m: {
   const text = `${mention}📝 ${who}の面談が取り込まれました\n「${m.meetingTitle}」\n\nトーク傾向を確認できます。${link}`;
   await sendChatNotification(text);
 }
+
+/**
+ * 週次のトーク傾向サマリー通知。
+ * 「見に行く」ダッシュボードは使われないため、週1回 Lark に push する。
+ * 「今週チェックしたい面談」を先頭に置き、詳細はアプリへ誘導する。
+ */
+export type WeeklyReport = {
+  periodLabel: string;
+  totalMeetings: number;
+  analyzed: number;
+  alerts: { member: string; title: string; message: string }[];
+  teamAvg: { talkRatio: number; openRate: number; questions: number } | null;
+  perMember: { name: string; count: number; talkRatio: number; questions: number }[];
+  appBaseUrl?: string;
+};
+
+export async function notifyWeeklyReport(r: WeeklyReport): Promise<void> {
+  if (!WEBHOOK) return;
+
+  const lines: string[] = [];
+  lines.push(`📊 今週の面談ふりかえり（${r.periodLabel}）`);
+  lines.push("");
+  lines.push(`面談 ${r.totalMeetings} 件${r.analyzed !== r.totalMeetings ? `（分析できたもの ${r.analyzed} 件）` : ""}`);
+
+  if (r.alerts.length > 0) {
+    lines.push("");
+    lines.push("⚠️ 今週チェックしたい面談");
+    for (const a of r.alerts.slice(0, 5)) {
+      lines.push(`・${a.member}さん「${a.title}」`);
+      lines.push(`　${a.message}`);
+    }
+  } else if (r.analyzed > 0) {
+    lines.push("");
+    lines.push("✅ 大きく普段と違う面談はありませんでした");
+  }
+
+  if (r.perMember.length > 0) {
+    lines.push("");
+    lines.push("👥 メンバー別");
+    for (const m of r.perMember) {
+      lines.push(`・${m.name} ${m.count}件／発話 ${m.talkRatio}%／質問 ${m.questions}回`);
+    }
+  }
+
+  if (r.teamAvg) {
+    lines.push("");
+    lines.push(`📈 チーム平均：発話 ${r.teamAvg.talkRatio}% ／ オープン質問率 ${r.teamAvg.openRate}% ／ 質問 ${r.teamAvg.questions}回`);
+  }
+
+  if (r.appBaseUrl) {
+    lines.push("");
+    lines.push(`詳しくはこちら → ${r.appBaseUrl}`);
+  }
+
+  await sendChatNotification(lines.join("\n"));
+}

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { useGamification } from "../../gamification/GamificationProvider";
-import { TEAM_MEMBERS } from "../../lib/team";
+import { TEAM_MEMBERS, isLeader as isLeaderRole } from "../../lib/team";
 import TalkTendencyPanel from "./TalkTendencyPanel";
 import MemberSummaryPanel from "./MemberSummaryPanel";
 import { analyzeTalk, talkStatsToCsvRow, rowsToCsv } from "../../lib/talkAnalysis";
@@ -13,6 +13,7 @@ import {
   summarizeMeeting,
   diagnoseMeeting,
   addLeaderFeedback,
+  sendWeeklyReport,
   type MeetingTranscript,
 } from "../../api/client";
 
@@ -69,6 +70,7 @@ export default function MeetingHub() {
   const [dateInput, setDateInput] = useState<string>(todayInputValue);
   const [showUpload, setShowUpload] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [sendingReport, setSendingReport] = useState(false);
 
   const { data: allMeetings } = useQuery({
     queryKey: ["meetings", "all"],
@@ -170,6 +172,30 @@ export default function MeetingHub() {
               title="表示中のメンバーのトーク傾向をCSVで出力"
             >
               ⬇ CSV出力
+            </button>
+          )}
+          {isLeaderRole(currentUser) && (
+            <button
+              onClick={async () => {
+                if (!window.confirm("直近7日間のトーク傾向サマリーを Lark に送信します。よろしいですか？")) return;
+                setSendingReport(true);
+                try {
+                  const r = await sendWeeklyReport();
+                  const rep = r.report;
+                  window.alert(
+                    `✅ Lark に送信しました\n\n期間: ${rep.periodLabel}\n面談 ${rep.totalMeetings} 件（分析 ${rep.analyzed} 件）\n` +
+                    `チェックしたい面談: ${rep.alerts.length} 件`,
+                  );
+                } catch (e) {
+                  window.alert(`❌ ${(e as Error).message}`);
+                }
+                setSendingReport(false);
+              }}
+              disabled={sendingReport}
+              className="text-[10px] font-extrabold px-3 py-1.5 rounded-xl bg-[#fef3c7] text-[#92400e] hover:bg-[#fde68a] transition-colors disabled:opacity-40"
+              title="直近7日間のサマリーを Lark に送信（毎週月曜9時に自動送信されます）"
+            >
+              {sendingReport ? "送信中…" : "📣 週次サマリーを送信"}
             </button>
           )}
           {tab === currentUser && (

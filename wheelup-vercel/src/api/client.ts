@@ -1087,6 +1087,27 @@ export async function scoreMeeting(
   });
 }
 
+// 週次トーク傾向サマリーを Lark に送信（リーダー手動 / 定期実行）
+export type WeeklyReportResult = {
+  ok: boolean;
+  sent: boolean;
+  report: {
+    periodLabel: string;
+    totalMeetings: number;
+    analyzed: number;
+    alerts: { member: string; title: string; message: string }[];
+    teamAvg: { talkRatio: number; openRate: number; questions: number } | null;
+    perMember: { name: string; count: number; talkRatio: number; questions: number }[];
+  };
+};
+export async function sendWeeklyReport(opts: { dryRun?: boolean; days?: number } = {}): Promise<WeeklyReportResult> {
+  const qs = opts.dryRun ? "?dry_run=1" : "";
+  return request(`/meetings/weekly-report${qs}`, {
+    method: "POST",
+    body: JSON.stringify({ days: opts.days ?? 7 }),
+  });
+}
+
 // 議事録を「初回診断 候補者情報まとめ(LARK提出形式)」5項目に整形
 export async function diagnoseMeeting(id: string): Promise<{ ok: boolean; structured_diagnosis: string }> {
   return request(`/meetings/${id}/diagnose`, { method: "POST", body: JSON.stringify({}) });

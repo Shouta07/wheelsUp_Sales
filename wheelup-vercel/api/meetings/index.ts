@@ -5,7 +5,8 @@ import { getRequestUser, isLeader, canReadMeeting, canWriteMeeting, canAnnotateM
 import { pickLearningResources } from "../_lib/learning-resources.js";
 import { checkRateLimit, cleanupRateLimits } from "../_lib/rate-limit.js";
 import { listFolderFiles, listFolderFilesRecursive, downloadFileText, probeFolder, diagnoseDrive, DocxNotSupportedError, type DriveFile } from "../_lib/drive-client.js";
-import { notifyMeetingScored, notifyMeetingImported } from "../_lib/notify.js";
+import { notifyMeetingScored, notifyMeetingImported, notifyWeeklyReport } from "../_lib/notify.js";
+import { analyzeTalk, type TalkStats } from "../../src/lib/talkAnalysis.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -69,6 +70,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- /api/meetings/auto-calibrate (リーダー面談から良/悪アンカーを自動登録) ---
     if (segments[0] === "auto-calibrate" && req.method === "POST") {
       return await autoCalibrate(db, req, res);
+    }
+    // --- /api/meetings/weekly-report (週次サマリーを Lark に送信) ---
+    // Vercel Cron は GET で呼ぶため両メソッドを許可
+    if (segments[0] === "weekly-report" && (req.method === "POST" || req.method === "GET")) {
+      return await sendWeeklyReport(db, req, res);
     }
     // --- /api/meetings/training-health (学習データの軸別カバレッジ可視化) ---
     if (segments[0] === "training-health" && req.method === "GET") {
@@ -2799,6 +2805,138 @@ ${structuredDiagnosisBlock}## 採点ルーブリック (キャリアコンサル
         }
       : {}),
   };
+}
+
+/* ========== 週次トーク傾向サマリー ========== */
+
+/**
+ * 直近7日間の面談を分析し、「今週チェックしたい面談」とチーム平均を Lark に送る。
+ * 判定はすべて機械計算（AI不要）。基準は「その人自身の過去平均」なので、
+ * 事前に「発話◯%が良い」という絶対基準を決めなくても機能する。
+ *
+ * 認可: CRON_SECRET（定期実行）または リーダー（手動送信）
+ */
+async function sendWeeklyReport(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const viaCron = isCronAuthorized(req);
+  if (!viaCron && !isLeader(getRequestUser(req))) {
+    return send403(res, "週次サマリーの送信はリーダーまたは定期実行のみです");
+  }
+  const dryRun = req.query.dry_run === "1" || (req.body as { dry_run?: boolean } | undefined)?.dry_run === true;
+  const days = Math.max(1, Math.min(31, Number((req.body as { days?: number } | undefined)?.days ?? 7)));
+
+  const { data: rows, error } = await db.from("meeting_transcripts")
+    .select("id, title, consultant_name, recorded_at, transcript_text, is_leader")
+    .is("deleted_at", null)
+    .order("recorded_at", { ascending: false })
+    .limit(500);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  type Row = { id: string; title: string; consultant_name: string | null; recorded_at: string; transcript_text: string | null };
+  const all = (rows || []) as unknown as Row[];
+
+  // 分析結果をキャッシュ（今週判定と基準値の両方で使う）
+  const statsOf = new Map<string, TalkStats>();
+  const analyze = (r: Row): TalkStats | null => {
+    if (!r.transcript_text) return null;
+    if (statsOf.has(r.id)) return statsOf.get(r.id)!;
+    const s = analyzeTalk(r.transcript_text, r.consultant_name || "");
+    if (s) statsOf.set(r.id, s);
+    return s;
+  };
+
+  const thisWeek = all.filter((r) => new Date(r.recorded_at).getTime() >= since);
+
+  // 担当者ごとの「過去の平均（今週分は除く）」＝ 比較の基準
+  const baselineOf = new Map<string, { talkRatio: number; questions: number; longest: number; openRate: number; n: number }>();
+  for (const name of new Set(all.map((r) => r.consultant_name).filter((n): n is string => !!n))) {
+    const past = all.filter((r) => r.consultant_name === name && new Date(r.recorded_at).getTime() < since);
+    const st = past.map(analyze).filter((s): s is TalkStats => !!s);
+    if (st.length < 3) continue; // 基準にできるだけの母数がない人はスキップ
+    const openT = st.reduce((a, s) => a + s.questionMix.open, 0);
+    const closedT = st.reduce((a, s) => a + s.questionMix.closed, 0);
+    baselineOf.set(name, {
+      talkRatio: Math.round(st.reduce((a, s) => a + s.talkRatioSelf, 0) / st.length),
+      questions: Math.round((st.reduce((a, s) => a + s.questionCount, 0) / st.length) * 10) / 10,
+      longest: Math.round(st.reduce((a, s) => a + s.longestMonologue.chars, 0) / st.length),
+      openRate: (openT + closedT) ? Math.round((openT / (openT + closedT)) * 100) : 0,
+      n: st.length,
+    });
+  }
+
+  // 「いつもと違う」面談を検出
+  const alerts: { member: string; title: string; message: string }[] = [];
+  const weekStats: TalkStats[] = [];
+  const cleanTitle = (t: string) => (t || "面談").replace(/\s*\[mimo:[^\]]+\]/, "").slice(0, 40);
+
+  for (const r of thisWeek) {
+    const s = analyze(r);
+    if (!s) continue;
+    weekStats.push(s);
+    const name = r.consultant_name;
+    const base = name ? baselineOf.get(name) : undefined;
+    if (!name || !base) continue;
+
+    const reasons: string[] = [];
+    if (s.talkRatioSelf - base.talkRatio >= 15) {
+      reasons.push(`発話 ${s.talkRatioSelf}%（普段 ${base.talkRatio}%）→ 一方的になったかも`);
+    }
+    if (base.questions >= 4 && s.questionCount <= base.questions * 0.5) {
+      reasons.push(`質問 ${s.questionCount}回（普段 ${base.questions}回）→ 掘れなかったかも`);
+    }
+    if (s.longestMonologue.chars >= 600 && s.longestMonologue.chars >= base.longest * 1.8) {
+      reasons.push(`最長で ${s.longestMonologue.chars}字 続けて話した（普段 ${base.longest}字）`);
+    }
+    if (base.openRate - s.questionMix.openRate >= 20 && (s.questionMix.open + s.questionMix.closed) >= 3) {
+      reasons.push(`オープン質問率 ${s.questionMix.openRate}%（普段 ${base.openRate}%）→ 掘る質問が減った`);
+    }
+    if (reasons.length > 0) {
+      alerts.push({ member: name, title: cleanTitle(r.title), message: reasons[0] });
+    }
+  }
+
+  // チーム平均・メンバー別
+  const teamAvg = weekStats.length > 0 ? (() => {
+    const openT = weekStats.reduce((a, s) => a + s.questionMix.open, 0);
+    const closedT = weekStats.reduce((a, s) => a + s.questionMix.closed, 0);
+    return {
+      talkRatio: Math.round(weekStats.reduce((a, s) => a + s.talkRatioSelf, 0) / weekStats.length),
+      openRate: (openT + closedT) ? Math.round((openT / (openT + closedT)) * 100) : 0,
+      questions: Math.round((weekStats.reduce((a, s) => a + s.questionCount, 0) / weekStats.length) * 10) / 10,
+    };
+  })() : null;
+
+  const perMember = [...new Set(thisWeek.map((r) => r.consultant_name).filter((n): n is string => !!n))]
+    .map((name) => {
+      const st = thisWeek.filter((r) => r.consultant_name === name).map(analyze).filter((s): s is TalkStats => !!s);
+      if (st.length === 0) return null;
+      return {
+        name,
+        count: st.length,
+        talkRatio: Math.round(st.reduce((a, s) => a + s.talkRatioSelf, 0) / st.length),
+        questions: Math.round((st.reduce((a, s) => a + s.questionCount, 0) / st.length) * 10) / 10,
+      };
+    })
+    .filter((x): x is { name: string; count: number; talkRatio: number; questions: number } => !!x)
+    .sort((a, b) => b.count - a.count);
+
+  const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
+  const report = {
+    periodLabel: `${fmt(new Date(since))}〜${fmt(new Date())}`,
+    totalMeetings: thisWeek.length,
+    analyzed: weekStats.length,
+    alerts,
+    teamAvg,
+    perMember,
+    appBaseUrl: (process.env.APP_BASE_URL ?? "").trim() || undefined,
+  };
+
+  if (!dryRun) await notifyWeeklyReport(report);
+  return res.json({ ok: true, sent: !dryRun, report });
 }
 
 /* ========== Leader Feedback ========== */
